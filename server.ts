@@ -88,7 +88,13 @@ const getDB = (): DBData => {
   if (!data.imageHistory) data.imageHistory = [];
   return data;
 };
-const saveDB = (data: DBData) => fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+const saveDB = (data: DBData) => {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error("数据库写入失败:", err);
+  }
+};
 
 app.use(express.json({ limit: '50mb' }));
 app.use(cookieParser());
@@ -125,9 +131,14 @@ app.post("/api/auth/register", async (req: Request, res: Response) => {
     role: "user",
     credits: 10 // Default credits
   };
-  db.users.push(newUser);
-  saveDB(db);
-  res.json({ message: "注册成功" });
+  try {
+    db.users.push(newUser);
+    saveDB(db);
+    res.json({ message: "注册成功" });
+  } catch (err) {
+    console.error("注册失败:", err);
+    res.status(500).json({ message: "注册失败，服务器内部错误" });
+  }
 });
 
 app.post("/api/auth/login", async (req: Request, res: Response) => {
@@ -138,7 +149,17 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
     return res.status(400).json({ message: "用户名或密码错误" });
   }
   const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
-  res.cookie("token", token, { httpOnly: true, secure: true, sameSite: 'none' });
+  
+  // 兼容性修改：根据环境自动调整 Cookie 安全设置
+  // 如果是本地开发或普通 HTTP 环境，关闭 secure 并使用 lax
+  const isSecure = req.protocol === 'https' || process.env.NODE_ENV === 'production';
+  res.cookie("token", token, { 
+    httpOnly: true, 
+    secure: isSecure, 
+    sameSite: isSecure ? 'none' : 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  });
+  
   res.json({ token, user: { id: user.id, username: user.username, role: user.role, credits: user.credits } });
 });
 
