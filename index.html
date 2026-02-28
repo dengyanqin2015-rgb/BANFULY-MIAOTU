@@ -1,0 +1,111 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BANFULY-详情助手 · 电商视觉架构师</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --apple-bg: #ffffff;
+            --apple-card-bg: #ffffff;
+            --apple-text: #1d1d1f;
+            --apple-gray: #86868b;
+            --apple-border: rgba(0, 0, 0, 0.1);
+            --apple-accent: #0071e3;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "Helvetica", "Arial", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            background-color: var(--apple-bg);
+            color: var(--apple-text);
+            -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
+            scroll-behavior: smooth;
+        }
+
+        .glass-nav {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: saturate(200%) blur(30px);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+        }
+
+        .apple-card {
+            background: var(--apple-card-bg);
+            border: 1px solid var(--apple-border);
+            border-radius: 40px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.02);
+            transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .apple-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.1);
+            border-color: rgba(0, 113, 227, 0.15);
+        }
+
+        .step-capsule {
+            background: #F5F5F7;
+            border-radius: 100px;
+            padding: 5px;
+        }
+
+        .btn-primary {
+            background: #1d1d1f;
+            color: #ffffff;
+            border-radius: 20px;
+            font-weight: 700;
+            transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+            border: none;
+            cursor: pointer;
+        }
+
+        .btn-primary:hover {
+            transform: scale(1.03);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+        }
+
+        .section-label {
+            font-size: 11px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+        }
+
+        @keyframes slide-up {
+            from { opacity: 0; transform: translateY(40px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .animate-slide-up {
+            animation: slide-up 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+
+
+        ::placeholder {
+            color: #C1C1C7;
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "@google/genai": "https://esm.sh/@google/genai@^1.40.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="no-scrollbar">
+    <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
