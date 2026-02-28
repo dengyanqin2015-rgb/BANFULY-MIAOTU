@@ -140,7 +140,12 @@ const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
 };
 
 // --- Auth Routes ---
+app.get("/api/test", (req, res) => {
+  res.json({ message: "API is working", timestamp: Date.now() });
+});
+
 app.post("/api/auth/register", async (req: Request, res: Response) => {
+  console.log("Received register request:", req.body.username);
   const { username, password } = req.body;
   const db = getDB();
   if (db.users.find((u: UserData) => u.username === username)) {
@@ -164,6 +169,7 @@ app.post("/api/auth/register", async (req: Request, res: Response) => {
 });
 
 app.post("/api/auth/login", async (req: Request, res: Response) => {
+  console.log("Received login request:", req.body.username);
   const { username, password } = req.body;
   const db = getDB();
   const user = db.users.find((u: UserData) => u.username === username);
