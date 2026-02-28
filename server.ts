@@ -10,7 +10,8 @@ import cors from "cors";
 const app = express();
 const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "banfuly-secret-key-12345";
-const DB_FILE = path.resolve("db.json");
+const DB_FILE = path.resolve(process.env.DB_PATH || "db.json");
+console.log("Database file path:", DB_FILE);
 
 interface UserData {
   id: string;
@@ -64,29 +65,50 @@ interface AuthRequest extends Request {
 }
 
 // Initialize DB
-if (!fs.existsSync(DB_FILE)) {
-  fs.writeFileSync(DB_FILE, JSON.stringify({
-    users: [
-      {
-        id: "admin-1",
-        username: "admin",
-        password: bcrypt.hashSync("admin123", 10),
-        role: "admin",
-        credits: 9999
-      }
-    ],
-    rechargeLogs: [],
-    generationLogs: [],
-    imageHistory: []
-  }, null, 2));
-}
+const initializeDB = () => {
+  try {
+    if (!fs.existsSync(DB_FILE)) {
+      console.log("Initializing new database file...");
+      const initialData = {
+        users: [
+          {
+            id: "admin-1",
+            username: "admin",
+            password: bcrypt.hashSync("admin123", 10),
+            role: "admin",
+            credits: 9999
+          }
+        ],
+        rechargeLogs: [],
+        generationLogs: [],
+        imageHistory: []
+      };
+      fs.writeFileSync(DB_FILE, JSON.stringify(initialData, null, 2));
+      console.log("Database initialized successfully.");
+    } else {
+      console.log("Database file already exists.");
+    }
+  } catch (err) {
+    console.error("Failed to initialize database:", err);
+  }
+};
+
+initializeDB();
 
 const getDB = (): DBData => {
-  const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
-  if (!data.rechargeLogs) data.rechargeLogs = [];
-  if (!data.generationLogs) data.generationLogs = [];
-  if (!data.imageHistory) data.imageHistory = [];
-  return data;
+  try {
+    if (!fs.existsSync(DB_FILE)) {
+      initializeDB();
+    }
+    const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    if (!data.rechargeLogs) data.rechargeLogs = [];
+    if (!data.generationLogs) data.generationLogs = [];
+    if (!data.imageHistory) data.imageHistory = [];
+    return data;
+  } catch (err) {
+    console.error("读取数据库失败:", err);
+    return { users: [], rechargeLogs: [], generationLogs: [], imageHistory: [] };
+  }
 };
 const saveDB = (data: DBData) => {
   try {
@@ -359,8 +381,10 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const PORT = process.env.PORT || 3000;
+
+  app.listen(Number(PORT), "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
