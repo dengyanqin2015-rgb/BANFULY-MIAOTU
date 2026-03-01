@@ -8,7 +8,6 @@ import path from "path";
 import cors from "cors";
 
 const app = express();
-const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "banfuly-secret-key-12345";
 const DB_FILE = path.resolve(process.env.DB_PATH || "db.json");
 console.log("Database file path:", DB_FILE);

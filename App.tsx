@@ -676,6 +676,8 @@ ${p.prompt}
     }
   };
 
+  const activeGenCard = finalPrompts.find(p => p.id === activeGenCardId);
+
   if (auth.loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
