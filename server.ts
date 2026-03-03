@@ -69,24 +69,28 @@ interface AuthRequest extends Request {
   };
 }
 
+const APP_VERSION = "5.1-DB-CHECK";
+
 // --- Database Service ---
 class DatabaseService {
   private pool: pg.Pool | null = null;
   private fileData: DBData | null = null;
 
   constructor() {
+    // Moved check to init for better visibility
+  }
+
+  async init() {
+    console.log(`[${new Date().toISOString()}] === SYSTEM STARTUP (v${APP_VERSION}) ===`);
     console.log("Database connection check: DATABASE_URL is", DATABASE_URL ? "set" : "NOT set");
+    
     if (DATABASE_URL) {
       console.log("PostgreSQL: Enabled. Initializing pool...");
       this.pool = new pg.Pool({
         connectionString: DATABASE_URL,
         ssl: { rejectUnauthorized: false }
       });
-    }
-  }
-
-  async init() {
-    if (this.pool) {
+      
       try {
         console.log("PostgreSQL: Initializing tables...");
         await this.pool.query(`
