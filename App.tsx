@@ -903,16 +903,30 @@ ${p.prompt}
                           <i className="fas fa-trash text-[10px]"></i>
                         </button>
                       </div>
-                      
-                      <div className="space-y-2">
+                                            <div className="space-y-2">
                         {auth.user?.role === 'admin' && (
                           <div className="bg-white/20 backdrop-blur-md px-2 py-1 rounded text-[9px] font-black text-white uppercase tracking-widest">
                             User: {h.username}
                           </div>
                         )}
                         <div className="bg-white/20 backdrop-blur-md px-2 py-1 rounded text-[9px] font-black text-white uppercase tracking-widest">
-                          {new Date(h.timestamp).toLocaleString()}
+                          {new Date(Number(h.timestamp)).toLocaleString()}
                         </div>
+                        
+                        {/* Prompt 显示与复制 */}
+                        <div className="group/prompt relative">
+                          <div className="bg-black/50 backdrop-blur-md px-2 py-1.5 rounded text-[8px] text-white/80 line-clamp-2 hover:line-clamp-none transition-all cursor-help border border-white/10">
+                            {h.prompt || "无提示词记录"}
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); copyToClipboard(h.prompt, "提示词已复制"); }}
+                            className="absolute top-0 right-0 bottom-0 bg-blue-600/80 hover:bg-blue-600 text-white px-2 rounded-r flex items-center justify-center opacity-0 group-hover/prompt:opacity-100 transition-opacity"
+                            title="复制提示词"
+                          >
+                            <i className="fas fa-copy text-[10px]"></i>
+                          </button>
+                        </div>
+
                         <button 
                           onClick={(e) => { e.stopPropagation(); downloadImage(h.imageUrl, `history-${h.id}`); }}
                           className="w-full py-2 bg-white text-black text-[10px] font-black rounded-lg hover:bg-[#F5F5F7] transition-colors"
@@ -1158,19 +1172,19 @@ ${p.prompt}
               </div>
               <div className="flex gap-2 bg-[#F5F5F7] p-1 rounded-xl border border-black/5 shadow-inner">
                 <button 
-                  onClick={() => { setAdminTab('users'); fetchAdminUsers(); }}
+                  onClick={() => { setAdminTab('users'); fetchAdminUsers(); setFilterUser('all'); setFilterYear(''); setFilterMonth(''); setFilterDay(''); }}
                   className={`px-6 py-2 rounded-lg text-[12px] font-black transition-all ${adminTab === 'users' ? 'bg-white shadow-md text-black' : 'text-[#86868b] hover:text-black'}`}
                 >
                   用户管理
                 </button>
                 <button 
-                  onClick={() => { setAdminTab('recharge'); fetchRechargeLogs(); }}
+                  onClick={() => { setAdminTab('recharge'); fetchRechargeLogs(); setFilterUser('all'); setFilterYear(''); setFilterMonth(''); setFilterDay(''); }}
                   className={`px-6 py-2 rounded-lg text-[12px] font-black transition-all ${adminTab === 'recharge' ? 'bg-white shadow-md text-black' : 'text-[#86868b] hover:text-black'}`}
                 >
                   充值流水
                 </button>
                 <button 
-                  onClick={() => { setAdminTab('stats'); fetchGenerationLogs(); }}
+                  onClick={() => { setAdminTab('stats'); fetchGenerationLogs(); setFilterUser('all'); setFilterYear(''); setFilterMonth(''); setFilterDay(''); }}
                   className={`px-6 py-2 rounded-lg text-[12px] font-black transition-all ${adminTab === 'stats' ? 'bg-white shadow-md text-black' : 'text-[#86868b] hover:text-black'}`}
                 >
                   生图统计
@@ -1248,34 +1262,118 @@ ${p.prompt}
                 )}
 
                 {adminTab === 'recharge' && (
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="bg-[#F5F5F7] border-b border-black/5">
-                        <th className="px-8 py-5 section-label text-[10px] opacity-60">时间</th>
-                        <th className="px-8 py-5 section-label text-[10px] opacity-60">用户</th>
-                        <th className="px-8 py-5 section-label text-[10px] opacity-60">变动额度</th>
-                        <th className="px-8 py-5 section-label text-[10px] opacity-60">变动后</th>
-                        <th className="px-8 py-5 section-label text-[10px] opacity-60">操作人</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-black/5">
-                      {rechargeLogs.map(log => (
-                        <tr key={log.id} className="hover:bg-[#F5F5F7]/30 transition-all">
-                          <td className="px-8 py-6 text-[12px] text-[#86868b] font-medium">
-                            {new Date(log.timestamp).toLocaleString()}
-                          </td>
-                          <td className="px-8 py-6 text-[14px] font-black text-black">{log.username}</td>
-                          <td className="px-8 py-6">
-                            <span className={`text-[13px] font-black ${log.amount >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                              {log.amount >= 0 ? `+${log.amount}` : log.amount}
-                            </span>
-                          </td>
-                          <td className="px-8 py-6 text-[13px] font-bold text-black">{log.newCredits}</td>
-                          <td className="px-8 py-6 text-[12px] text-[#86868b] font-bold">{log.adminName}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div className="space-y-6">
+                    <div className="flex flex-wrap items-center gap-4 bg-[#F5F5F7] p-6 rounded-2xl border border-black/5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-black opacity-40 uppercase">用户</span>
+                        <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                          <option value="all">所有人</option>
+                          {adminUsers.map(u => <option key={u.id} value={u.username}>{u.username}</option>)}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-black opacity-40 uppercase">年份</span>
+                        <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                          <option value="">全部</option>
+                          {[2024, 2025, 2026].map(y => <option key={y} value={y}>{y}年</option>)}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-black opacity-40 uppercase">月份</span>
+                        <select value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                          <option value="">全部</option>
+                          {Array.from({length: 12}, (_, i) => i + 1).map(m => <option key={m} value={m}>{m}月</option>)}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-black opacity-40 uppercase">日期</span>
+                        <select value={filterDay} onChange={(e) => setFilterDay(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                          <option value="">全部</option>
+                          {Array.from({length: 31}, (_, i) => i + 1).map(d => <option key={d} value={d}>{d}日</option>)}
+                        </select>
+                      </div>
+                      <div className="ml-auto flex items-center gap-6">
+                        <div className="text-right">
+                          <span className="text-[10px] font-black opacity-40 block uppercase">筛选后总计</span>
+                          <span className="text-2xl font-black text-[#0071e3]">
+                            {rechargeLogs.filter(log => {
+                              const date = new Date(Number(log.timestamp));
+                              return (filterUser === 'all' || log.username === filterUser) &&
+                                     (!filterYear || date.getFullYear().toString() === filterYear) &&
+                                     (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
+                                     (!filterDay || date.getDate().toString() === filterDay);
+                            }).length}
+                          </span>
+                        </div>
+                        <button 
+                          onClick={() => {
+                            const filtered = rechargeLogs.filter(log => {
+                              const date = new Date(Number(log.timestamp));
+                              return (filterUser === 'all' || log.username === filterUser) &&
+                                     (!filterYear || date.getFullYear().toString() === filterYear) &&
+                                     (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
+                                     (!filterDay || date.getDate().toString() === filterDay);
+                            });
+                            exportToExcel(filtered.map(l => ({ 
+                              '时间': new Date(Number(l.timestamp)).toLocaleString(), 
+                              '用户': l.username, 
+                              '变动额度': l.amount, 
+                              '变动后': l.newCredits, 
+                              '操作人': l.adminName 
+                            })), `充值流水记录_${new Date().getTime()}`);
+                          }}
+                          className="bg-black text-white px-6 py-2 rounded-xl text-[12px] font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
+                        >
+                          导出 Excel
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-[#F5F5F7] border-b border-black/5">
+                            <th className="px-8 py-5 section-label text-[10px] opacity-60">时间</th>
+                            <th className="px-8 py-5 section-label text-[10px] opacity-60">用户</th>
+                            <th className="px-8 py-5 section-label text-[10px] opacity-60">变动额度</th>
+                            <th className="px-8 py-5 section-label text-[10px] opacity-60">变动后</th>
+                            <th className="px-8 py-5 section-label text-[10px] opacity-60">操作人</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-black/5">
+                          {rechargeLogs.filter(log => {
+                            const date = new Date(Number(log.timestamp));
+                            return (filterUser === 'all' || log.username === filterUser) &&
+                                   (!filterYear || date.getFullYear().toString() === filterYear) &&
+                                   (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
+                                   (!filterDay || date.getDate().toString() === filterDay);
+                          }).length === 0 ? (
+                            <tr><td colSpan={5} className="px-8 py-10 text-center text-[#86868b] font-bold">暂无符合条件的充值记录</td></tr>
+                          ) : rechargeLogs.filter(log => {
+                            const date = new Date(Number(log.timestamp));
+                            return (filterUser === 'all' || log.username === filterUser) &&
+                                   (!filterYear || date.getFullYear().toString() === filterYear) &&
+                                   (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
+                                   (!filterDay || date.getDate().toString() === filterDay);
+                          }).map(log => (
+                            <tr key={log.id} className="hover:bg-[#F5F5F7]/30 transition-all">
+                              <td className="px-8 py-6 text-[12px] text-[#86868b] font-medium">
+                                {new Date(Number(log.timestamp)).toLocaleString()}
+                              </td>
+                              <td className="px-8 py-6 text-[14px] font-black text-black">{log.username}</td>
+                              <td className="px-8 py-6">
+                                <span className={`text-[13px] font-black ${log.amount >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                  {log.amount >= 0 ? `+${log.amount}` : log.amount}
+                                </span>
+                              </td>
+                              <td className="px-8 py-6 text-[13px] font-bold text-black">{log.newCredits}</td>
+                              <td className="px-8 py-6 text-[12px] text-[#86868b] font-bold">{log.adminName}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 )}
 
                 {adminTab === 'stats' && (
@@ -1314,7 +1412,7 @@ ${p.prompt}
                           <span className="text-[10px] font-black opacity-40 block uppercase">筛选后总计</span>
                           <span className="text-2xl font-black text-[#0071e3]">
                             {generationLogs.filter(log => {
-                              const date = new Date(log.timestamp);
+                              const date = new Date(Number(log.timestamp));
                               return (filterUser === 'all' || log.userId === filterUser) &&
                                      (!filterYear || date.getFullYear().toString() === filterYear) &&
                                      (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
@@ -1325,13 +1423,13 @@ ${p.prompt}
                         <button 
                           onClick={() => {
                             const filtered = generationLogs.filter(log => {
-                              const date = new Date(log.timestamp);
+                              const date = new Date(Number(log.timestamp));
                               return (filterUser === 'all' || log.userId === filterUser) &&
                                      (!filterYear || date.getFullYear().toString() === filterYear) &&
                                      (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
                                      (!filterDay || date.getDate().toString() === filterDay);
                             });
-                            exportToExcel(filtered.map(l => ({ '时间': new Date(l.timestamp).toLocaleString(), '用户': l.username, '操作': '生图渲染' })), `全平台生图统计_${new Date().getTime()}`);
+                            exportToExcel(filtered.map(l => ({ '时间': new Date(Number(l.timestamp)).toLocaleString(), '用户': l.username, '操作': '生图渲染' })), `全平台生图统计_${new Date().getTime()}`);
                           }}
                           className="bg-black text-white px-6 py-2 rounded-xl text-[12px] font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                         >
@@ -1351,7 +1449,7 @@ ${p.prompt}
                         </thead>
                         <tbody className="divide-y divide-black/5">
                           {generationLogs.filter(log => {
-                            const date = new Date(log.timestamp);
+                            const date = new Date(Number(log.timestamp));
                             return (filterUser === 'all' || log.userId === filterUser) &&
                                    (!filterYear || date.getFullYear().toString() === filterYear) &&
                                    (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
@@ -1359,7 +1457,7 @@ ${p.prompt}
                           }).length === 0 ? (
                             <tr><td colSpan={3} className="px-8 py-10 text-center text-[#86868b] font-bold">暂无符合条件的统计记录</td></tr>
                           ) : generationLogs.filter(log => {
-                            const date = new Date(log.timestamp);
+                            const date = new Date(Number(log.timestamp));
                             return (filterUser === 'all' || log.userId === filterUser) &&
                                    (!filterYear || date.getFullYear().toString() === filterYear) &&
                                    (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
@@ -1367,7 +1465,7 @@ ${p.prompt}
                           }).map(log => (
                             <tr key={log.id} className="hover:bg-[#F5F5F7]/30 transition-all">
                               <td className="px-8 py-6 text-[12px] text-[#86868b] font-medium">
-                                {new Date(log.timestamp).toLocaleString()}
+                                {new Date(Number(log.timestamp)).toLocaleString()}
                               </td>
                               <td className="px-8 py-6 text-[14px] font-black text-black">{log.username}</td>
                               <td className="px-8 py-6">
