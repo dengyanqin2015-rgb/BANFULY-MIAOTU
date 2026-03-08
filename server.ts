@@ -360,7 +360,7 @@ class DatabaseService {
 const db = new DatabaseService();
 db.init();
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '20mb' }));
 app.use(cookieParser());
 app.use(cors());
 
