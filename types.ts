@@ -53,7 +53,34 @@ export enum AppStep {
   PROMPT_FUSION = 3,
   HISTORY = 4,
   ADMIN_PANEL = 5,
-  PROFILE = 6
+  PROFILE = 6,
+  SINGLE_TOOL = 7
+}
+
+export enum SingleToolMode {
+  REFERENCE = 'reference',
+  PENDING_1 = 'pending_1',
+  PENDING_2 = 'pending_2'
+}
+
+export interface ImageDeconstruction {
+  shape_form: string;
+  color_palette: string;
+  texture: string;
+  space_negative: string;
+  light_direction: string;
+  light_quality: string;
+  shadows: string;
+  mood_tone: string;
+  focal_point: string;
+  leading_lines: string;
+  depth_of_field: string;
+  perspective: string;
+  subject: string;
+  context_background: string;
+  props: string;
+  story_moment: string;
+  generated_prompt: string;
 }
 
 export interface ImageHistory {

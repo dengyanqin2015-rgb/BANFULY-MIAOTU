@@ -1,15 +1,15 @@
 
 import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog } from './types';
-import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, regenerateSinglePrompt } from './geminiService';
+import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory } from './types';
+import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, regenerateSinglePrompt, deconstructImage } from './geminiService';
 
 const App: React.FC = () => {
   const [step, setStep] = useState<AppStep>(AppStep.STYLE_DECODER);
   const [model, setModel] = useState('gemini-3-flash-preview');
   const [loading, setLoading] = useState(false);
   const [userApiKey, setUserApiKey] = useState<string>(() => {
-    return localStorage.getItem('user_gemini_api_key') || '';
+    return localStorage.getItem('user_gemini_api_key') || process.env.GEMINI_API_KEY || '';
   });
 
   // Auth 状态
@@ -71,9 +71,81 @@ const App: React.FC = () => {
   const [isBulkGenActive, setIsBulkGenActive] = useState(false);
   const [isBulkLoading, setIsBulkLoading] = useState(false);
   const [bulkRefImage, setBulkRefImage] = useState<string | null>(null);
-  const [genModel, setGenModel] = useState('nanobanana');
+  const [genModel, setGenModel] = useState('nanobanana2');
   const [genAspectRatio, setGenAspectRatio] = useState('1:1');
+  const [genResolution, setGenResolution] = useState('1K');
+
+  useEffect(() => {
+    const availableResolutions = Object.keys(MODEL_COSTS[genModel as keyof typeof MODEL_COSTS].resolutions);
+    if (!availableResolutions.includes(genResolution)) {
+      setGenResolution(availableResolutions[0]);
+    }
+  }, [genModel]);
+
   const [compositionRefImage, setCompositionRefImage] = useState<string | null>(null);
+
+  // 单图灵活工具状态
+  const [singleToolMode, setSingleToolMode] = useState<SingleToolMode>(SingleToolMode.REFERENCE);
+  const [singleRefImage, setSingleRefImage] = useState<string | null>(null);
+  const [singleProductImage, setSingleProductImage] = useState<string | null>(null);
+  const [deconstructionResult, setDeconstructionResult] = useState<ImageDeconstruction | null>(null);
+  const [singleGeneratedImage, setSingleGeneratedImage] = useState<string | null>(null);
+  const [isDeconstructing, setIsDeconstructing] = useState(false);
+  const [isGeneratingSingle, setIsGeneratingSingle] = useState(false);
+  const [editablePrompt, setEditablePrompt] = useState("");
+  const [useRefImage, setUseRefImage] = useState(true);
+  const [refStrength, setRefStrength] = useState(0.5);
+  const [productKeywords, setProductKeywords] = useState("");
+
+  const PLACEMENT_OPTIONS = [
+    "左侧留白 (Left Margin)",
+    "右侧留白 (Right Margin)",
+    "顶部留白 (Top Margin)",
+    "底部留白 (Bottom Margin)",
+    "居中 (Centered)",
+    "对角线留白 (Diagonal Margin)",
+    "左上角留白 (Top-Left Margin)",
+    "右上角留白 (Top-Right Margin)",
+    "左下角留白 (Bottom-Left Margin)",
+    "右下角留白 (Bottom-Right Margin)"
+  ];
+
+  interface ModelCost {
+    name: string;
+    label: string;
+    resolutions: {
+      [key: string]: { cost: number; rmb: number };
+    };
+  }
+
+  const MODEL_COSTS: Record<string, ModelCost> = {
+    'nanobanana': { 
+      name: 'FLASH 2.5', 
+      label: 'Balanced',
+      resolutions: {
+        '1K': { cost: 0.039, rmb: 0.28 }
+      }
+    },
+    'nanobanana2': { 
+      name: 'FLASH 3.1', 
+      label: 'High Fidelity',
+      resolutions: {
+        '0.5K': { cost: 0.045, rmb: 0.33 },
+        '1K': { cost: 0.067, rmb: 0.49 },
+        '2K': { cost: 0.101, rmb: 0.73 },
+        '4K': { cost: 0.151, rmb: 1.10 }
+      }
+    },
+    'nanobanana pro': { 
+      name: 'PRO 3.0', 
+      label: 'Cinema Grade',
+      resolutions: {
+        '1K': { cost: 0.134, rmb: 0.97 },
+        '2K': { cost: 0.134, rmb: 0.97 },
+        '4K': { cost: 0.24, rmb: 1.74 }
+      }
+    }
+  };
   
   // 原图预览状态
   const [hoveredPreviewImage, setHoveredPreviewImage] = useState<{ url: string, title: string } | null>(null);
@@ -334,6 +406,10 @@ const App: React.FC = () => {
     }
   };
 
+  const updatePromptPlacement = (id: string, newPlacement: string) => {
+    setFinalPrompts(prev => prev.map(p => p.id === id ? { ...p, placement: newPlacement } : p));
+  };
+
   const updatePromptCopy = (id: string, newCopy: string) => {
     setFinalPrompts(prev => prev.map(p => p.id === id ? { ...p, copy: newCopy } : p));
   };
@@ -458,7 +534,20 @@ ${p.prompt}
       // 方案融合：将视觉风格与策划分镜结合，生成最终生图指令
       if (constitution) {
         const prompts = await fusePrompts(constitution, { ...res, selling_points: sellingPoints, allowed_elements: allowedElements, prohibited_elements: prohibitedElements }, model, userApiKey);
-        setFinalPrompts(prompts);
+        
+        // 新增：全案预览（6宫格）卡片
+        const previewPrompt: FinalPrompt = {
+          id: 'preview_grid',
+          title: '全案预览 (6宫格)',
+          concept: '汇总 6 个分镜的视觉特征，生成一张 2x3 的网格预览图，用于快速评估全案风格一致性。',
+          prompt: prompts.map((p, i) => `[Panel ${i+1}: ${p.prompt}]`).join('\n'),
+          copy: 'PREVIEW ALL',
+          font_size: 'N/A',
+          placement: 'Grid Layout',
+          prominence: 'High'
+        };
+        
+        setFinalPrompts([previewPrompt, ...prompts]);
       }
       
       setStep(AppStep.PROMPT_FUSION);
@@ -476,7 +565,7 @@ ${p.prompt}
     const currentCard = finalPrompts.find(p => p.id === cardId);
     if (!currentCard || !constitution || !analysis) return;
 
-    if (genModel === 'nanobanana pro' || model === 'gemini-3-pro-preview') {
+    if (genModel === 'nanobanana pro' || model === 'gemini-3.1-pro-preview') {
       if (typeof window !== 'undefined' && window.aistudio) {
         const hasKey = await window.aistudio.hasSelectedApiKey();
         if (!hasKey) {
@@ -489,21 +578,39 @@ ${p.prompt}
 
     setCardGenStatus(prev => ({ ...prev, [cardId]: 'loading' }));
 
+    const isPreview = cardId === 'preview_grid';
     const prohibitedNotice = prohibitedElements 
       ? `【绝对禁止项】：严禁在画面中出现“${prohibitedElements}”。确保画面呈现极致无缝、平滑的工业质感。`
       : "保持画面专业极简，视觉纯净。";
 
-    const assembledPrompt = `
-      【BANFULY 视觉渲染协议】
-      模式：${strategyType === StrategyType.DETAIL ? '详情呈现' : '高点击率营销主图'}
-      1. 核心文案：画面中【仅展示】文字内容："${currentCard.copy}"。
-      2. 字体特征：匹配"${globalSelectedFont}"的视觉风格，展现高端感。
-      3. 视觉协议：${constitution.prompt_prefix}。风格：${constitution.style}。光影：${constitution.lighting}。
-      4. 物理规避：${prohibitedNotice}。
-      5. 排版约束：在画面的【${currentCard.placement}】区域留白，用于后期排版。
-      6. 产品特征：${analysis.physical_features}。场景意境：${currentCard.prompt}。
-      要求：8k超清，商业大片质感。
-    `.trim();
+    let assembledPrompt = '';
+    
+    if (isPreview) {
+      assembledPrompt = `
+        【BANFULY 视觉全案预览协议 - 6宫格】
+        任务：生成一张包含 6 个不同场景的 2x3 网格图。
+        视觉协议：${constitution.prompt_prefix}。风格：${constitution.style}。光影：${constitution.lighting}。
+        物理规避：${prohibitedNotice}。
+        产品特征：${analysis.physical_features}。
+        
+        网格内容描述：
+        ${currentCard.prompt}
+        
+        要求：将上述 6 个场景以 2x3 的网格形式展示在同一张图中，每个格子展示一个场景。8k超清，商业大片质感。
+      `.trim();
+    } else {
+      assembledPrompt = `
+        【BANFULY 视觉渲染协议】
+        模式：${strategyType === StrategyType.DETAIL ? '详情呈现' : '高点击率营销主图'}
+        1. 核心文案：画面中【仅展示】文字内容："${currentCard.copy}"。
+        2. 字体特征：匹配"${globalSelectedFont}"的视觉风格，展现高端感。
+        3. 视觉协议：${constitution.prompt_prefix}。风格：${constitution.style}。光影：${constitution.lighting}。
+        4. 物理规避：${prohibitedNotice}。
+        5. 排版约束：在画面的【${currentCard.placement}】区域留白，用于后期排版。
+        6. 产品特征：${analysis.physical_features}。场景意境：${currentCard.prompt}。
+        要求：8k超清，商业大片质感。
+      `.trim();
+    }
 
     try {
       // 检查点数
@@ -516,6 +623,7 @@ ${p.prompt}
         prompt: assembledPrompt,
         model: genModel,
         aspectRatio: genAspectRatio,
+        imageSize: genResolution === '0.5K' ? '512px' : genResolution,
         refImageB64: overrideRefImage || cardRefImages[cardId],
         apiKey: userApiKey
       });
@@ -678,6 +786,90 @@ ${p.prompt}
 
   const activeGenCard = finalPrompts.find(p => p.id === activeGenCardId);
 
+  const runSingleDeconstruction = async (base64: string) => {
+    console.log("Starting single deconstruction with base64 length:", base64.length);
+    if (!userApiKey) {
+      console.warn("No API Key found");
+      alert("请先配置 API Key");
+      return;
+    }
+    setDeconstructionResult(null);
+    setIsDeconstructing(true);
+    try {
+      console.log("Calling deconstructImage with model:", model);
+      const result = await deconstructImage(base64, model, userApiKey);
+      console.log("Deconstruction result received successfully:", result);
+      setDeconstructionResult(result);
+      setEditablePrompt(result.generated_prompt);
+      console.log("deconstructionResult state updated with:", result);
+    } catch (err) {
+      console.error("Deconstruction error in runSingleDeconstruction:", err);
+      alert(`图片解构失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsDeconstructing(false);
+    }
+  };
+
+  const runSingleGeneration = async () => {
+    if (!userApiKey) {
+      alert("请先配置 API Key");
+      return;
+    }
+    if (!deconstructionResult || !singleProductImage) {
+      alert("请先上传参考图并解析，以及上传产品图");
+      return;
+    }
+
+    const cost = (MODEL_COSTS[genModel as keyof typeof MODEL_COSTS].resolutions as Record<string, { rmb: number }>)[genResolution].rmb;
+    if (auth.user!.credits < cost) {
+      alert(`点数不足，本次生成需要 ${cost} 点，当前剩余 ${auth.user!.credits} 点`);
+      return;
+    }
+
+    setIsGeneratingSingle(true);
+    try {
+      const finalPrompt = `产品图：白色背景的产品。${productKeywords ? `产品关键词：${productKeywords}。` : ''} ${editablePrompt}. 确保提供的图像中的产品是主要拍摄对象，并保留其细节。参考强度：${refStrength}。`;
+      
+      const imageUrl = await generateEcomImage({
+        prompt: finalPrompt,
+        refImageB64: useRefImage ? singleRefImage : undefined,
+        productImageB64: singleProductImage,
+        model: genModel,
+        aspectRatio: genAspectRatio,
+        imageSize: genResolution,
+        apiKey: userApiKey
+      });
+
+      setSingleGeneratedImage(imageUrl);
+      await deductCredit(cost);
+      await saveToHistory(imageUrl, finalPrompt);
+    } catch (err) {
+      console.error(err);
+      alert("生成失败，请重试");
+    } finally {
+      setIsGeneratingSingle(false);
+    }
+  };
+
+  const DECONSTRUCTION_FIELDS = [
+    { key: 'shape_form', label: '形态与轮廓 (Shape)', icon: 'fa-shapes' },
+    { key: 'color_palette', label: '色彩构成 (Color)', icon: 'fa-palette' },
+    { key: 'texture', label: '材质与肌理 (Texture)', icon: 'fa-scroll' },
+    { key: 'space_negative', label: '空间与留白 (Space)', icon: 'fa-border-none' },
+    { key: 'light_direction', label: '光源方向 (Light Dir)', icon: 'fa-sun' },
+    { key: 'light_quality', label: '光质软硬 (Light Qual)', icon: 'fa-lightbulb' },
+    { key: 'shadows', label: '阴影形态 (Shadows)', icon: 'fa-moon' },
+    { key: 'mood_tone', label: '情绪基调 (Mood)', icon: 'fa-smile' },
+    { key: 'focal_point', label: '视觉焦点 (Focus)', icon: 'fa-bullseye' },
+    { key: 'leading_lines', label: '引导线 (Lines)', icon: 'fa-slash' },
+    { key: 'depth_of_field', label: '景深层次 (Depth)', icon: 'fa-layer-group' },
+    { key: 'perspective', label: '透视角度 (Perspective)', icon: 'fa-cube' },
+    { key: 'subject', label: '主体特征 (Subject)', icon: 'fa-tag' },
+    { key: 'context_background', label: '背景环境 (Background)', icon: 'fa-image' },
+    { key: 'props', label: '道具配饰 (Props)', icon: 'fa-box-open' },
+    { key: 'story_moment', label: '叙事瞬间 (Story)', icon: 'fa-clock' },
+  ];
+
   if (auth.loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
@@ -750,13 +942,14 @@ ${p.prompt}
               { id: AppStep.STYLE_DECODER, label: '视觉宪法' },
               { id: AppStep.PRODUCT_STRATEGY, label: '营销策划' },
               { id: AppStep.PROMPT_FUSION, label: '生成方案' },
+              { id: AppStep.SINGLE_TOOL, label: '单图灵活工具' },
               { id: AppStep.HISTORY, label: '生图历史' },
               { id: AppStep.PROFILE, label: '个人中心' },
               ...(auth.user.role === 'admin' ? [{ id: AppStep.ADMIN_PANEL, label: '管理后台' }] : [])
             ].map((s) => (
               <button
                 key={s.id}
-                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY}
+                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL}
                 onClick={() => activeStep(s.id)}
                 className={`px-4 py-1.5 rounded-full text-[11px] font-bold transition-all duration-500 ${step === s.id ? 'bg-white shadow-md text-black scale-105' : 'text-[#86868b] opacity-60 hover:opacity-100'}`}
               >
@@ -828,12 +1021,356 @@ ${p.prompt}
             className="bg-white border border-black/10 px-3 py-1.5 rounded-lg text-[11px] font-bold outline-none cursor-pointer shadow-sm hover:border-[#0071e3]/30 transition-all"
           >
             <option value="gemini-3-flash-preview">FLASH 3.0 (极速引擎)</option>
-            <option value="gemini-3-pro-preview">PRO 3.0 (高保真引擎)</option>
+            <option value="gemini-3.1-pro-preview">PRO 3.1 (高保真引擎)</option>
           </select>
         </div>
       </header>
 
       <main className="flex-1 max-w-[1440px] mx-auto w-full px-8 py-8">
+        {step === AppStep.SINGLE_TOOL && (
+          <div className="animate-slide-up">
+            <div className="flex items-end justify-between mb-10">
+              <div>
+                <div className="section-label mb-3 text-[#0071e3]">Single Image Flexible Tool</div>
+                <h1 className="text-4xl font-black tracking-tighter text-black">单图灵活工具</h1>
+              </div>
+              <div className="flex gap-2 bg-[#F5F5F7] p-1 rounded-xl border border-black/5 shadow-inner">
+                <button 
+                  onClick={() => setSingleToolMode(SingleToolMode.REFERENCE)}
+                  className={`px-6 py-2 rounded-lg text-[12px] font-black transition-all ${singleToolMode === SingleToolMode.REFERENCE ? 'bg-white shadow-md text-black' : 'text-[#86868b] hover:text-black'}`}
+                >
+                  参考模式
+                </button>
+                <button 
+                  disabled
+                  className="px-6 py-2 rounded-lg text-[12px] font-black text-[#86868b] opacity-40 cursor-not-allowed"
+                >
+                  待开发模式 1
+                </button>
+                <button 
+                  disabled
+                  className="px-6 py-2 rounded-lg text-[12px] font-black text-[#86868b] opacity-40 cursor-not-allowed"
+                >
+                  待开发模式 2
+                </button>
+              </div>
+            </div>
+
+            {singleToolMode === SingleToolMode.REFERENCE && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                {/* 左侧：参考图与解构 */}
+                <div className="lg:col-span-5 space-y-8">
+                  <div className="apple-card p-8 bg-white border-black/10 shadow-xl">
+                    <div className="section-label mb-6 text-[#0071e3]">Step 01 / Reference Image</div>
+                    <h2 className="text-2xl font-black mb-6 tracking-tight">上传参考图 <span className="text-[#86868b]">解构视觉基因</span></h2>
+                    
+                    <div 
+                      className={`aspect-square rounded-[32px] border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all duration-700 overflow-hidden relative group shadow-inner ${singleRefImage ? 'border-transparent' : 'border-black/15 bg-[#fbfbfd] hover:bg-white hover:border-[#0071e3]/30'}`}
+                      onClick={() => document.getElementById('single-ref-upload')?.click()}
+                    >
+                      {singleRefImage ? (
+                        <>
+                          <img src={singleRefImage} className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-110" />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <p className="text-white font-black text-sm uppercase tracking-widest">更换参考图</p>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-center">
+                          <div className="w-16 h-16 bg-white rounded-2xl shadow-md flex items-center justify-center mx-auto mb-4 border border-black/5"><i className="fas fa-image text-xl text-[#0071e3]"></i></div>
+                          <p className="text-sm font-black text-black/40 uppercase tracking-widest">点击或拖拽上传</p>
+                        </div>
+                      )}
+                      <input id="single-ref-upload" type="file" className="hidden" onChange={(e) => {
+                        handleFileChange(e, (base64) => {
+                          setSingleRefImage(base64);
+                        });
+                      }} />
+                    </div>
+
+                    <div className="mt-6">
+                      <button 
+                        onClick={() => {
+                          console.log("Generate Keywords button clicked. singleRefImage present:", !!singleRefImage);
+                          if (singleRefImage) runSingleDeconstruction(singleRefImage);
+                        }}
+                        disabled={!singleRefImage || isDeconstructing}
+                        className={`w-full py-4 rounded-2xl text-[14px] font-black flex items-center justify-center gap-3 transition-all shadow-lg ${!singleRefImage || isDeconstructing ? 'bg-[#F5F5F7] text-[#86868b] cursor-not-allowed' : 'bg-[#0071e3] text-white hover:scale-[1.02] active:scale-95'}`}
+                      >
+                        {isDeconstructing ? (
+                          <>
+                            <i className="fas fa-circle-notch fa-spin"></i>
+                            <span>正在深度解构视觉要素...</span>
+                          </>
+                        ) : (
+                          <>
+                            <i className="fas fa-wand-magic-sparkles"></i>
+                            <span>生成视觉解构关键词</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {isDeconstructing && (
+                      <div className="mt-4 p-4 bg-blue-50 rounded-2xl border border-blue-100 flex items-center gap-4 animate-pulse">
+                        <i className="fas fa-circle-notch fa-spin text-[#0071e3]"></i>
+                        <span className="text-[12px] font-black text-[#0071e3] uppercase tracking-widest">正在深度解构视觉要素...</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {deconstructionResult && (
+                    <div className="apple-card p-8 bg-[#F5F5F7] border-black/5 shadow-inner space-y-6">
+                      <div className="flex items-center justify-between">
+                        <div className="section-label text-black/40">Visual Deconstruction Table</div>
+                        <button 
+                          onClick={() => runSingleDeconstruction(singleRefImage!)}
+                          className="text-[10px] font-black text-[#0071e3] uppercase tracking-widest hover:underline"
+                        >
+                          重新解构
+                        </button>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        {DECONSTRUCTION_FIELDS.map(field => (
+                          <div key={field.key} className="bg-white p-4 rounded-2xl border border-black/5 shadow-sm">
+                            <div className="flex items-center gap-2 mb-2 opacity-40">
+                              <i className={`fas ${field.icon} text-[10px]`}></i>
+                              <span className="text-[9px] font-black uppercase tracking-widest">{field.label}</span>
+                            </div>
+                            <p className="text-[12px] font-bold text-black leading-tight">
+                              {(deconstructionResult as unknown as Record<string, string>)[field.key] || '未识别'}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="bg-black text-white p-6 rounded-[24px] shadow-xl">
+                        <div className="flex items-center gap-2 mb-3">
+                          <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
+                          <span className="section-label text-white/50 tracking-widest text-[9px]">生成的提示词 (AI Prompt) - 可编辑</span>
+                        </div>
+                        <textarea 
+                          className="w-full bg-white/10 border border-white/20 rounded-xl p-4 text-[13px] font-bold leading-relaxed text-white focus:outline-none focus:border-blue-400 transition-all resize-none"
+                          rows={4}
+                          value={editablePrompt}
+                          onChange={(e) => setEditablePrompt(e.target.value)}
+                          placeholder="AI 生成的提示词将显示在这里，您可以手动修改..."
+                        />
+                        <button 
+                          onClick={() => copyToClipboard(editablePrompt, "提示词已复制")}
+                          className="mt-4 text-[10px] font-black text-blue-400 uppercase tracking-widest hover:text-blue-300 transition-colors"
+                        >
+                          复制提示词
+                        </button>
+                      </div>
+
+                      <div className="bg-white p-6 rounded-[24px] border border-black/5 shadow-sm space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="checkbox" 
+                              id="use-ref-image" 
+                              checked={useRefImage}
+                              onChange={(e) => setUseRefImage(e.target.checked)}
+                              className="w-4 h-4 accent-[#0071e3]"
+                            />
+                            <label htmlFor="use-ref-image" className="text-[12px] font-black uppercase tracking-widest text-black/60">使用参考图作为视觉引导</label>
+                          </div>
+                        </div>
+                        
+                        {useRefImage && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-black/40">参考强度 (Reference Strength)</span>
+                              <span className="text-[10px] font-black text-[#0071e3]">{Math.round(refStrength * 100)}%</span>
+                            </div>
+                            <input 
+                              type="range" 
+                              min="0" 
+                              max="1" 
+                              step="0.1" 
+                              value={refStrength}
+                              onChange={(e) => setRefStrength(parseFloat(e.target.value))}
+                              className="w-full h-1.5 bg-[#F5F5F7] rounded-lg appearance-none cursor-pointer accent-[#0071e3]"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 右侧：产品图与生成 */}
+                <div className="lg:col-span-7 space-y-8">
+                  <div className="apple-card p-8 bg-white border-black/10 shadow-xl">
+                    <div className="section-label mb-6 text-[#0071e3]">Step 02 / Product Image</div>
+                    <h2 className="text-2xl font-black mb-6 tracking-tight">上传白底产品图 <span className="text-[#86868b]">注入核心主体</span></h2>
+                    
+                    <div className="mb-6">
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-black/40 mb-2 ml-1">产品核心关键词 (可选)</label>
+                      <input 
+                        type="text"
+                        className="w-full bg-[#F5F5F7] border border-black/5 rounded-xl px-4 py-3 text-[13px] font-bold focus:outline-none focus:ring-2 focus:ring-[#0071e3]/20 transition-all"
+                        placeholder="例如：白色陶瓷杯、黑色磨砂质感..."
+                        value={productKeywords}
+                        onChange={(e) => setProductKeywords(e.target.value)}
+                      />
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      <div 
+                        className={`aspect-square rounded-[32px] border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all duration-700 overflow-hidden relative group shadow-inner ${singleProductImage ? 'border-transparent' : 'border-black/15 bg-[#fbfbfd] hover:bg-white hover:border-[#0071e3]/30'}`}
+                        onClick={() => document.getElementById('single-prod-upload')?.click()}
+                      >
+                        {singleProductImage ? (
+                          <>
+                            <img src={singleProductImage} className="w-full h-full object-contain p-4 transition-transform duration-1000 group-hover:scale-110" />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                              <p className="text-white font-black text-sm uppercase tracking-widest">更换产品图</p>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="text-center">
+                            <div className="w-16 h-16 bg-white rounded-2xl shadow-md flex items-center justify-center mx-auto mb-4 border border-black/5"><i className="fas fa-box text-xl text-[#0071e3]"></i></div>
+                            <p className="text-sm font-black text-black/40 uppercase tracking-widest">点击上传白底图</p>
+                          </div>
+                        )}
+                        <input id="single-prod-upload" type="file" className="hidden" onChange={(e) => handleFileChange(e, setSingleProductImage)} />
+                      </div>
+
+                      <div className="flex flex-col justify-center space-y-6">
+                        <div className="space-y-6">
+                          <label className="section-label text-[10px] opacity-60 uppercase tracking-widest">生成配置 / Configuration</label>
+                          
+                          <div className="space-y-3">
+                            <span className="text-[9px] font-black opacity-40 uppercase">模型引擎 / Model Engine</span>
+                            <div className="grid grid-cols-3 gap-3">
+                              <button 
+                                onClick={() => setGenModel('nanobanana')} 
+                                className={`p-3 rounded-2xl border-2 text-left transition-all duration-500 ${genModel === 'nanobanana' ? 'border-black bg-black text-white shadow-lg' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}
+                              >
+                                <div className="text-[12px] font-black">FLASH 2.5</div>
+                                <div className="text-[8px] opacity-60 font-bold uppercase tracking-widest">Balanced</div>
+                                <div className="text-[9px] mt-1 font-bold text-[#0071e3]">¥0.28/图</div>
+                              </button>
+                              <button 
+                                onClick={() => setGenModel('nanobanana2')} 
+                                className={`p-3 rounded-2xl border-2 text-left transition-all duration-500 ${genModel === 'nanobanana2' ? 'border-black bg-black text-white shadow-lg' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}
+                              >
+                                <div className="text-[12px] font-black">FLASH 3.1</div>
+                                <div className="text-[8px] opacity-60 font-bold uppercase tracking-widest">High Fidelity</div>
+                                <div className="text-[9px] mt-1 font-bold text-[#0071e3]">¥0.33起/图</div>
+                              </button>
+                              <button 
+                                onClick={() => setGenModel('nanobanana pro')} 
+                                className={`p-3 rounded-2xl border-2 text-left transition-all duration-500 ${genModel === 'nanobanana pro' ? 'border-black bg-black text-white shadow-lg' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}
+                              >
+                                <div className="text-[12px] font-black">PRO 3.0</div>
+                                <div className="text-[8px] opacity-60 font-bold uppercase tracking-widest">Cinema Grade</div>
+                                <div className="text-[9px] mt-1 font-bold text-[#0071e3]">¥0.97起/图</div>
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-6">
+                            <div className="space-y-3">
+                              <span className="text-[9px] font-black opacity-40 uppercase">画幅比例 / Aspect Ratio</span>
+                              <div className="flex flex-wrap gap-2">
+                                {['1:1', '16:9', '9:16', '4:3', '3:4'].map(r => (
+                                  <button 
+                                    key={r} 
+                                    onClick={() => setGenAspectRatio(r)} 
+                                    className={`px-3 py-2 rounded-xl text-[11px] font-black transition-all border-2 ${genAspectRatio === r ? 'bg-black text-white border-black shadow-md' : 'bg-[#F5F5F7] border-transparent opacity-60 hover:opacity-100 hover:border-black/10'}`}
+                                  >
+                                    {r}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="space-y-3">
+                              <span className="text-[9px] font-black opacity-40 uppercase">输出分辨率 / Resolution</span>
+                              <div className="flex flex-wrap gap-2">
+                                {Object.keys(MODEL_COSTS[genModel as keyof typeof MODEL_COSTS].resolutions).map(res => (
+                                  <button
+                                    key={res}
+                                    onClick={() => setGenResolution(res)}
+                                    className={`px-3 py-2 rounded-xl text-[11px] font-black transition-all border-2 ${genResolution === res ? 'bg-black text-white border-black shadow-md' : 'bg-[#F5F5F7] border-transparent opacity-60 hover:opacity-100 hover:border-black/10'}`}
+                                  >
+                                    {res}
+                                    <span className="ml-1 text-[8px] opacity-50 font-bold">¥{MODEL_COSTS[genModel].resolutions[res].rmb}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="pt-6 border-t border-black/5">
+                          <div className="flex justify-between items-center mb-4">
+                            <span className="text-[12px] font-black text-[#86868b] uppercase tracking-widest">预计消耗</span>
+                            <span className="text-xl font-black text-[#0071e3]">
+                              {(MODEL_COSTS[genModel as keyof typeof MODEL_COSTS].resolutions as Record<string, { rmb: number }>)[genResolution].rmb} 点
+                            </span>
+                          </div>
+                          <button 
+                            onClick={runSingleGeneration}
+                            disabled={isGeneratingSingle || !deconstructionResult || !singleProductImage}
+                            className={`w-full py-5 rounded-[24px] text-[15px] font-black flex items-center justify-center gap-3 transition-all shadow-xl ${isGeneratingSingle ? 'bg-orange-500 text-white animate-breathe-orange' : 'bg-black text-white hover:scale-[1.02] active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed'}`}
+                          >
+                            {isGeneratingSingle ? (
+                              <>
+                                <i className="fas fa-circle-notch fa-spin"></i>
+                                <span>正在渲染产品大片...</span>
+                              </>
+                            ) : (
+                              <>
+                                <i className="fas fa-wand-magic-sparkles"></i>
+                                <span>立即生成参考模式大片</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {(singleGeneratedImage || isGeneratingSingle) && (
+                    <div className="apple-card p-8 bg-white border-black/10 shadow-2xl animate-slide-up">
+                      <div className="section-label mb-6 text-[#0071e3]">Step 03 / Result</div>
+                      <div className="aspect-square rounded-[40px] overflow-hidden bg-[#F5F5F7] relative group shadow-inner">
+                        {isGeneratingSingle ? (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center space-y-4">
+                            <div className="w-16 h-16 border-4 border-[#0071e3]/20 border-t-[#0071e3] rounded-full animate-spin"></div>
+                            <p className="text-[12px] font-black text-[#86868b] uppercase tracking-widest animate-pulse">AI 正在重构光影与材质...</p>
+                          </div>
+                        ) : singleGeneratedImage ? (
+                          <>
+                            <img src={singleGeneratedImage} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
+                              <button 
+                                onClick={() => downloadImage(singleGeneratedImage, `single-tool-${Date.now()}`)}
+                                className="w-12 h-12 rounded-full bg-white text-black flex items-center justify-center hover:scale-110 active:scale-90 transition-all shadow-xl"
+                              >
+                                <i className="fas fa-download"></i>
+                              </button>
+                              <button 
+                                onClick={() => copyToClipboard(singleGeneratedImage, "图片链接已复制")}
+                                className="w-12 h-12 rounded-full bg-white text-black flex items-center justify-center hover:scale-110 active:scale-90 transition-all shadow-xl"
+                              >
+                                <i className="fas fa-link"></i>
+                              </button>
+                            </div>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {step === AppStep.HISTORY && (
           <div className="animate-slide-up">
             <div className="flex items-end justify-between mb-10">
@@ -1753,7 +2290,9 @@ ${p.prompt}
               ) : finalPrompts.map((p, idx) => (
                 <div key={p.id} className="apple-card p-8 flex flex-col group h-full border-black/10 bg-white shadow-md hover:shadow-xl transition-all duration-700">
                   <div className="flex justify-between items-center mb-8">
-                    <span className="bg-[#F5F5F7] px-4 py-1.5 rounded-full text-[10px] font-black text-black border border-black/5 tracking-widest uppercase">{strategyType === StrategyType.DETAIL ? 'STORYBOARD' : 'SCHEME'} {idx + 1}</span>
+                    <span className="bg-[#F5F5F7] px-4 py-1.5 rounded-full text-[10px] font-black text-black border border-black/5 tracking-widest uppercase">
+                      {p.id === 'preview_grid' ? 'GLOBAL PREVIEW' : `${strategyType === StrategyType.DETAIL ? 'STORYBOARD' : 'SCHEME'} ${idx}`}
+                    </span>
                     <div className="flex gap-2">
                       <div 
                         className="w-10 h-10 rounded-full bg-[#F5F5F7] border border-black/10 flex items-center justify-center cursor-pointer hover:bg-white transition-all shadow-sm group/ref relative overflow-hidden"
@@ -1811,7 +2350,17 @@ ${p.prompt}
                     </div>
                     
                     <div className="grid grid-cols-2 gap-3">
-                       <div className="p-4 bg-white border border-black/10 rounded-xl shadow-sm"><span className="section-label text-[7px] opacity-40 block mb-1">排版位置</span><span className="text-[10px] font-black text-black">{p.placement}</span></div>
+                       <div className="p-4 bg-white border border-black/10 rounded-xl shadow-sm">
+                         <span className="section-label text-[7px] opacity-40 block mb-1">排版位置</span>
+                         <select 
+                           className="w-full bg-transparent border-none text-[10px] font-black text-black focus:ring-0 p-0 appearance-none"
+                           value={p.placement}
+                           onChange={(e) => updatePromptPlacement(p.id, e.target.value)}
+                         >
+                           {PLACEMENT_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                           <option value={p.placement}>{p.placement}</option>
+                         </select>
+                       </div>
                        <div className="p-4 bg-white border border-black/10 rounded-xl shadow-sm"><span className="section-label text-[7px] opacity-40 block mb-1 truncate">选定字体</span><span className="text-[10px] font-black text-black truncate">{globalSelectedFont}</span></div>
                     </div>
 
@@ -1890,15 +2439,38 @@ ${p.prompt}
              <div className="space-y-10 relative">
                 <div>
                   <label className="section-label mb-4 block text-black/60 font-black tracking-widest uppercase text-[10px]">渲染引擎 / Engine</label>
-                  <div className="grid grid-cols-2 gap-4">
-                    <button onClick={() => setGenModel('nanobanana')} className={`p-6 rounded-[24px] border-4 text-left transition-all duration-500 group ${genModel === 'nanobanana' ? 'border-black bg-black text-white shadow-lg' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}>
-                      <div className="text-[16px] font-black">FLASH 2.5</div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <button onClick={() => setGenModel('nanobanana')} className={`p-4 rounded-[24px] border-4 text-left transition-all duration-500 group ${genModel === 'nanobanana' ? 'border-black bg-black text-white shadow-lg' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}>
+                      <div className="text-[14px] font-black">FLASH 2.5</div>
                       <div className="text-[9px] opacity-60 mt-1 font-bold uppercase tracking-widest">Balanced</div>
+                      <div className="text-[10px] mt-2 font-bold text-[#0071e3]">¥0.28/图</div>
                     </button>
-                    <button onClick={() => setGenModel('nanobanana pro')} className={`p-6 rounded-[24px] border-4 text-left transition-all duration-500 group ${genModel === 'nanobanana pro' ? 'border-black bg-black text-white shadow-lg' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}>
-                      <div className="text-[16px] font-black">PRO 3.0</div>
+                    <button onClick={() => setGenModel('nanobanana2')} className={`p-4 rounded-[24px] border-4 text-left transition-all duration-500 group ${genModel === 'nanobanana2' ? 'border-black bg-black text-white shadow-lg' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}>
+                      <div className="text-[14px] font-black">FLASH 3.1</div>
+                      <div className="text-[9px] opacity-60 mt-1 font-bold uppercase tracking-widest">High Fidelity</div>
+                      <div className="text-[10px] mt-2 font-bold text-[#0071e3]">¥0.33起/图</div>
+                    </button>
+                    <button onClick={() => setGenModel('nanobanana pro')} className={`p-4 rounded-[24px] border-4 text-left transition-all duration-500 group ${genModel === 'nanobanana pro' ? 'border-black bg-black text-white shadow-lg' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}>
+                      <div className="text-[14px] font-black">PRO 3.0</div>
                       <div className="text-[9px] opacity-60 mt-1 font-bold uppercase tracking-widest">Cinema Grade</div>
+                      <div className="text-[10px] mt-2 font-bold text-[#0071e3]">¥0.97起/图</div>
                     </button>
+                  </div>
+                </div>
+                
+                <div>
+                  <label className="section-label mb-4 block text-black/60 font-black tracking-widest uppercase text-[10px]">渲染精度 / Resolution</label>
+                  <div className="flex flex-wrap gap-3">
+                    {Object.keys(MODEL_COSTS[genModel as keyof typeof MODEL_COSTS].resolutions).map(res => (
+                      <button 
+                        key={res} 
+                        onClick={() => setGenResolution(res)} 
+                        className={`px-6 py-3 rounded-xl text-[13px] font-black transition-all border-2 duration-500 ${genResolution === res ? 'bg-black text-white border-black scale-105 shadow-md' : 'bg-[#F5F5F7] border-transparent opacity-60 hover:opacity-100 hover:border-black/10'}`}
+                      >
+                        {res}
+                        <span className="ml-2 text-[9px] opacity-50 font-bold">¥{MODEL_COSTS[genModel].resolutions[res].rmb}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
                 
@@ -1947,6 +2519,19 @@ ${p.prompt}
                     </div>
                   </div>
                 )}
+
+                <div className="pt-4 border-t border-black/5">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-[12px] font-bold text-[#86868b]">任务规模</span>
+                    <span className="text-[12px] font-black text-black">{isBulkGenActive ? `${finalPrompts.length} 张图片 (全案)` : '1 张图片 (单图)'}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-[12px] font-bold text-[#86868b]">预计总费用</span>
+                    <span className="text-[16px] font-black text-[#0071e3]">
+                      约 ¥{(MODEL_COSTS[genModel].resolutions[genResolution]?.rmb * (isBulkGenActive ? finalPrompts.length : 1)).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
 
                 <button 
                   onClick={isBulkGenActive ? executeBulkGen : executeImageGen} 

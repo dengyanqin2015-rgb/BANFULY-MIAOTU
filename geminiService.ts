@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, Part } from "@google/genai";
 import { VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard } from "./types";
 
 const parseB64 = (b64: string) => {
@@ -210,11 +210,13 @@ export const generateEcomImage = async (params: {
   prompt: string,
   model: string,
   aspectRatio: string,
+  imageSize?: string,
   refImageB64?: string,
+  productImageB64?: string,
   apiKey?: string
 }): Promise<string | undefined> => {
   const ai = getAiClient(params.apiKey);
-  const parts: ({ text: string; } | { inlineData: { data: string; mimeType: string; }; })[] = [{ text: params.prompt }];
+  const parts: (Part | string)[] = [{ text: params.prompt }];
   
   if (params.refImageB64) {
     const { mimeType, data } = parseB64(params.refImageB64);
@@ -223,7 +225,19 @@ export const generateEcomImage = async (params: {
     });
   }
 
-  const actualModel = params.model === 'nanobanana' ? 'gemini-2.5-flash-image' : 'gemini-3-pro-image-preview';
+  if (params.productImageB64) {
+    const { mimeType, data } = parseB64(params.productImageB64);
+    parts.push({
+      inlineData: { data, mimeType }
+    });
+  }
+
+  let actualModel = 'gemini-2.5-flash-image';
+  if (params.model === 'nanobanana2') {
+    actualModel = 'gemini-3.1-flash-image-preview';
+  } else if (params.model === 'nanobanana pro') {
+    actualModel = 'gemini-3-pro-image-preview';
+  }
 
   const response = await ai.models.generateContent({
     model: actualModel,
@@ -231,7 +245,7 @@ export const generateEcomImage = async (params: {
     config: {
       imageConfig: {
         aspectRatio: params.aspectRatio,
-        imageSize: actualModel === 'gemini-3-pro-image-preview' ? "1K" : undefined
+        imageSize: params.imageSize || "1K"
       }
     }
   });
@@ -267,4 +281,92 @@ export const regenerateSinglePrompt = async (constitution: VisualConstitution, s
   });
 
   return response.text || storyboard.prompt; // Fallback to old prompt
+};
+
+export const deconstructImage = async (imageB64: string, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<ImageDeconstruction> => {
+  console.log("deconstructImage called with model:", modelName, "apiKey provided:", !!apiKey);
+  const ai = getAiClient(apiKey);
+  const { mimeType, data } = parseB64(imageB64);
+  console.log("Parsed image mimeType:", mimeType, "data length:", data.length);
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: {
+        parts: [
+          { inlineData: { data, mimeType } },
+          { text: "请作为电商视觉大师，按照《商业视觉工程：全要素图片解构表》对这张图片进行深度解构。输出格式必须为 JSON，所有内容必须使用中文描述。" }
+        ]
+      },
+      config: {
+        systemInstruction: `你是一个顶尖的电商视觉架构师。请按照以下16个核心要素对图片进行解构，并生成一段用于AI生图的提示词（generated_prompt）。
+      
+      解构要素：
+      1. shape_form: 形态与轮廓
+      2. color_palette: 色彩构成
+      3. texture: 材质与肌理
+      4. space_negative: 空间与留白
+      5. light_direction: 光源方向
+      6. light_quality: 光质软硬
+      7. shadows: 阴影形态
+      8. mood_tone: 色调氛围
+      9. focal_point: 视觉中心
+      10. leading_lines: 引导线
+      11. depth_of_field: 景深虚实
+      12. perspective: 拍摄视角
+      13. subject: 核心主体
+      14. context_background: 环境背景
+      15. props: 关键道具
+      16. story_moment: 瞬间故事
+      
+      最后，基于以上解构，生成一段高质量的、用于AI生图的中文提示词(generated_prompt)，该提示词应能完美复现原图的视觉氛围和构图，但主体部分应描述为可替换的通用占位符。`,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            shape_form: { type: Type.STRING },
+            color_palette: { type: Type.STRING },
+            texture: { type: Type.STRING },
+            space_negative: { type: Type.STRING },
+            light_direction: { type: Type.STRING },
+            light_quality: { type: Type.STRING },
+            shadows: { type: Type.STRING },
+            mood_tone: { type: Type.STRING },
+            focal_point: { type: Type.STRING },
+            leading_lines: { type: Type.STRING },
+            depth_of_field: { type: Type.STRING },
+            perspective: { type: Type.STRING },
+            subject: { type: Type.STRING },
+            context_background: { type: Type.STRING },
+            props: { type: Type.STRING },
+            story_moment: { type: Type.STRING },
+            generated_prompt: { type: Type.STRING }
+          },
+          required: [
+            "shape_form", "color_palette", "texture", "space_negative", 
+            "light_direction", "light_quality", "shadows", "mood_tone", 
+            "focal_point", "leading_lines", "depth_of_field", "perspective", 
+            "subject", "context_background", "props", "story_moment", "generated_prompt"
+          ]
+        }
+      }
+    });
+
+    console.log("Gemini raw response text:", response.text);
+    if (!response.text) {
+      throw new Error("AI 未返回任何内容，请检查图片或 API Key 是否有效。");
+    }
+
+    try {
+      const parsed = JSON.parse(response.text);
+      console.log("Parsed deconstruction result successfully:", parsed);
+      return parsed;
+    } catch (parseError) {
+      console.error("JSON parse error for response:", response.text, "Error:", parseError);
+      throw new Error("AI 返回的 JSON 格式错误，请重试。");
+    }
+  } catch (error) {
+    console.error("Error in deconstructImage:", error);
+    throw error;
+  }
 };
