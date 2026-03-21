@@ -1,0 +1,45 @@
+@keyframes breathe {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(255, 165, 0, 0.2);
+    filter: brightness(1);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(255, 165, 0, 0.8);
+    filter: brightness(1.2);
+  }
+}
+
+.animate-breathe {
+  animation: breathe 1.5s ease-in-out infinite;
+}
+
+/* 针对不同颜色的呼吸灯效果 */
+.animate-breathe-orange {
+  animation: breathe-orange 1.5s ease-in-out infinite;
+}
+
+@keyframes breathe-orange {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(249, 115, 22, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(249, 115, 22, 0.8);
+    transform: scale(1.02);
+  }
+}
+
+.animate-breathe-blue {
+  animation: breathe-blue 1.5s ease-in-out infinite;
+}
+
+@keyframes breathe-blue {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(0, 113, 227, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(0, 113, 227, 0.8);
+    transform: scale(1.02);
+  }
+}

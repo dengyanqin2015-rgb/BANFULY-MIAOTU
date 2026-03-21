@@ -149,8 +149,9 @@ class DatabaseService {
   }
 
   private initFileDB() {
-    if (!fs.existsSync(DB_FILE)) {
-      console.log("Initializing new database file...");
+    let shouldSave = false;
+    if (!fs.existsSync(DB_FILE) || fs.statSync(DB_FILE).size === 0) {
+      console.log("Initializing new database file (missing or empty)...");
       this.fileData = {
         users: [
           {
@@ -165,19 +166,52 @@ class DatabaseService {
         generationLogs: [],
         imageHistory: []
       };
-      this.saveFileDB();
+      shouldSave = true;
     } else {
       try {
-        this.fileData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+        const content = fs.readFileSync(DB_FILE, "utf-8");
+        this.fileData = JSON.parse(content);
         // Ensure arrays exist
+        if (!this.fileData!.users) this.fileData!.users = [];
         if (!this.fileData!.rechargeLogs) this.fileData!.rechargeLogs = [];
         if (!this.fileData!.generationLogs) this.fileData!.generationLogs = [];
         if (!this.fileData!.imageHistory) this.fileData!.imageHistory = [];
+
+        // Ensure at least one admin exists if users is empty
+        if (this.fileData!.users.length === 0) {
+          console.log("No users found, adding default admin...");
+          this.fileData!.users.push({
+            id: "admin-1",
+            username: "admin",
+            password: bcrypt.hashSync("admin123", 10),
+            role: "admin",
+            credits: 9999
+          });
+          shouldSave = true;
+        }
       } catch (err) {
-        console.error("Failed to read db.json:", err);
-        this.fileData = { users: [], rechargeLogs: [], generationLogs: [], imageHistory: [] };
+        console.error("Failed to read or parse db.json, resetting:", err);
+        this.fileData = {
+          users: [
+            {
+              id: "admin-1",
+              username: "admin",
+              password: bcrypt.hashSync("admin123", 10),
+              role: "admin",
+              credits: 9999
+            }
+          ],
+          rechargeLogs: [],
+          generationLogs: [],
+          imageHistory: []
+        };
+        shouldSave = true;
       }
     }
+    if (shouldSave) {
+      this.saveFileDB();
+    }
+    console.log("File database initialized. User count:", this.fileData?.users.length);
   }
 
   private saveFileDB() {
