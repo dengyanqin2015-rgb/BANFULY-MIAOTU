@@ -878,11 +878,7 @@ ${p.prompt}
 
     setIsGeneratingSingle(true);
     try {
-      // 提取视觉协议中的关键要素，增强生图指令的精准度
-      const visualProtocolStr = deconstructionResult ? 
-        `视觉风格：${deconstructionResult.mood_tone}；光影：${deconstructionResult.light_quality}，${deconstructionResult.light_direction}；材质：${deconstructionResult.texture}；构图：${deconstructionResult.perspective}，${deconstructionResult.composition}；背景：${deconstructionResult.context_background}。` : '';
-
-      const finalPrompt = `产品图：白色背景的产品。${productKeywords ? `产品关键词：${productKeywords}。` : ''} ${visualProtocolStr} ${editablePrompt}. 确保提供的图像中的产品是主要拍摄对象，并保留其细节。参考强度：${refStrength}。`;
+      const finalPrompt = `产品图：白色背景的产品。${productKeywords ? `产品关键词：${productKeywords}。` : ''} ${editablePrompt}. 确保提供的图像中的产品是主要拍摄对象，并保留其细节。参考强度：${refStrength}。`;
       
       const imageUrl = await generateEcomImage({
         prompt: finalPrompt,
@@ -1341,8 +1337,7 @@ ${p.prompt}
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                           {Object.entries(MODEL_COSTS).map(([key, cfg]) => {
                             const isSelected = genModel === key;
-                            const currentPrice = isSelected ? (cfg.resolutions[genResolution]?.rmb || Object.values(cfg.resolutions)[0].rmb) : Math.min(...Object.values(cfg.resolutions).map(r => r.rmb));
-                            const hasMultiple = Object.keys(cfg.resolutions).length > 1;
+                            const currentPrice = cfg.resolutions[genResolution]?.rmb || Object.values(cfg.resolutions)[0].rmb;
                             return (
                               <button 
                                 key={key}
@@ -1352,7 +1347,7 @@ ${p.prompt}
                                 <div className={`text-[15px] font-black ${isSelected ? 'text-white' : 'text-black'}`}>{cfg.name}</div>
                                 <div className={`text-[9px] mt-1 font-bold uppercase tracking-widest ${isSelected ? 'text-white/60' : 'text-black/40'}`}>{cfg.label}</div>
                                 <div className={`text-[11px] mt-4 font-black ${isSelected ? 'text-[#0071e3]' : 'text-[#0071e3]'}`}>
-                                  ¥{currentPrice.toFixed(2)}{(!isSelected && hasMultiple) ? '起' : ''}/图
+                                  ¥{currentPrice.toFixed(2)}/图
                                 </div>
                               </button>
                             );
@@ -1400,7 +1395,7 @@ ${p.prompt}
                     </div>
 
                     <div className="mt-10 pt-8 border-t border-black/5 space-y-6">
-                      <div className="pt-4">
+                      <div className="pt-4 border-t border-black/5">
                         <div className="flex justify-between items-center mb-2">
                           <span className="text-[12px] font-bold text-[#86868b]">任务规模</span>
                           <span className="text-[12px] font-black text-black">1 张图片 (单图)</span>
@@ -1638,8 +1633,7 @@ ${p.prompt}
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                           {Object.entries(MODEL_COSTS).map(([key, cfg]) => {
                             const isSelected = genModel === key;
-                            const currentPrice = isSelected ? (cfg.resolutions[genResolution]?.rmb || Object.values(cfg.resolutions)[0].rmb) : Math.min(...Object.values(cfg.resolutions).map(r => r.rmb));
-                            const hasMultiple = Object.keys(cfg.resolutions).length > 1;
+                            const currentPrice = cfg.resolutions[genResolution]?.rmb || Object.values(cfg.resolutions)[0].rmb;
                             return (
                               <button 
                                 key={key}
@@ -1649,7 +1643,7 @@ ${p.prompt}
                                 <div className={`text-[15px] font-black ${isSelected ? 'text-white' : 'text-black'}`}>{cfg.name}</div>
                                 <div className={`text-[9px] mt-1 font-bold uppercase tracking-widest ${isSelected ? 'text-white/60' : 'text-black/40'}`}>{cfg.label}</div>
                                 <div className={`text-[11px] mt-4 font-black ${isSelected ? 'text-[#0071e3]' : 'text-[#0071e3]'}`}>
-                                  ¥{currentPrice.toFixed(2)}{(!isSelected && hasMultiple) ? '起' : ''}/图
+                                  ¥{currentPrice.toFixed(2)}/图
                                 </div>
                               </button>
                             );
@@ -1697,7 +1691,7 @@ ${p.prompt}
                     </div>
 
                     <div className="mt-10 pt-8 border-t border-black/5 space-y-6">
-                      <div className="pt-4">
+                      <div className="pt-4 border-t border-black/5">
                         <div className="flex justify-between items-center mb-2">
                           <span className="text-[12px] font-bold text-[#86868b]">任务规模</span>
                           <span className="text-[12px] font-black text-black">1 张图片 (单图)</span>
@@ -2802,8 +2796,7 @@ ${p.prompt}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {Object.entries(MODEL_COSTS).map(([key, cfg]) => {
                       const isSelected = genModel === key;
-                      const currentPrice = isSelected ? (cfg.resolutions[genResolution]?.rmb || Object.values(cfg.resolutions)[0].rmb) : Math.min(...Object.values(cfg.resolutions).map(r => r.rmb));
-                      const hasMultiple = Object.keys(cfg.resolutions).length > 1;
+                      const currentPrice = cfg.resolutions[genResolution]?.rmb || Object.values(cfg.resolutions)[0].rmb;
                       return (
                         <button 
                           key={key}
@@ -2813,7 +2806,7 @@ ${p.prompt}
                           <div className={`text-[15px] font-black ${isSelected ? 'text-white' : 'text-black'}`}>{cfg.name}</div>
                           <div className={`text-[9px] mt-1 font-bold uppercase tracking-widest ${isSelected ? 'text-white/60' : 'text-black/40'}`}>{cfg.label}</div>
                           <div className={`text-[11px] mt-4 font-black ${isSelected ? 'text-[#0071e3]' : 'text-[#0071e3]'}`}>
-                            ¥{currentPrice.toFixed(2)}{(!isSelected && hasMultiple) ? '起' : ''}/图
+                            ¥{currentPrice.toFixed(2)}/图
                           </div>
                         </button>
                       );
@@ -2859,7 +2852,7 @@ ${p.prompt}
                   </div>
                 </div>
 
-                {isBulkGenActive && (
+                {isBulkGenActive ? (
                   <div>
                     <label className="section-label mb-4 block text-black/60 font-black tracking-widest uppercase text-[10px]">全案统一特征参考 / Global Ref</label>
                     <div className="p-6 rounded-[24px] bg-[#F5F5F7] border border-black/5 flex items-center justify-between shadow-inner">
@@ -2886,7 +2879,7 @@ ${p.prompt}
                       <input id="bulk-ref-up" type="file" className="hidden" onChange={handleBulkRefImage} />
                     </div>
                   </div>
-                )}
+                ) : null}
 
                 <div className="pt-4 border-t border-black/5">
                   <div className="flex justify-between items-center mb-2">
