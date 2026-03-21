@@ -10,7 +10,7 @@ import pg from "pg";
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || "banfuly-secret-key-12345";
-const DB_FILE = path.resolve(process.env.DB_PATH || "db.json");
+const DB_FILE = path.resolve(process.env.DB_PATH || "data/db.json");
 const DATABASE_URL = process.env.DATABASE_URL;
 
 console.log("Database configuration:");
@@ -150,8 +150,14 @@ class DatabaseService {
 
   private initFileDB() {
     let shouldSave = false;
-    if (!fs.existsSync(DB_FILE) || fs.statSync(DB_FILE).size === 0) {
+    const dbExists = fs.existsSync(DB_FILE);
+    if (!dbExists || fs.statSync(DB_FILE).size === 0) {
       console.log("Initializing new database file (missing or empty)...");
+      // Ensure directory exists
+      const dir = path.dirname(DB_FILE);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
       this.fileData = {
         users: [
           {
