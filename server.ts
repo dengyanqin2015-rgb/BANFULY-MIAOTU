@@ -456,9 +456,11 @@ app.post("/api/auth/logout", (req: Request, res: Response) => {
 app.post("/api/user/deduct-credit", authenticateToken, async (req: AuthRequest, res: Response) => {
   const user = await db.findUserById(req.user?.id || "");
   if (!user) return res.status(404).json({ message: "用户不存在" });
-  if (user.credits <= 0) return res.status(400).json({ message: "点数不足" });
   
-  const newCredits = user.credits - 1;
+  const amount = req.body.amount || 1;
+  if (user.credits < amount) return res.status(400).json({ message: "点数不足" });
+  
+  const newCredits = user.credits - amount;
   await db.updateUserCredits(user.id, newCredits);
   await db.addGenerationLog({
     id: Date.now().toString(),
