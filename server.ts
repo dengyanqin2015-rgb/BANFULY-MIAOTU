@@ -89,9 +89,13 @@ class DatabaseService {
       this.pool = new pg.Pool({
         connectionString: DATABASE_URL,
         ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 5000, // 5 seconds timeout
+        connectionTimeoutMillis: 5000,
         idleTimeoutMillis: 30000,
         max: 10
+      });
+      
+      this.pool.on('error', (err) => {
+        console.error('PostgreSQL Pool Error:', err);
       });
       
       try {
@@ -228,7 +232,11 @@ class DatabaseService {
 
   private saveFileDB() {
     if (this.fileData) {
-      fs.writeFileSync(DB_FILE, JSON.stringify(this.fileData, null, 2));
+      try {
+        fs.writeFileSync(DB_FILE, JSON.stringify(this.fileData, null, 2));
+      } catch (err) {
+        console.error("Failed to save database to file:", err);
+      }
     }
   }
 
