@@ -727,7 +727,7 @@ export const updateDetailPromptFromFields = async (
     model: modelName,
     contents: {
       parts: [
-        { text: `基于以下设计规范和修改后的分镜要素，请重新生成一个高质量的 AI 生图提示词 (prompt)：\n\n设计规范：\n${designGuide}\n\n修改后的分镜要素：\n设计目标: ${storyboard.designGoal}\n构图方案: ${storyboard.composition}\n内容要素: ${storyboard.elements}\n视觉脚本: ${storyboard.visualScript}\n主标题: ${storyboard.copy.main}\n副标题: ${storyboard.copy.sub}` }
+        { text: `基于以下设计规范和修改后的分镜要素，请重新生成一个高质量的 AI 生图提示词 (prompt)：\n\n设计规范：\n${designGuide}\n\n修改后的分镜要素：\n设计目标: ${storyboard.designGoal}\n构图方案: ${storyboard.composition}\n内容要素: ${storyboard.elements}\n视觉脚本: ${storyboard.visualScript}\n主标题: ${storyboard.copy.main}\n副标题: ${storyboard.copy.sub}\n描述文案: ${storyboard.copy.description}` }
       ]
     },
     config: {

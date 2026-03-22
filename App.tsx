@@ -13,7 +13,6 @@ declare global {
 import * as XLSX from 'xlsx';
 import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory, DetailStoryboard } from './types';
 import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regenerateSinglePrompt, */ deconstructImage, segmentImage, detailAssistantStep1, detailAssistantStep2, detailAssistantStep3, regenerateSingleDetailStoryboard, updateDetailPromptFromFields } from './geminiService';
-import Markdown from 'react-markdown';
 
 const BBOX_COLORS = [
   'border-blue-400 bg-blue-400/20',
@@ -1479,7 +1478,12 @@ ${p.prompt}
 
                   <div className="flex-1 overflow-y-auto max-h-[250px] mb-6 prose-orange border-t border-black/5 pt-4 no-scrollbar">
                     {detailProductAnalysis ? (
-                      <Markdown>{detailProductAnalysis}</Markdown>
+                      <textarea 
+                        className="w-full h-full bg-transparent text-[13px] font-medium text-black leading-relaxed border-none focus:ring-0 p-0 outline-none resize-none no-scrollbar"
+                        value={detailProductAnalysis}
+                        onChange={(e) => setDetailProductAnalysis(e.target.value)}
+                        placeholder="产品识别结果..."
+                      />
                     ) : (
                       <div className="h-full flex flex-col items-center justify-center text-[#86868b] opacity-40 italic py-10">
                         <i className="fas fa-microchip text-4xl mb-4"></i>
@@ -1518,7 +1522,12 @@ ${p.prompt}
 
                   <div className="flex-1 overflow-y-auto max-h-[250px] mb-6 prose-orange no-scrollbar">
                     {detailDesignGuide ? (
-                      <Markdown>{detailDesignGuide}</Markdown>
+                      <textarea 
+                        className="w-full h-full bg-transparent text-[13px] font-medium text-black leading-relaxed border-none focus:ring-0 p-0 outline-none resize-none no-scrollbar"
+                        value={detailDesignGuide}
+                        onChange={(e) => setDetailDesignGuide(e.target.value)}
+                        placeholder="设计规范结果..."
+                      />
                     ) : (
                       <div className="h-full flex flex-col items-center justify-center text-[#86868b] opacity-40 italic py-10">
                         <i className="fas fa-drafting-compass text-4xl mb-4"></i>
@@ -1738,12 +1747,31 @@ ${p.prompt}
 
                                       <div className="flex items-start gap-3">
                                         <div className="w-1 h-4 bg-green-500 rounded-full mt-1 shrink-0"></div>
-                                        <div>
-                                          <div className="text-[9px] font-black text-black/30 uppercase mb-1">营销文案</div>
-                                          <div className="space-y-1">
-                                            <div className="text-[13px] font-black text-[#0071e3]">{sb.copy.main}</div>
-                                            <div className="text-[11px] font-bold text-black/60">{sb.copy.sub}</div>
-                                            <div className="text-[10px] font-medium text-black/40 italic">{sb.copy.description}</div>
+                                        <div className="flex-1">
+                                          <div className="text-[9px] font-black text-black/30 uppercase mb-1">营销文案 / MARKETING COPY</div>
+                                          <div className="space-y-2">
+                                            <input 
+                                              className="w-full bg-transparent text-[13px] font-black text-[#0071e3] border-none focus:ring-0 p-0 outline-none"
+                                              value={sb.copy.main}
+                                              onChange={(e) => updateDetailStoryboard(sb.id, 'copy', { ...sb.copy, main: e.target.value })}
+                                              onBlur={() => runDetailUpdatePrompt(sb.id)}
+                                              placeholder="主标题"
+                                            />
+                                            <input 
+                                              className="w-full bg-transparent text-[11px] font-bold text-black/60 border-none focus:ring-0 p-0 outline-none"
+                                              value={sb.copy.sub}
+                                              onChange={(e) => updateDetailStoryboard(sb.id, 'copy', { ...sb.copy, sub: e.target.value })}
+                                              onBlur={() => runDetailUpdatePrompt(sb.id)}
+                                              placeholder="副标题"
+                                            />
+                                            <textarea 
+                                              className="w-full bg-transparent text-[10px] font-medium text-black/40 italic border-none focus:ring-0 p-0 outline-none resize-none no-scrollbar"
+                                              value={sb.copy.description}
+                                              onChange={(e) => updateDetailStoryboard(sb.id, 'copy', { ...sb.copy, description: e.target.value })}
+                                              onBlur={() => runDetailUpdatePrompt(sb.id)}
+                                              placeholder="描述文案"
+                                              rows={2}
+                                            />
                                           </div>
                                         </div>
                                       </div>
