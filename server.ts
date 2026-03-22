@@ -88,11 +88,17 @@ class DatabaseService {
       console.log("PostgreSQL: Enabled. Initializing pool...");
       this.pool = new pg.Pool({
         connectionString: DATABASE_URL,
-        ssl: { rejectUnauthorized: false }
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 5000, // 5 seconds timeout
+        idleTimeoutMillis: 30000,
+        max: 10
       });
       
       try {
         console.log("PostgreSQL: Initializing tables...");
+        // Check connection with a simple query first
+        await this.pool.query("SELECT 1");
+        
         await this.pool.query(`
           CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -407,11 +413,38 @@ class DatabaseService {
 }
 
 const db = new DatabaseService();
-db.init();
 
 app.use(express.json({ limit: '20mb' }));
 app.use(cookieParser());
 app.use(cors());
+
+// --- Database Initialization Middleware ---
+// Ensure DB is initialized before handling requests
+let dbInitialized = false;
+let dbInitializationError: any = null;
+
+app.use(async (req, res, next) => {
+  if (!dbInitialized) {
+    try {
+      // If init hasn't been called yet, startServer will handle it.
+      // But we add a safety check here.
+      if (req.path.startsWith('/api')) {
+        // Wait for a bit if it's still initializing
+        let retries = 0;
+        while (!dbInitialized && retries < 10) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          retries++;
+        }
+        if (!dbInitialized) {
+          return res.status(503).json({ message: "数据库正在初始化，请稍后再试" });
+        }
+      }
+    } catch (err) {
+      return res.status(500).json({ message: "数据库初始化失败" });
+    }
+  }
+  next();
+});
 
 // 全局请求日志中间件
 app.use((req, res, next) => {
@@ -522,29 +555,6 @@ app.post("/api/user/deduct-credit", authenticateToken, async (req: AuthRequest, 
   res.json({ credits: newCredits });
 });
 
-app.delete("/api/admin/history/bulk", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
-  const { ids } = req.body;
-  if (!Array.isArray(ids)) return res.status(400).json({ message: "无效的 ID 列表" });
-  
-  if (DATABASE_URL) {
-    await db.pool!.query("DELETE FROM image_history WHERE id = ANY($1)", [ids]);
-  } else {
-    db.fileData!.imageHistory = db.fileData!.imageHistory.filter(h => !ids.includes(h.id));
-    db.saveFileDB();
-  }
-  res.json({ message: "删除成功" });
-});
-
-app.get("/api/admin/history", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
-  const history = await db.getImageHistory();
-  res.json(history);
-});
-
-app.delete("/api/user/history/:id", authenticateToken, async (req: AuthRequest, res: Response) => {
-  await db.deleteImageHistory(req.params.id, req.user?.id || "", req.user?.role === "admin");
-  res.json({ message: "删除成功" });
-});
-
 app.get("/api/admin/users", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
   const users = await db.getUsers();
   res.json(users);
@@ -651,6 +661,17 @@ app.get("/api/user/history", authenticateToken, async (req: AuthRequest, res: Re
   res.json(history);
 });
 
+app.get("/api/admin/history", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
+  const history = await db.getImageHistory();
+  res.json(history);
+});
+
+app.delete("/api/user/history/:id", authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  await db.deleteImageHistory(id, req.user?.id || "", req.user?.role === 'admin');
+  res.json({ message: "已删除" });
+});
+
 app.post("/api/user/history/bulk-delete", authenticateToken, async (req: AuthRequest, res: Response) => {
   const { ids } = req.body;
   if (!Array.isArray(ids)) return res.status(400).json({ message: "无效的 ID 列表" });
@@ -663,6 +684,15 @@ app.post("/api/user/history/bulk-delete", authenticateToken, async (req: AuthReq
 
 // --- Vite Integration ---
 async function startServer() {
+  // 1. Initialize Database
+  try {
+    await db.init();
+    dbInitialized = true;
+  } catch (err) {
+    console.error("Critical: Database initialization failed:", err);
+    dbInitialized = true; // Fallback to file DB is handled inside init()
+  }
+
   // 2. Static files or Vite middleware (AFTER API routes)
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -671,14 +701,27 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve("dist");
+    const distPath = path.join(process.cwd(), "dist");
     if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));
-      app.get(/.*/, (req, res) => {
-        res.sendFile(path.resolve(distPath, "index.html"));
+      app.get("*", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
       });
     } else {
       console.warn("Warning: dist folder not found. Static files will not be served.");
+      app.get("*", (req, res) => {
+        res.status(200).send(`
+          <html>
+            <body style="font-family: sans-serif; padding: 2rem; text-align: center;">
+              <h1>BANFULY-详情助手 服务器已启动</h1>
+              <p>前端静态文件 (dist) 尚未生成或未找到。</p>
+              <p>请确保已运行 <code>npm run build</code>。</p>
+              <hr/>
+              <p style="color: #666;">Node Environment: ${process.env.NODE_ENV}</p>
+            </body>
+          </html>
+        `);
+      });
     }
   }
 
