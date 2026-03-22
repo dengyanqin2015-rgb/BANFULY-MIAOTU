@@ -99,15 +99,15 @@ class DatabaseService {
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
             role TEXT NOT NULL,
-            credits INTEGER NOT NULL DEFAULT 0
+            credits NUMERIC(10, 2) NOT NULL DEFAULT 0
           );
           CREATE TABLE IF NOT EXISTS recharge_logs (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
             username TEXT NOT NULL,
-            amount INTEGER NOT NULL,
-            previous_credits INTEGER NOT NULL,
-            new_credits INTEGER NOT NULL,
+            amount NUMERIC(10, 2) NOT NULL,
+            previous_credits NUMERIC(10, 2) NOT NULL,
+            new_credits NUMERIC(10, 2) NOT NULL,
             timestamp BIGINT NOT NULL,
             admin_id TEXT NOT NULL,
             admin_name TEXT NOT NULL
@@ -354,13 +354,22 @@ class DatabaseService {
         "INSERT INTO image_history (id, user_id, username, image_url, prompt, timestamp) VALUES ($1, $2, $3, $4, $5, $6)",
         [history.id, history.userId, history.username, history.imageUrl, history.prompt, history.timestamp]
       );
-      // Optional: cleanup old history for user in Postgres too if needed
+      // Cleanup old history for user in Postgres
+      await this.pool.query(`
+        DELETE FROM image_history 
+        WHERE id IN (
+          SELECT id FROM image_history 
+          WHERE user_id = $1 
+          ORDER BY timestamp DESC 
+          OFFSET 10
+        )
+      `, [history.userId]);
     } else {
       this.fileData!.imageHistory.push(history);
       const userHistory = this.fileData!.imageHistory.filter(h => h.userId === history.userId);
-      if (userHistory.length > 60) {
+      if (userHistory.length > 10) {
         userHistory.sort((a, b) => b.timestamp - a.timestamp);
-        const toRemove = userHistory.slice(60);
+        const toRemove = userHistory.slice(10);
         const removeIds = new Set(toRemove.map(h => h.id));
         this.fileData!.imageHistory = this.fileData!.imageHistory.filter(h => !removeIds.has(h.id));
       }
@@ -498,9 +507,10 @@ app.post("/api/user/deduct-credit", authenticateToken, async (req: AuthRequest, 
   if (!user) return res.status(404).json({ message: "用户不存在" });
   
   const amount = req.body.amount || 1;
-  if (user.credits < amount) return res.status(400).json({ message: "点数不足" });
+  const roundedAmount = Math.round(amount * 10) / 10;
+  if (user.credits < roundedAmount) return res.status(400).json({ message: "点数不足" });
   
-  const newCredits = user.credits - amount;
+  const newCredits = Math.round((user.credits - roundedAmount) * 10) / 10;
   await db.updateUserCredits(user.id, newCredits);
   await db.addGenerationLog({
     id: Date.now().toString(),
@@ -510,6 +520,29 @@ app.post("/api/user/deduct-credit", authenticateToken, async (req: AuthRequest, 
   });
   
   res.json({ credits: newCredits });
+});
+
+app.delete("/api/admin/history/bulk", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids)) return res.status(400).json({ message: "无效的 ID 列表" });
+  
+  if (DATABASE_URL) {
+    await db.pool!.query("DELETE FROM image_history WHERE id = ANY($1)", [ids]);
+  } else {
+    db.fileData!.imageHistory = db.fileData!.imageHistory.filter(h => !ids.includes(h.id));
+    db.saveFileDB();
+  }
+  res.json({ message: "删除成功" });
+});
+
+app.get("/api/admin/history", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
+  const history = await db.getImageHistory();
+  res.json(history);
+});
+
+app.delete("/api/user/history/:id", authenticateToken, async (req: AuthRequest, res: Response) => {
+  await db.deleteImageHistory(req.params.id, req.user?.id || "", req.user?.role === "admin");
+  res.json({ message: "删除成功" });
 });
 
 app.get("/api/admin/users", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
@@ -618,15 +651,14 @@ app.get("/api/user/history", authenticateToken, async (req: AuthRequest, res: Re
   res.json(history);
 });
 
-app.get("/api/admin/history", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
-  const history = await db.getImageHistory();
-  res.json(history);
-});
-
-app.delete("/api/user/history/:id", authenticateToken, async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
-  await db.deleteImageHistory(id, req.user?.id || "", req.user?.role === 'admin');
-  res.json({ message: "已删除" });
+app.post("/api/user/history/bulk-delete", authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids)) return res.status(400).json({ message: "无效的 ID 列表" });
+  
+  for (const id of ids) {
+    await db.deleteImageHistory(id, req.user?.id || "", req.user?.role === 'admin');
+  }
+  res.json({ message: "批量删除成功" });
 });
 
 // --- Vite Integration ---

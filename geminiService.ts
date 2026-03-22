@@ -28,6 +28,7 @@ export const decodeStyle = async (imageB64: string, modelName: string = 'gemini-
     config: {
       systemInstruction: "你是一个顶尖的摄影师和视觉架构师。请深入分析图片的视觉DNA，并使用【纯中文】进行描述。字段要求：style(风格关键词), lighting(光影布局), color(核心配色), composition(构图与留白), texture(材质与氛围), prompt_prefix(用于AI绘画的通用描述前缀)。确保语言优美、专业且完全不含英文描述词。",
       responseMimeType: "application/json",
+      maxOutputTokens: 4096,
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -109,6 +110,7 @@ export const analyzeProduct = async (imagesB64: string[], extraInfo: string, str
     config: {
       systemInstruction,
       responseMimeType: "application/json",
+      maxOutputTokens: 8192,
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -288,6 +290,7 @@ export const generateEcomImage = async (params: {
       contents: [{ parts }],
       config: {
         imageConfig,
+        maxOutputTokens: 2048,
         safetySettings: [
           { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
           { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
@@ -300,7 +303,18 @@ export const generateEcomImage = async (params: {
 
     console.log("[generateEcomImage] Response received:", JSON.stringify(response, null, 2));
 
-    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+    const candidate = response.candidates?.[0];
+    if (candidate?.finishReason === 'MAX_TOKENS') {
+      throw new Error("生成失败：输出超过了模型限制（Max Tokens）。请尝试缩短提示词或减少复杂度。");
+    }
+    if (candidate?.finishReason === 'SAFETY') {
+      throw new Error("生成由于安全策略被拦截。请尝试修改提示词，确保不包含敏感或违规内容。");
+    }
+    if (candidate?.finishReason && candidate.finishReason !== 'STOP') {
+      throw new Error(`生成未正常完成。原因: ${candidate.finishReason}`);
+    }
+
+    const part = candidate?.content?.parts?.find(p => p.inlineData);
     if (part?.inlineData) {
       return `data:image/png;base64,${part.inlineData.data}`;
     }
@@ -309,10 +323,6 @@ export const generateEcomImage = async (params: {
     if (response.text) {
       console.warn("[generateEcomImage] Model returned text instead of image:", response.text);
       throw new Error(`模型未返回图像。模型反馈: ${response.text}`);
-    }
-
-    if (response.candidates?.[0]?.finishReason === 'SAFETY') {
-      throw new Error("生成由于安全策略被拦截。请尝试修改提示词。");
     }
 
     return undefined;
@@ -525,6 +535,7 @@ export const detailAssistantStep1 = async (imagesB64: string[], keywords: string
     },
     config: {
       systemInstruction: "你是一个顶尖的电商产品分析师。请基于上传的产品图和关键词，深入挖掘其物理特性、功能卖点以及潜在的应用场景。输出内容应专业、客观且具有营销洞察力。使用 Markdown 格式输出，所有描述必须使用中文。",
+      maxOutputTokens: 4096,
     }
   });
 
@@ -551,6 +562,7 @@ export const detailAssistantStep2 = async (productAnalysis: string, keywords: st
       5. 品质要求：分辨率（4K）、风格（专业产品摄影）、真实感（超写实）。
       
       输出内容必须使用 Markdown 格式，且逻辑清晰，所有描述必须使用中文。`,
+      maxOutputTokens: 8192,
     }
   });
 
@@ -560,11 +572,14 @@ export const detailAssistantStep2 = async (productAnalysis: string, keywords: st
 export const detailAssistantStep3 = async (designGuide: string, keywords: string = '', screenCount: number = 6, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<DetailStoryboard[]> => {
   const ai = getAiClient(apiKey);
 
+  const prompt = `基于以下设计规范${keywords ? `和关键词（${keywords}）` : ''}，为详情页生成 ${screenCount} 屏的要素和框架结构参考，并为每一屏生成一个高质量的 AI 生图提示词 (prompt)：\n${designGuide}`;
+  console.log(`[detailAssistantStep3] Prompt length: ${prompt.length}, Screen count: ${screenCount}, Model: ${modelName}`);
+  
   const response = await ai.models.generateContent({
     model: modelName,
     contents: {
       parts: [
-        { text: `基于以下设计规范${keywords ? `和关键词（${keywords}）` : ''}，为详情页生成 ${screenCount} 屏的要素和框架结构参考，并为每一屏生成一个高质量的 AI 生图提示词 (prompt)：\n${designGuide}` }
+        { text: prompt }
       ]
     },
     config: {
@@ -599,6 +614,7 @@ export const detailAssistantStep3 = async (designGuide: string, keywords: string
       
       第一屏必须是“场景展示海报”。`,
       responseMimeType: "application/json",
+      maxOutputTokens: 16384,
       responseSchema: {
         type: Type.ARRAY,
         items: {
@@ -664,6 +680,7 @@ export const regenerateSingleDetailStoryboard = async (
       3. 输出格式为单个 JSON 对象，包含：id, title, designGoal, composition, elements, copy (main, sub, description), mood, visualScript, prompt。
       4. 所有描述必须使用中文。`,
       responseMimeType: "application/json",
+      maxOutputTokens: 4096,
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -721,6 +738,7 @@ export const updateDetailPromptFromFields = async (
       2. 融入设计规范中的色彩、光影和材质要求。
       3. 确保提示词具有极强的视觉描述力和排版指导。
       4. 直接输出提示词字符串，不要有任何多余文字。`,
+      maxOutputTokens: 2048,
     }
   });
 
