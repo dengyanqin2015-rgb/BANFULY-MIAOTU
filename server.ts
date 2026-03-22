@@ -421,7 +421,6 @@ app.use(cors());
 // --- Database Initialization Middleware ---
 // Ensure DB is initialized before handling requests
 let dbInitialized = false;
-let dbInitializationError: any = null;
 
 app.use(async (req, res, next) => {
   if (!dbInitialized) {
@@ -439,7 +438,7 @@ app.use(async (req, res, next) => {
           return res.status(503).json({ message: "数据库正在初始化，请稍后再试" });
         }
       }
-    } catch (err) {
+    } catch {
       return res.status(500).json({ message: "数据库初始化失败" });
     }
   }
@@ -704,12 +703,12 @@ async function startServer() {
     const distPath = path.join(process.cwd(), "dist");
     if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));
-      app.get("*", (req, res) => {
+      app.get(/.*/, (req, res) => {
         res.sendFile(path.join(distPath, "index.html"));
       });
     } else {
       console.warn("Warning: dist folder not found. Static files will not be served.");
-      app.get("*", (req, res) => {
+      app.get(/.*/, (req, res) => {
         res.status(200).send(`
           <html>
             <body style="font-family: sans-serif; padding: 2rem; text-align: center;">
