@@ -54,7 +54,8 @@ export enum AppStep {
   HISTORY = 4,
   ADMIN_PANEL = 5,
   PROFILE = 6,
-  SINGLE_TOOL = 7
+  SINGLE_TOOL = 7,
+  DETAIL_ASSISTANT = 8
 }
 
 export enum SingleToolMode {
@@ -133,4 +134,23 @@ export interface GenerationLog {
   userId: string;
   username: string;
   timestamp: number;
+}
+
+export interface DetailStoryboard {
+  id: string;
+  title: string;
+  designGoal: string;
+  composition: string;
+  elements: string;
+  copy: {
+    main: string;
+    sub: string;
+    description: string;
+  };
+  mood: string;
+  visualScript: string; // 详细视觉脚本/关键词，带结构划分
+  prompt: string;
+  refImage?: string;
+  generatedImage?: string;
+  status: 'idle' | 'loading' | 'done' | 'error';
 }

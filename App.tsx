@@ -1,8 +1,19 @@
 
 import React, { useState, useEffect } from 'react';
+
+declare global {
+  interface Window {
+    aistudio: {
+      openSelectKey: () => void;
+      hasSelectedApiKey: () => Promise<boolean>;
+    };
+  }
+}
+
 import * as XLSX from 'xlsx';
-import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory } from './types';
-import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regenerateSinglePrompt, */ deconstructImage, segmentImage } from './geminiService';
+import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory, DetailStoryboard } from './types';
+import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regenerateSinglePrompt, */ deconstructImage, segmentImage, detailAssistantStep1, detailAssistantStep2, detailAssistantStep3, regenerateSingleDetailStoryboard, updateDetailPromptFromFields } from './geminiService';
+import Markdown from 'react-markdown';
 
 const BBOX_COLORS = [
   'border-blue-400 bg-blue-400/20',
@@ -117,6 +128,55 @@ const App: React.FC = () => {
   const [segmentedObjects, setSegmentedObjects] = useState<SegmentedObject[]>([]);
   const [isSegmenting, setIsSegmenting] = useState(false);
   const [backgroundFidelity, setBackgroundFidelity] = useState(0.8);
+  
+  // 详情助手状态
+  const [detailStep, setDetailStep] = useState<1 | 2 | 3>(1);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailProductAnalysis, setDetailProductAnalysis] = useState<string>('');
+  const [detailDesignGuide, setDetailDesignGuide] = useState<string>('');
+  const [detailScreenCount, setDetailScreenCount] = useState<number>(6);
+  const [detailStoryboards, setDetailStoryboards] = useState<DetailStoryboard[]>([]);
+  const [zoomedDetailId, setZoomedDetailId] = useState<string | null>(null);
+  const [detailZoomScale, setDetailZoomScale] = useState(1);
+  const [detailZoomOffset, setDetailZoomOffset] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    if (zoomedDetailId) {
+      document.body.style.overflow = 'hidden';
+      setDetailZoomScale(1);
+      setDetailZoomOffset({ x: 0, y: 0 });
+    } else {
+      document.body.style.overflow = 'auto';
+    }
+  }, [zoomedDetailId]);
+
+  const handleDetailZoom = (e: React.WheelEvent) => {
+    if (!zoomedDetailId) return;
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.1 : 0.1;
+    const newScale = Math.min(Math.max(detailZoomScale + delta, 0.5), 5);
+    setDetailZoomScale(newScale);
+  };
+
+  const handlePanStart = (e: React.MouseEvent) => {
+    if (detailZoomScale <= 1) return;
+    setIsPanning(true);
+    setPanStart({ x: e.clientX - detailZoomOffset.x, y: e.clientY - detailZoomOffset.y });
+  };
+
+  const handlePanMove = (e: React.MouseEvent) => {
+    if (!isPanning) return;
+    setDetailZoomOffset({
+      x: e.clientX - panStart.x,
+      y: e.clientY - panStart.y
+    });
+  };
+
+  const handlePanEnd = () => {
+    setIsPanning(false);
+  };
 
   const cropImage = (imageB64: string, bbox: [number, number, number, number]): Promise<string> => {
     return new Promise((resolve) => {
@@ -202,12 +262,20 @@ const App: React.FC = () => {
 
   const checkAuth = async () => {
     try {
-      const res = await fetch('/api/auth/me');
+      const token = localStorage.getItem('auth_token');
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const res = await fetch('/api/auth/me', { headers });
       if (res.ok) {
         const user = await res.json();
-        setAuth({ user, token: 'session', loading: false });
+        setAuth({ user, token: token || 'session', loading: false });
       } else {
         setAuth({ user: null, token: null, loading: false });
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem('auth_token');
+        }
       }
     } catch (err) {
       console.error(err);
@@ -226,6 +294,7 @@ const App: React.FC = () => {
       });
       const data = await res.json();
       if (res.ok) {
+        localStorage.setItem('auth_token', data.token);
         setAuth({ user: data.user, token: data.token, loading: false });
       } else {
         setAuthError(data.message);
@@ -260,6 +329,7 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
+    localStorage.removeItem('auth_token');
     setAuth({ user: null, token: null, loading: false });
     setStep(AppStep.STYLE_DECODER);
   };
@@ -380,9 +450,14 @@ const App: React.FC = () => {
 
   const deductCredit = async (amount: number = 1) => {
     try {
+      const token = localStorage.getItem('auth_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
       const res = await fetch('/api/user/deduct-credit', { 
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ amount })
       });
       if (res.ok) {
@@ -391,7 +466,13 @@ const App: React.FC = () => {
         return true;
       } else {
         const data = await res.json();
-        alert(data.message || '点数不足');
+        if (res.status === 401 || res.status === 403) {
+          alert('登录已失效，请重新登录');
+          localStorage.removeItem('auth_token');
+          setAuth({ user: null, token: null, loading: false });
+        } else {
+          alert(data.message || '点数不足');
+        }
         return false;
       }
     } catch (err) {
@@ -544,6 +625,10 @@ ${p.prompt}
     alert("所有图片已开始下载。");
   };
 
+  const updateDetailStoryboard = <K extends keyof DetailStoryboard>(id: string, field: K, value: DetailStoryboard[K]) => {
+    setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
+  };
+
   const removeProductImage = (index: number) => setProductImages(prev => prev.filter((_, i) => i !== index));
 
   const updateStoryboard = (id: string, field: keyof Storyboard, value: string) => {
@@ -570,6 +655,194 @@ ${p.prompt}
     } finally {
       setLoading(false);
     }
+  };
+
+  const runDetailStep1 = async () => {
+    if (productImages.length === 0) {
+      alert("请先上传产品图");
+      return;
+    }
+    setDetailLoading(true);
+    try {
+      const res = await detailAssistantStep1(productImages, productKeywords, model, userApiKey);
+      setDetailProductAnalysis(res);
+      setDetailStep(2);
+    } catch (err: unknown) {
+      const error = err as Error;
+      alert("产品识别失败: " + error.message);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const runDetailStep2 = async () => {
+    if (!detailProductAnalysis) return;
+    setDetailLoading(true);
+    try {
+      const res = await detailAssistantStep2(detailProductAnalysis, productKeywords, model, userApiKey);
+      setDetailDesignGuide(res);
+      setDetailStep(3);
+    } catch (err: unknown) {
+      const error = err as Error;
+      alert("生成设计规范失败: " + error.message);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const runDetailStep3 = async () => {
+    if (!detailDesignGuide) return;
+    setDetailLoading(true);
+    try {
+      const res = await detailAssistantStep3(detailDesignGuide, productKeywords, detailScreenCount, model, userApiKey);
+      setDetailStoryboards(res);
+    } catch (err: unknown) {
+      const error = err as Error;
+      alert("生成架构方案失败: " + error.message);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const runDetailRegenStoryboard = async (id: string) => {
+    const sb = detailStoryboards.find(s => s.id === id);
+    if (!sb || !detailDesignGuide) return;
+    
+    setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, status: 'loading' } : s));
+    try {
+      const res = await regenerateSingleDetailStoryboard(detailDesignGuide, sb, productKeywords, model, userApiKey);
+      // Keep existing images and ID
+      setDetailStoryboards(prev => prev.map(s => s.id === id ? { 
+        ...res, 
+        id: s.id, 
+        refImage: s.refImage, 
+        generatedImage: s.generatedImage,
+        status: 'idle' 
+      } : s));
+    } catch (err: unknown) {
+      const error = err as Error;
+      alert("重新生成失败: " + error.message);
+      setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, status: 'error' } : s));
+    }
+  };
+
+  const runDetailUpdatePrompt = async (id: string) => {
+    const sb = detailStoryboards.find(s => s.id === id);
+    if (!sb || !detailDesignGuide) return;
+    
+    try {
+      const newPrompt = await updateDetailPromptFromFields(detailDesignGuide, sb, model, userApiKey);
+      updateDetailStoryboard(id, 'prompt', newPrompt);
+    } catch (err: unknown) {
+      console.error("更新提示词失败", err);
+    }
+  };
+
+  const runDetailGenImage = async (id: string) => {
+    const sb = detailStoryboards.find(s => s.id === id);
+    if (!sb) return;
+
+    if (!userApiKey) {
+      alert("请先配置 API Key（点击右上角设置图标）");
+      return;
+    }
+
+    if (!auth.user) {
+      alert("请先登录");
+      return;
+    }
+
+    const cost = (MODEL_COSTS[genModel as keyof typeof MODEL_COSTS].resolutions as Record<string, { rmb: number }>)[genResolution].rmb;
+    if (auth.user.credits < cost) {
+      alert(`点数不足，本次生成需要 ${cost} 点，当前剩余 ${auth.user.credits} 点`);
+      return;
+    }
+
+    setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, status: 'loading' } : s));
+    
+    try {
+      console.log(`[DetailGen] Starting generation for storyboard ${id}. Model: ${genModel}, Resolution: ${genResolution}`);
+      const refImage = sb.refImage || (productImages.length > 0 ? productImages[0] : undefined);
+
+      const imageUrl = await generateEcomImage({
+        prompt: sb.prompt,
+        model: genModel,
+        aspectRatio: genAspectRatio,
+        imageSize: genResolution,
+        refImageB64: refImage,
+        apiKey: userApiKey
+      });
+
+      if (imageUrl) {
+        console.log(`[DetailGen] Successfully generated image for storyboard ${id}`);
+        // 成功后扣除点数
+        const hasCredits = await deductCredit(cost);
+        if (!hasCredits) {
+          // 如果扣费失败（可能是网络问题或并发导致），虽然图生成了，但状态设为错误
+          setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, status: 'error' } : s));
+          return;
+        }
+
+        setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, generatedImage: imageUrl, status: 'done' } : s));
+        if (auth.user) {
+          fetch('/api/user/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ imageUrl, prompt: sb.prompt })
+          }).catch(console.error);
+        }
+      } else {
+        console.error(`[DetailGen] generateEcomImage returned undefined for storyboard ${id}`);
+        alert("生成失败：AI 未能返回图像。请检查 API Key 权限或尝试更换模型。");
+        setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, status: 'error' } : s));
+      }
+    } catch (err: unknown) {
+      console.error(`[DetailGen] Error generating image for storyboard ${id}:`, err);
+      const error = err as Error;
+      
+      if (error.message?.includes("Requested entity was not found") && typeof window !== 'undefined' && window.aistudio) {
+        alert("模型未找到或 API Key 无权访问。请重新选择有效的 API Key。");
+        window.aistudio.openSelectKey();
+      } else {
+        alert(`生成出错: ${error.message || '未知错误'}`);
+      }
+      
+      setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, status: 'error' } : s));
+    }
+  };
+
+  const runDetailBulkGen = async () => {
+    if (detailStoryboards.length === 0) return;
+    
+    // 限制并发数为 3
+    const concurrencyLimit = 3;
+    const pendingIds = detailStoryboards
+      .filter(sb => sb.status !== 'done')
+      .map(sb => sb.id);
+    
+    for (let i = 0; i < pendingIds.length; i += concurrencyLimit) {
+      const chunk = pendingIds.slice(i, i + concurrencyLimit);
+      await Promise.all(chunk.map(id => runDetailGenImage(id)));
+    }
+  };
+
+  const handleDetailRefImageChange = (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const b64 = event.target?.result as string;
+      setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, refImage: b64 } : s));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const runDetailBulkDownload = () => {
+    detailStoryboards.forEach((sb, idx) => {
+      if (sb.generatedImage) {
+        downloadImage(sb.generatedImage, `${sb.title}-${idx + 1}`);
+      }
+    });
   };
 
   const runStep2 = async () => {
@@ -664,8 +937,10 @@ ${p.prompt}
 
     try {
       // 检查点数
-      if (auth.user && auth.user.credits <= 0) {
-        alert("您的生图点数已耗尽，请联系管理员充值。");
+      const cost = (MODEL_COSTS[genModel as keyof typeof MODEL_COSTS].resolutions as Record<string, { rmb: number }>)[genResolution].rmb;
+      if (auth.user && auth.user.credits < cost) {
+        alert(`点数不足，本次生成需要 ${cost} 点，当前剩余 ${auth.user.credits} 点`);
+        setCardGenStatus(prev => ({ ...prev, [cardId]: 'idle' }));
         return;
       }
 
@@ -673,23 +948,29 @@ ${p.prompt}
         prompt: assembledPrompt,
         model: genModel,
         aspectRatio: genAspectRatio,
-        imageSize: genResolution === '0.5K' ? '512px' : genResolution,
+        imageSize: genResolution,
         refImageB64: overrideRefImage || cardRefImages[cardId],
         apiKey: userApiKey
       });
       if (res) {
         // 成功后扣除点数
-        await deductCredit();
+        await deductCredit(cost);
         // 保存到历史记录
         await saveToHistory(res, assembledPrompt);
         setCardGeneratedImages(prev => ({ ...prev, [cardId]: res }));
         setCardGenStatus(prev => ({ ...prev, [cardId]: 'done' }));
       } else {
+        alert("生成失败，请检查 API Key 或尝试更换模型。");
         setCardGenStatus(prev => ({ ...prev, [cardId]: 'error' }));
       }
-    } catch (err) {
-      if (err?.message?.includes("Requested entity was not found") && typeof window !== 'undefined' && window.aistudio) {
-        await window.aistudio.openSelectKey();
+    } catch (err: unknown) {
+      const error = err as Error;
+      console.error("[generateSingleImage] Error:", error);
+      if (error.message?.includes("Requested entity was not found") && typeof window !== 'undefined' && window.aistudio) {
+        alert("模型未找到或 API Key 无权访问。请重新选择有效的 API Key。");
+        window.aistudio.openSelectKey();
+      } else {
+        alert(`生成失败: ${error.message || '请重试'}`);
       }
       setCardGenStatus(prev => ({ ...prev, [cardId]: 'error' }));
     }
@@ -887,16 +1168,25 @@ ${p.prompt}
         model: genModel,
         aspectRatio: genAspectRatio,
         imageSize: genResolution,
-        apiKey: userApiKey,
-        backgroundFidelity: refStrength
+        apiKey: userApiKey
       });
 
-      setSingleGeneratedImage(imageUrl);
-      await deductCredit(cost);
-      await saveToHistory(imageUrl, finalPrompt);
-    } catch (err) {
-      console.error(err);
-      alert("生成失败，请重试");
+      if (imageUrl) {
+        setSingleGeneratedImage(imageUrl);
+        await deductCredit(cost);
+        await saveToHistory(imageUrl, finalPrompt);
+      } else {
+        alert("生成失败，请检查 API Key 或尝试更换模型。");
+      }
+    } catch (err: unknown) {
+      const error = err as Error;
+      console.error("[runSingleGeneration] Error:", error);
+      if (error.message?.includes("Requested entity was not found") && typeof window !== 'undefined' && window.aistudio) {
+        alert("模型未找到或 API Key 无权访问。请重新选择有效的 API Key。");
+        window.aistudio.openSelectKey();
+      } else {
+        alert(`生成失败: ${error.message || '请重试'}`);
+      }
     } finally {
       setIsGeneratingSingle(false);
     }
@@ -965,16 +1255,25 @@ ${p.prompt}
         model: genModel,
         aspectRatio: genAspectRatio,
         imageSize: genResolution,
-        apiKey: userApiKey,
-        backgroundFidelity
+        apiKey: userApiKey
       });
 
-      setSingleGeneratedImage(imageUrl);
-      await deductCredit(cost);
-      await saveToHistory(imageUrl, finalPrompt);
-    } catch (err) {
-      console.error(err);
-      alert("生成失败，请重试");
+      if (imageUrl) {
+        setSingleGeneratedImage(imageUrl);
+        await deductCredit(cost);
+        await saveToHistory(imageUrl, finalPrompt);
+      } else {
+        alert("生成失败，请检查 API Key 或尝试更换模型。");
+      }
+    } catch (err: unknown) {
+      const error = err as Error;
+      console.error("[runReplacementGeneration] Error:", error);
+      if (error.message?.includes("Requested entity was not found") && typeof window !== 'undefined' && window.aistudio) {
+        alert("模型未找到或 API Key 无权访问。请重新选择有效的 API Key。");
+        window.aistudio.openSelectKey();
+      } else {
+        alert(`生成失败: ${error.message || '请重试'}`);
+      }
     } finally {
       setIsGeneratingSingle(false);
     }
@@ -1071,6 +1370,7 @@ ${p.prompt}
               { id: AppStep.STYLE_DECODER, label: '视觉宪法' },
               { id: AppStep.PRODUCT_STRATEGY, label: '营销策划' },
               { id: AppStep.PROMPT_FUSION, label: '生成方案' },
+              { id: AppStep.DETAIL_ASSISTANT, label: '详情助手' },
               { id: AppStep.SINGLE_TOOL, label: '单图灵活工具' },
               { id: AppStep.HISTORY, label: '生图历史' },
               { id: AppStep.PROFILE, label: '个人中心' },
@@ -1078,7 +1378,7 @@ ${p.prompt}
             ].map((s) => (
               <button
                 key={s.id}
-                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL}
+                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL && s.id !== AppStep.DETAIL_ASSISTANT}
                 onClick={() => activeStep(s.id)}
                 className={`px-4 py-1.5 rounded-full text-[11px] font-bold transition-all duration-500 ${step === s.id ? 'bg-white shadow-md text-black scale-105' : 'text-[#86868b] opacity-60 hover:opacity-100'}`}
               >
@@ -1156,6 +1456,423 @@ ${p.prompt}
       </header>
 
       <main className="flex-1 max-w-[1440px] mx-auto w-full px-8 py-8">
+        {step === AppStep.DETAIL_ASSISTANT && (
+          <div className="animate-slide-up">
+            <div className="flex items-end justify-between mb-10">
+              <div>
+                <div className="section-label mb-3 text-[#FF7F00]">Detail Assistant</div>
+                <h1 className="text-4xl font-black tracking-tighter text-black">详情助手</h1>
+                <p className="text-[#86868b] text-sm mt-2">基于产品特性，自动生成详情页设计规范与分镜架构</p>
+              </div>
+            </div>
+
+            <div className="space-y-8">
+              {/* Top Row: Recognition & Specification */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Step 1: Product Recognition */}
+                <div className="apple-card p-8 bg-white border-black/10 shadow-xl flex flex-col min-h-[500px]">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="section-label text-[#FF7F00]">Node 01 / Recognition</div>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${detailProductAnalysis ? 'bg-orange-100 text-[#FF7F00]' : 'bg-gray-100 text-gray-400'}`}>
+                      {detailProductAnalysis ? '已完成' : '进行中'}
+                    </span>
+                  </div>
+                  <h2 className="text-xl font-black mb-4 tracking-tight">产品特性识别 <span className="text-[#86868b]">深度解析核心卖点</span></h2>
+                  
+                  <div className="bg-[#F5F5F7] p-4 rounded-2xl border border-black/5 mb-6">
+                    <label className="section-label text-[9px] mb-3 block text-black font-black uppercase tracking-widest">上传产品白底图 (最多6张)</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {productImages.map((img, idx) => (
+                        <div key={idx} className="aspect-square rounded-lg bg-white border border-black/10 relative group overflow-hidden shadow-sm">
+                          <img src={img} className="w-full h-full object-contain p-1" />
+                          <button onClick={() => removeProductImage(idx)} className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/70 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 scale-75 hover:bg-black transition-all"><i className="fas fa-times text-[8px]"></i></button>
+                        </div>
+                      ))}
+                      {productImages.length < 6 && (
+                        <div className="aspect-square rounded-lg border-2 border-dashed border-black/15 hover:border-[#FF7F00]/30 flex flex-col items-center justify-center cursor-pointer bg-white transition-all group" onClick={() => document.getElementById('detail-prod-upload')?.click()}>
+                          <i className="fas fa-plus opacity-20 group-hover:opacity-100 mb-0.5 text-xs"></i>
+                          <span className="text-[8px] font-bold opacity-30 group-hover:opacity-100 uppercase">添加</span>
+                        </div>
+                      )}
+                      <input id="detail-prod-upload" type="file" multiple className="hidden" onChange={handleMultipleFilesChange} />
+                    </div>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto max-h-[250px] mb-6 prose-orange border-t border-black/5 pt-4 no-scrollbar">
+                    {detailProductAnalysis ? (
+                      <Markdown>{detailProductAnalysis}</Markdown>
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-[#86868b] opacity-40 italic py-10">
+                        <i className="fas fa-microchip text-4xl mb-4"></i>
+                        <p>等待识别产品...</p>
+                      </div>
+                    )}
+                  </div>
+                  <button 
+                    onClick={runDetailStep1} 
+                    disabled={detailLoading || productImages.length === 0}
+                    className={`btn-primary w-full py-4 text-white text-[13px] font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 border-none ${productImages.length === 0 ? 'bg-gray-300 cursor-not-allowed' : 'bg-[#FF7F00]'}`}
+                  >
+                    {detailLoading && detailStep === 1 ? <i className="fas fa-circle-notch fa-spin"></i> : <i className="fas fa-microchip"></i>}
+                    开始识别产品
+                  </button>
+                </div>
+
+                {/* Step 2: Design Specification */}
+                <div className="apple-card p-8 bg-white border-black/10 shadow-xl flex flex-col min-h-[500px]">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="section-label text-[#FF7F00]">Node 02 / Specification</div>
+                    <span className={`px-3 py-1 rounded-full text-[11px] font-black ${detailDesignGuide ? 'bg-orange-100 text-[#FF7F00]' : 'bg-gray-100 text-gray-400'}`}>
+                      {detailDesignGuide ? '已完成' : '未开始'}
+                    </span>
+                  </div>
+                  <h2 className="text-xl font-black mb-4 tracking-tight">详情设计规范 <span className="text-[#86868b]">大师级视觉基调</span></h2>
+                  
+                  <div className="flex gap-2 mb-4 overflow-x-auto no-scrollbar pb-2 border-b border-black/5">
+                    {productImages.map((img, idx) => (
+                      <div key={idx} className="w-10 h-10 rounded-lg bg-[#F5F5F7] border border-black/5 flex-shrink-0 overflow-hidden">
+                        <img src={img} className="w-full h-full object-contain p-1" />
+                      </div>
+                    ))}
+                    {productImages.length === 0 && <div className="text-[10px] text-gray-400 italic">未上传产品图</div>}
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto max-h-[250px] mb-6 prose-orange no-scrollbar">
+                    {detailDesignGuide ? (
+                      <Markdown>{detailDesignGuide}</Markdown>
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-[#86868b] opacity-40 italic py-10">
+                        <i className="fas fa-drafting-compass text-4xl mb-4"></i>
+                        <p>等待生成规范...</p>
+                      </div>
+                    )}
+                  </div>
+                  <button 
+                    onClick={runDetailStep2} 
+                    disabled={detailLoading || !detailProductAnalysis}
+                    className={`btn-primary w-full py-4 text-white text-[13px] font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 border-none ${!detailProductAnalysis ? 'bg-gray-300 cursor-not-allowed' : 'bg-[#FF7F00]'}`}
+                  >
+                    {detailLoading && detailStep === 2 ? <i className="fas fa-circle-notch fa-spin"></i> : <i className="fas fa-drafting-compass"></i>}
+                    生成设计规范
+                  </button>
+                </div>
+              </div>
+
+              {/* Bottom Row: Screen Structure (Full Width) */}
+              <div className="apple-card p-8 bg-white border-black/10 shadow-xl flex flex-col min-h-[600px]">
+                <div className="flex items-center justify-between mb-8">
+                  <div>
+                    <div className="section-label text-[#FF7F00] mb-2">Node 03 / Structure</div>
+                    <h2 className="text-2xl font-black tracking-tight">分镜架构方案 <span className="text-[#86868b]">电商详情设计大师版</span></h2>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="bg-[#F5F5F7] p-1.5 rounded-2xl border border-black/5 flex gap-1">
+                      {[3, 6, 9, 12].map(num => (
+                        <button 
+                          key={num}
+                          onClick={() => setDetailScreenCount(num)}
+                          className={`px-4 py-2 rounded-xl text-[12px] font-black transition-all ${detailScreenCount === num ? 'bg-white text-black shadow-md' : 'text-[#86868b] hover:text-black'}`}
+                        >
+                          {num} 屏
+                        </button>
+                      ))}
+                    </div>
+                    <span className={`px-3 py-1 rounded-full text-[11px] font-black ${detailStoryboards.length > 0 ? 'bg-orange-100 text-[#FF7F00]' : 'bg-gray-100 text-gray-400'}`}>
+                      {detailStoryboards.length > 0 ? '已完成' : '未开始'}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-col lg:flex-row gap-10 flex-1">
+                  {/* Left Sidebar: Controls (20%) */}
+                  <div className="w-full lg:w-[22%] space-y-10 border-r border-black/5 pr-8">
+                    <div>
+                      <label className="section-label mb-6 block text-black/60 font-black tracking-widest uppercase text-[10px]">渲染引擎 / ENGINE</label>
+                      <div className="flex flex-col gap-3">
+                        {Object.entries(MODEL_COSTS).map(([key, cfg]) => {
+                          const isSelected = genModel === key;
+                          return (
+                            <button 
+                              key={key}
+                              onClick={() => setGenModel(key)} 
+                              className={`p-4 rounded-2xl border-2 text-left transition-all duration-300 flex flex-col gap-1 ${isSelected ? 'border-black bg-black text-white shadow-xl scale-[1.02]' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}
+                            >
+                              <div className={`text-[13px] font-black ${isSelected ? 'text-white' : 'text-black'}`}>{cfg.name}</div>
+                              <div className={`text-[9px] font-bold uppercase tracking-widest ${isSelected ? 'text-white/60' : 'text-black/40'}`}>{cfg.label}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="section-label mb-6 block text-black/60 font-black tracking-widest uppercase text-[10px]">渲染精度 / RESOLUTION</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {Object.keys(MODEL_COSTS[genModel].resolutions).map(res => {
+                          const isSelected = genResolution === res;
+                          return (
+                            <button 
+                              key={res} 
+                              onClick={() => setGenResolution(res)} 
+                              className={`py-3 rounded-xl text-[12px] font-black transition-all border-2 flex items-center justify-center ${isSelected ? 'bg-black text-white border-black shadow-lg' : 'bg-[#F5F5F7] border-transparent opacity-60 hover:opacity-100'}`}
+                            >
+                              {res}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="section-label mb-6 block text-black/60 font-black tracking-widest uppercase text-[10px]">构图比例 / ASPECT RATIO</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {['1:1', '16:9', '9:16', '4:3', '3:4'].map(r => {
+                          const isSelected = genAspectRatio === r;
+                          return (
+                            <button 
+                              key={r} 
+                              onClick={() => setGenAspectRatio(r)} 
+                              className={`py-3 rounded-xl text-[12px] font-black transition-all border-2 flex items-center justify-center ${isSelected ? 'bg-black text-white border-black shadow-lg' : 'bg-[#F5F5F7] border-transparent opacity-60 hover:opacity-100'}`}
+                            >
+                              {r}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="pt-6 border-t border-black/5">
+                      <button 
+                        onClick={runDetailStep3} 
+                        disabled={detailLoading || !detailDesignGuide}
+                        className={`w-full py-5 rounded-[24px] text-white text-[14px] font-black shadow-2xl hover:scale-[1.02] active:scale-95 transition-all flex flex-col items-center justify-center gap-1 border-none ${!detailDesignGuide ? 'bg-gray-300 cursor-not-allowed' : 'bg-[#FF7F00]'}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          {detailLoading && detailStep === 3 ? <i className="fas fa-circle-notch fa-spin"></i> : <i className="fas fa-sitemap"></i>}
+                          <span>{detailStoryboards.length > 0 ? '重新生成全案' : '生成分镜架构'}</span>
+                        </div>
+                        <span className="text-[9px] opacity-60 font-bold uppercase tracking-widest">Master Edition</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Right Content: Storyboards (80%) */}
+                  <div className="flex-1 overflow-y-auto max-h-[1200px] no-scrollbar">
+                    {detailStoryboards.length > 0 ? (
+                      <div className="space-y-12">
+                        {/* 批量操作按钮 */}
+                        <div className="flex gap-4 sticky top-0 bg-white/90 backdrop-blur-xl py-4 z-20 border-b border-black/5 mb-8">
+                          <button 
+                            onClick={runDetailBulkGen}
+                            disabled={detailLoading}
+                            className="flex-1 py-4 bg-black text-white rounded-2xl text-[14px] font-black shadow-2xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-3"
+                          >
+                            <i className="fas fa-magic"></i> 智能批量渲染全案
+                          </button>
+                          <button 
+                            onClick={runDetailBulkDownload}
+                            className="flex-1 py-4 bg-white text-black border border-black/10 rounded-2xl text-[14px] font-black shadow-md hover:bg-gray-50 active:scale-95 transition-all flex items-center justify-center gap-3"
+                          >
+                            <i className="fas fa-download"></i> 批量导出视觉资产
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-10">
+                          {detailStoryboards.map((sb, idx) => (
+                            <div key={sb.id} className="bg-[#F5F5F7] rounded-[40px] p-8 border border-black/5 relative flex flex-col lg:flex-row gap-8">
+                              {/* Left Side: Info */}
+                              <div className="flex-1 space-y-6">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-3">
+                                    <span className="w-10 h-10 flex items-center justify-center bg-black text-white rounded-2xl font-black text-sm">P{idx + 1}</span>
+                                    <h3 className="text-xl font-black tracking-tight">{sb.title}</h3>
+                                  </div>
+                                  <button 
+                                    onClick={() => runDetailRegenStoryboard(sb.id)}
+                                    disabled={sb.status === 'loading'}
+                                    className="w-8 h-8 rounded-full bg-white border border-black/10 flex items-center justify-center text-[#86868b] hover:text-black hover:border-black transition-all shadow-sm"
+                                    title="重新生成该分镜方案"
+                                  >
+                                    <i className={`fas fa-sync-alt ${sb.status === 'loading' ? 'fa-spin' : ''}`}></i>
+                                  </button>
+                                </div>
+                                
+                                <div className="bg-white/50 p-6 rounded-[32px] border border-black/5 space-y-6">
+                                  <div className="flex items-center justify-between">
+                                    <div className="text-[10px] font-black text-black/40 uppercase tracking-widest">视觉脚本与关键词 / VISUAL SCRIPT</div>
+                                    <div className="flex gap-2">
+                                      <span className="px-2 py-0.5 bg-black/5 rounded text-[8px] font-bold text-black/40 uppercase">Structured</span>
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="grid grid-cols-1 gap-6">
+                                    <div className="space-y-4">
+                                      <div className="flex items-start gap-3">
+                                        <div className="w-1 h-4 bg-[#FF7F00] rounded-full mt-1 shrink-0"></div>
+                                        <div className="flex-1">
+                                          <div className="text-[9px] font-black text-black/30 uppercase mb-1">设计目标 & 构图</div>
+                                          <div className="flex flex-col gap-1">
+                                            <input 
+                                              className="w-full bg-transparent text-[12px] font-bold text-black leading-relaxed border-none focus:ring-0 p-0 outline-none"
+                                              value={sb.designGoal}
+                                              onChange={(e) => updateDetailStoryboard(sb.id, 'designGoal', e.target.value)}
+                                              onBlur={() => runDetailUpdatePrompt(sb.id)}
+                                              placeholder="设计目标"
+                                            />
+                                            <input 
+                                              className="w-full bg-transparent text-[12px] font-bold text-black/60 leading-relaxed border-none focus:ring-0 p-0 outline-none"
+                                              value={sb.composition}
+                                              onChange={(e) => updateDetailStoryboard(sb.id, 'composition', e.target.value)}
+                                              onBlur={() => runDetailUpdatePrompt(sb.id)}
+                                              placeholder="构图方案"
+                                            />
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-start gap-3">
+                                        <div className="w-1 h-4 bg-blue-500 rounded-full mt-1 shrink-0"></div>
+                                        <div className="flex-1">
+                                          <div className="text-[9px] font-black text-black/30 uppercase mb-1">视觉要素 (关键词) / VISUAL ELEMENTS</div>
+                                          <textarea 
+                                            className="w-full text-[12px] font-bold text-black leading-relaxed whitespace-pre-wrap bg-black/5 p-3 rounded-xl border border-black/5 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none min-h-[60px] no-scrollbar"
+                                            value={sb.visualScript || sb.elements}
+                                            onChange={(e) => updateDetailStoryboard(sb.id, 'visualScript', e.target.value)}
+                                            onBlur={() => runDetailUpdatePrompt(sb.id)}
+                                          />
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-start gap-3">
+                                        <div className="w-1 h-4 bg-green-500 rounded-full mt-1 shrink-0"></div>
+                                        <div>
+                                          <div className="text-[9px] font-black text-black/30 uppercase mb-1">营销文案</div>
+                                          <div className="space-y-1">
+                                            <div className="text-[13px] font-black text-[#0071e3]">{sb.copy.main}</div>
+                                            <div className="text-[11px] font-bold text-black/60">{sb.copy.sub}</div>
+                                            <div className="text-[10px] font-medium text-black/40 italic">{sb.copy.description}</div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <label className="section-label text-[10px] opacity-60">AI 视觉指令 (可微调)</label>
+                                    <button 
+                                      onClick={() => {
+                                        navigator.clipboard.writeText(sb.prompt);
+                                      }}
+                                      className="text-[10px] font-bold text-[#0071e3] hover:underline flex items-center gap-1"
+                                    >
+                                      <i className="far fa-copy"></i> 复制指令
+                                    </button>
+                                  </div>
+                                  <textarea 
+                                    className="w-full bg-white border border-black/10 rounded-2xl p-4 text-[12px] font-bold leading-relaxed outline-none focus:ring-2 focus:ring-[#FF7F00]/20 transition-all min-h-[100px] no-scrollbar"
+                                    value={sb.prompt}
+                                    onChange={(e) => updateDetailStoryboard(sb.id, 'prompt', e.target.value)}
+                                  />
+                                </div>
+                              </div>
+
+                              {/* Right Side: Image & Actions */}
+                              <div className="w-full lg:w-[320px] xl:w-[400px] space-y-4 shrink-0">
+                                <div 
+                                  className={`rounded-[32px] bg-white border border-black/10 relative overflow-hidden shadow-xl group/img transition-all duration-300 ${sb.generatedImage ? 'cursor-zoom-in' : 'cursor-default'} w-full`}
+                                  style={{ aspectRatio: genAspectRatio.replace(':', '/') }}
+                                  onClick={() => sb.generatedImage && setZoomedDetailId(sb.id)}
+                                >
+                                  {sb.generatedImage ? (
+                                    <>
+                                      <img 
+                                        src={sb.generatedImage} 
+                                        className="w-full h-full object-cover transition-transform duration-500 group-hover/img:scale-105" 
+                                      />
+                                      <div className="absolute inset-0 bg-black/20 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center">
+                                        <div className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center text-white border border-white/30">
+                                          <i className="fas fa-search-plus text-xl"></i>
+                                        </div>
+                                      </div>
+                                      <div className="absolute bottom-4 right-4 opacity-0 group-hover/img:opacity-100 transition-opacity">
+                                        <button 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            downloadImage(sb.generatedImage!, `${sb.title}-${idx+1}`);
+                                          }}
+                                          className="w-10 h-10 bg-white rounded-full shadow-lg flex items-center justify-center hover:scale-110 transition-all text-black"
+                                        >
+                                          <i className="fas fa-download"></i>
+                                        </button>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <div className="w-full h-full flex flex-col items-center justify-center text-gray-300">
+                                      {sb.status === 'loading' ? (
+                                        <div className="text-center">
+                                          <i className="fas fa-circle-notch fa-spin text-3xl text-[#FF7F00] mb-3"></i>
+                                          <p className="text-[10px] font-black text-[#FF7F00] uppercase tracking-widest">正在生成...</p>
+                                        </div>
+                                      ) : (
+                                        <>
+                                          <i className="fas fa-image text-4xl mb-3 opacity-10"></i>
+                                          <span className="text-[10px] font-black opacity-20 uppercase tracking-widest">等待视觉渲染</span>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                  
+                                  {sb.refImage && (
+                                    <div className="absolute top-3 left-3 w-12 h-12 rounded-xl border-2 border-white shadow-2xl overflow-hidden group/ref">
+                                      <img src={sb.refImage} className="w-full h-full object-cover" />
+                                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover/ref:opacity-100 transition-opacity">
+                                        <i className="fas fa-link text-white text-[10px]"></i>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="grid grid-cols-1 gap-3">
+                                  <button 
+                                    onClick={() => runDetailGenImage(sb.id)}
+                                    disabled={sb.status === 'loading'}
+                                    className={`w-full py-4 rounded-2xl text-[13px] font-black flex items-center justify-center gap-2 transition-all shadow-lg ${sb.status === 'loading' ? 'bg-[#F5F5F7] text-[#86868b]' : 'bg-black text-white hover:scale-[1.02]'}`}
+                                  >
+                                    {sb.status === 'loading' ? <i className="fas fa-circle-notch fa-spin"></i> : <i className="fas fa-bolt"></i>}
+                                    {sb.generatedImage ? '重新渲染' : '开始渲染'}
+                                  </button>
+                                  <button 
+                                    onClick={() => document.getElementById(`ref-upload-${sb.id}`)?.click()}
+                                    className="w-full py-4 bg-white border border-black/10 rounded-2xl text-[13px] font-black hover:bg-gray-50 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-sm"
+                                  >
+                                    <i className="fas fa-image"></i> 指定参考图
+                                  </button>
+                                  <input 
+                                    id={`ref-upload-${sb.id}`} 
+                                    type="file" 
+                                    className="hidden" 
+                                    onChange={(e) => handleDetailRefImageChange(sb.id, e)} 
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-[#86868b] opacity-40 italic py-40">
+                        <i className="fas fa-layer-group text-6xl mb-6"></i>
+                        <p className="text-lg">等待输出分镜架构方案...</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {step === AppStep.SINGLE_TOOL && (
           <div className="animate-slide-up">
             <div className="flex items-end justify-between mb-10">
@@ -2915,6 +3632,60 @@ ${p.prompt}
             </div>
           </div>
         )}
+
+      {/* 图片放大模态框 */}
+      {zoomedDetailId && (
+        <div 
+          className="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center p-4 lg:p-10 animate-in fade-in duration-300 overflow-hidden"
+          onWheel={handleDetailZoom}
+          onClick={() => setZoomedDetailId(null)}
+        >
+          <div 
+            className={`relative max-w-full max-h-full flex items-center justify-center transition-transform duration-75 ${detailZoomScale > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-out'}`}
+            style={{ 
+              transform: `scale(${detailZoomScale}) translate(${detailZoomOffset.x / detailZoomScale}px, ${detailZoomOffset.y / detailZoomScale}px)` 
+            }}
+            onMouseDown={handlePanStart}
+            onMouseMove={handlePanMove}
+            onMouseUp={handlePanEnd}
+            onMouseLeave={handlePanEnd}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {detailStoryboards.find(s => s.id === zoomedDetailId)?.generatedImage && (
+              <img 
+                src={detailStoryboards.find(s => s.id === zoomedDetailId)!.generatedImage} 
+                className="max-w-full max-h-full object-contain shadow-2xl rounded-lg select-none pointer-events-none"
+                draggable={false}
+              />
+            )}
+          </div>
+          
+          {/* 缩放控制提示 */}
+          <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/10 backdrop-blur-md px-6 py-3 rounded-full border border-white/20 text-white text-[12px] font-black flex items-center gap-6 pointer-events-none">
+            <div className="flex items-center gap-2">
+              <i className="fas fa-mouse text-[#FF7F00]"></i>
+              <span>滚动缩放: {Math.round(detailZoomScale * 100)}%</span>
+            </div>
+            <div className="w-px h-4 bg-white/20"></div>
+            <div className="flex items-center gap-2">
+              <i className="fas fa-arrows-alt text-[#FF7F00]"></i>
+              <span>拖拽平移</span>
+            </div>
+            <div className="w-px h-4 bg-white/20"></div>
+            <div className="flex items-center gap-2">
+              <i className="fas fa-times text-[#FF7F00]"></i>
+              <span>点击空白关闭</span>
+            </div>
+          </div>
+
+          <button 
+            className="absolute top-8 right-8 w-12 h-12 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center text-white transition-all border border-white/20 z-[210]"
+            onClick={() => setZoomedDetailId(null)}
+          >
+            <i className="fas fa-times text-xl"></i>
+          </button>
+        </div>
+      )}
 
       {/* 页脚 */}
       <footer className="h-14 glass-nav flex items-center px-10 justify-between text-[10px] font-black tracking-widest text-[#86868b] border-t border-black/5">

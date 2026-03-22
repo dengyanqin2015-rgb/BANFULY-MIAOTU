@@ -217,7 +217,7 @@ export const generateEcomImage = async (params: {
   apiKey?: string
 }): Promise<string | undefined> => {
   const ai = getAiClient(params.apiKey);
-  const parts: (Part | string)[] = [{ text: params.prompt }];
+  const parts: Part[] = [{ text: params.prompt }];
   
   if (params.refImageB64) {
     const { mimeType, data } = parseB64(params.refImageB64);
@@ -247,21 +247,86 @@ export const generateEcomImage = async (params: {
     actualModel = 'gemini-3.1-flash-image-preview';
   } else if (params.model === 'nanobanana pro') {
     actualModel = 'gemini-3-pro-image-preview';
+  } else if (params.model === 'imagen') {
+    actualModel = 'imagen-4.0-generate-001';
   }
 
-  const response = await ai.models.generateContent({
-    model: actualModel,
-    contents: { parts },
-    config: {
-      imageConfig: {
-        aspectRatio: params.aspectRatio,
-        imageSize: params.imageSize || "1K"
-      }
-    }
-  });
+  const imageConfig: { aspectRatio: string; imageSize?: string } = {
+    aspectRatio: params.aspectRatio || "1:1"
+  };
+  
+  if (actualModel !== 'gemini-2.5-flash-image') {
+    const sizeMap: Record<string, string> = {
+      '0.5K': '512px',
+      '1K': '1K',
+      '2K': '2K',
+      '4K': '4K'
+    };
+    imageConfig.imageSize = sizeMap[params.imageSize || '1K'] || params.imageSize || "1K";
+  }
 
-  const part = response.candidates?.[0]?.content?.parts.find(p => p.inlineData);
-  return part?.inlineData ? `data:image/png;base64,${part.inlineData.data}` : undefined;
+  try {
+    console.log(`[generateEcomImage] Calling ${actualModel} with prompt:`, params.prompt);
+    console.log(`[generateEcomImage] Image parts count: ${parts.length - 1}`);
+    
+    // For Imagen models, use generateImages
+    if (actualModel.startsWith('imagen')) {
+      const response = await ai.models.generateImages({
+        model: actualModel,
+        prompt: params.prompt,
+        config: {
+          numberOfImages: 1,
+          aspectRatio: params.aspectRatio as '1:1' | '3:4' | '4:3' | '9:16' | '16:9' || '1:1',
+        }
+      });
+      const b64 = response.generatedImages?.[0]?.image?.imageBytes;
+      return b64 ? `data:image/png;base64,${b64}` : undefined;
+    }
+
+    const response = await ai.models.generateContent({
+      model: actualModel,
+      contents: [{ parts }],
+      config: {
+        imageConfig,
+        safetySettings: [
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
+        ]
+      }
+    });
+
+    console.log("[generateEcomImage] Response received:", JSON.stringify(response, null, 2));
+
+    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+    if (part?.inlineData) {
+      return `data:image/png;base64,${part.inlineData.data}`;
+    }
+
+    // If no image, check for text (might be a safety refusal or error message)
+    if (response.text) {
+      console.warn("[generateEcomImage] Model returned text instead of image:", response.text);
+      throw new Error(`模型未返回图像。模型反馈: ${response.text}`);
+    }
+
+    if (response.candidates?.[0]?.finishReason === 'SAFETY') {
+      throw new Error("生成由于安全策略被拦截。请尝试修改提示词。");
+    }
+
+    return undefined;
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error("[generateEcomImage] Error:", err);
+    if (err.message?.includes("Requested entity was not found")) {
+      throw new Error(`模型 ${actualModel} 未找到或 API Key 无权访问该模型。请尝试更换模型或重新配置 API Key。`);
+    }
+    if (err.message?.includes("permission")) {
+      throw new Error("API Key 权限不足，无法调用生图模型。请检查您的 Google AI Studio 设置。");
+    }
+    throw err;
+  }
 };
 
 export const regenerateSinglePrompt = async (constitution: VisualConstitution, storyboard: Storyboard, analysis: ProductAnalysis, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<string> => {
@@ -441,4 +506,223 @@ export const deconstructImage = async (imageB64: string, modelName: string = 'ge
     console.error("Error in deconstructImage:", error);
     throw error;
   }
+};
+
+export const detailAssistantStep1 = async (imagesB64: string[], keywords: string = '', modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<string> => {
+  const ai = getAiClient(apiKey);
+  const imageParts = imagesB64.map(b64 => {
+    const { mimeType, data } = parseB64(b64);
+    return { inlineData: { data, mimeType } };
+  });
+
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: {
+      parts: [
+        ...imageParts,
+        { text: `请识别这些产品图${keywords ? `（产品关键词：${keywords}）` : ''}，并基于产品特性和应用场景输出一份详细的产品分析报告。包含：核心卖点、目标人群、使用场景、视觉呈现建议。` }
+      ]
+    },
+    config: {
+      systemInstruction: "你是一个顶尖的电商产品分析师。请基于上传的产品图和关键词，深入挖掘其物理特性、功能卖点以及潜在的应用场景。输出内容应专业、客观且具有营销洞察力。使用 Markdown 格式输出，所有描述必须使用中文。",
+    }
+  });
+
+  return response.text || "未能生成分析报告";
+};
+
+export const detailAssistantStep2 = async (productAnalysis: string, keywords: string = '', modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<string> => {
+  const ai = getAiClient(apiKey);
+
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: {
+      parts: [
+        { text: `基于以下产品分析${keywords ? `和关键词（${keywords}）` : ''}，生成一份整体设计规范：\n${productAnalysis}` }
+      ]
+    },
+    config: {
+      systemInstruction: `你是一个顶尖的视觉设计总监。请为该产品制定一份详尽的详情页设计规范。
+      规范必须包含：
+      1. 色彩系统：主色调（如活力橙 #FF7F00）、辅助色、背景色。
+      2. 字体系统：标题字体（如思源黑体 Bold）、正文字体（如思源黑体 Regular）、字号层级（大标题:副标题:正文 = 3:1.8:1）。
+      3. 视觉语言：装饰元素（如冰块碎屑、冷凝水珠）、图标风格（简约线性）、留白原则（20% 呼吸空间）。
+      4. 摄影风格：光线（自然阳光、45度硬光）、景深（中度景深）、相机参数参考。
+      5. 品质要求：分辨率（4K）、风格（专业产品摄影）、真实感（超写实）。
+      
+      输出内容必须使用 Markdown 格式，且逻辑清晰，所有描述必须使用中文。`,
+    }
+  });
+
+  return response.text || "未能生成设计规范";
+};
+
+export const detailAssistantStep3 = async (designGuide: string, keywords: string = '', screenCount: number = 6, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<DetailStoryboard[]> => {
+  const ai = getAiClient(apiKey);
+
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: {
+      parts: [
+        { text: `基于以下设计规范${keywords ? `和关键词（${keywords}）` : ''}，为详情页生成 ${screenCount} 屏的要素和框架结构参考，并为每一屏生成一个高质量的 AI 生图提示词 (prompt)：\n${designGuide}` }
+      ]
+    },
+    config: {
+      systemInstruction: `你是一位享誉业界的【电商详情页设计专业大师】。
+      任务：基于提供的【详情设计规范】作为视觉基调，为该产品设计一套具有极高价值感、美感和品牌张力的详情页分镜架构方案。
+      
+      **大师级设计准则：**
+      1. **精准还原与细节塑造**：在保持设计规范基调的前提下，必须精准还原产品的物理细节，严禁随意增加或删除宝贝本身的特征。通过光影勾勒材质纹理，让产品在视觉上“触手可得”。
+      2. **价值感与心动感**：不仅是展示产品，更是塑造价值。通过极致的视觉表达和品牌氛围，将产品塑造得令人心动，产生强烈的购买欲望。
+      3. **排版美学与灵动表达**：拒绝死板的艺术堆砌。排版需兼顾现代设计美学与营销逻辑，在保持风格一致性的同时，适度引入视觉特效（如冷凝水雾、流体动态等）来增强冲击力。
+      4. **场景化叙事**：必须展示真实且高级的应用场景，让用户在场景中感知产品卖点。
+      
+      **核心要求：**
+      1. **严格执行规范**：每一屏的视觉描述、构图、光影、材质和生图提示词，必须【严格执行】设计规范中定义的色彩系统、字体系统、视觉语言（如装饰元素、留白原则）和摄影风格。
+      2. **全局视觉统一**：确保全案 6 屏在视觉语言上高度统一，建立顶级品牌感。
+      3. **输出格式**：JSON 数组，包含 ${screenCount} 个对象。
+      
+      **对象字段要求：**
+      - id: 唯一标识，如 "screen1"
+      - title: 屏标题，如 "场景展示海报"
+      - designGoal: 设计目标（结合大师级营销逻辑与设计规范）
+      - composition: 构图方案（必须体现规范中的【留白原则】和构图比例，兼顾排版美学）
+      - elements: 内容要素（包含规范中的【装饰元素】、特效元素及应用场景要素）
+      - copy: 对象，包含 main (主标题), sub (副标题), description (说明文字)
+      - mood: 氛围营造（体现规范中的【色彩系统】和【光线设计】，营造心动氛围）
+      - visualScript: 详细视觉脚本。必须严格按照以下结构化关键词格式输出：[核心主体]：...；[环境背景]：...；[光影氛围]：...；[材质细节]：...；[构图视角]：...。**所有内容必须使用中文**。
+      - prompt: 专门用于 AI 生图的高质量提示词。要求：
+        1. **必须全部使用中文描述**，严禁出现任何英文单词或字母。
+        2. 必须严格遵循 visualScript 中的结构化关键词逻辑进行自然语言扩展。
+        3. 必须在提示词中明确包含主标题 (copy.main) 和副标题 (copy.sub)，并详细描述它们在画面中的排版位置、字体风格（参考规范中的字体系统）、颜色（参考规范中的主色调）。
+        4. 提示词应详细且具有视觉张力，确保 AI 能理解如何将文字与画面完美融合，体现大师级审美。
+      
+      第一屏必须是“场景展示海报”。`,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            id: { type: Type.STRING },
+            title: { type: Type.STRING },
+            designGoal: { type: Type.STRING },
+            composition: { type: Type.STRING },
+            elements: { type: Type.STRING },
+            copy: {
+              type: Type.OBJECT,
+              properties: {
+                main: { type: Type.STRING },
+                sub: { type: Type.STRING },
+                description: { type: Type.STRING }
+              },
+              required: ["main", "sub", "description"]
+            },
+            mood: { type: Type.STRING },
+            visualScript: { type: Type.STRING },
+            prompt: { type: Type.STRING }
+          },
+          required: ["id", "title", "designGoal", "composition", "elements", "copy", "mood", "visualScript", "prompt"]
+        }
+      }
+    }
+  });
+
+  try {
+    const results = JSON.parse(response.text || '[]');
+    return results.map((item: Record<string, unknown>) => ({
+      ...item,
+      status: 'idle'
+    }));
+  } catch {
+    throw new Error("未能生成架构方案或 JSON 格式错误");
+  }
+};
+
+export const regenerateSingleDetailStoryboard = async (
+  designGuide: string,
+  currentStoryboard: DetailStoryboard,
+  keywords: string = '',
+  modelName: string = 'gemini-3-flash-preview',
+  apiKey?: string
+): Promise<DetailStoryboard> => {
+  const ai = getAiClient(apiKey);
+
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: {
+      parts: [
+        { text: `基于以下设计规范${keywords ? `和关键词（${keywords}）` : ''}，请为详情页中的这一屏（ID: ${currentStoryboard.id}，原标题: ${currentStoryboard.title}）重新生成一个更具创意、更符合大师级水准的方案：\n\n设计规范：\n${designGuide}\n\n当前方案参考：\n${JSON.stringify(currentStoryboard)}` }
+      ]
+    },
+    config: {
+      systemInstruction: `你是一位享誉业界的【电商详情页设计专业大师】。
+      任务：为详情页中的特定一屏重新设计方案。
+      要求：
+      1. 保持视觉基调与设计规范高度一致。
+      2. 在构图、视觉脚本和生图提示词上进行创新，提升价值感。
+      3. 输出格式为单个 JSON 对象，包含：id, title, designGoal, composition, elements, copy (main, sub, description), mood, visualScript, prompt。
+      4. 所有描述必须使用中文。`,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          id: { type: Type.STRING },
+          title: { type: Type.STRING },
+          designGoal: { type: Type.STRING },
+          composition: { type: Type.STRING },
+          elements: { type: Type.STRING },
+          copy: {
+            type: Type.OBJECT,
+            properties: {
+              main: { type: Type.STRING },
+              sub: { type: Type.STRING },
+              description: { type: Type.STRING }
+            },
+            required: ["main", "sub", "description"]
+          },
+          mood: { type: Type.STRING },
+          visualScript: { type: Type.STRING },
+          prompt: { type: Type.STRING }
+        },
+        required: ["id", "title", "designGoal", "composition", "elements", "copy", "mood", "visualScript", "prompt"]
+      }
+    }
+  });
+
+  try {
+    const result = JSON.parse(response.text || '{}');
+    return { ...result, status: 'idle' };
+  } catch {
+    throw new Error("未能重新生成方案或 JSON 格式错误");
+  }
+};
+
+export const updateDetailPromptFromFields = async (
+  designGuide: string,
+  storyboard: DetailStoryboard,
+  modelName: string = 'gemini-3-flash-preview',
+  apiKey?: string
+): Promise<string> => {
+  const ai = getAiClient(apiKey);
+
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: {
+      parts: [
+        { text: `基于以下设计规范和修改后的分镜要素，请重新生成一个高质量的 AI 生图提示词 (prompt)：\n\n设计规范：\n${designGuide}\n\n修改后的分镜要素：\n设计目标: ${storyboard.designGoal}\n构图方案: ${storyboard.composition}\n内容要素: ${storyboard.elements}\n视觉脚本: ${storyboard.visualScript}\n主标题: ${storyboard.copy.main}\n副标题: ${storyboard.copy.sub}` }
+      ]
+    },
+    config: {
+      systemInstruction: `你是一个顶尖的电商视觉架构师。
+      任务：根据用户修改后的分镜细节，重新生成一个【纯中文】的 AI 生图提示词。
+      要求：
+      1. 严格遵循视觉脚本的逻辑。
+      2. 融入设计规范中的色彩、光影和材质要求。
+      3. 确保提示词具有极强的视觉描述力和排版指导。
+      4. 直接输出提示词字符串，不要有任何多余文字。`,
+    }
+  });
+
+  return response.text || storyboard.prompt;
 };
