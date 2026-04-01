@@ -1940,7 +1940,7 @@ ${p.prompt}
                       onClick={() => document.getElementById('single-ref-upload')?.click()}
                     >
                       {singleRefImage ? (
-                        <div className="relative w-full h-full">
+                        <div className="relative w-full h-full cursor-zoom-in" onClick={(e) => { e.stopPropagation(); setZoomedImageUrl(singleRefImage); }}>
                           <img src={singleRefImage} className="w-full h-full object-cover" />
                           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                             <p className="text-white font-black text-sm uppercase tracking-widest">更换参考图</p>
@@ -2006,7 +2006,7 @@ ${p.prompt}
                         onClick={() => document.getElementById('single-product-upload')?.click()}
                       >
                         {singleProductImage ? (
-                          <div className="relative w-full h-full">
+                          <div className="relative w-full h-full cursor-zoom-in" onClick={(e) => { e.stopPropagation(); setZoomedImageUrl(singleProductImage); }}>
                             <img src={singleProductImage} className="w-full h-full object-cover" />
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                               <p className="text-white font-black text-sm uppercase tracking-widest">更换产品图</p>
@@ -2181,7 +2181,12 @@ ${p.prompt}
                           </div>
                         ) : singleGeneratedImage ? (
                           <>
-                            <img src={singleGeneratedImage} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            <img 
+                              src={singleGeneratedImage} 
+                              className="w-full h-full object-cover cursor-zoom-in" 
+                              referrerPolicy="no-referrer" 
+                              onClick={() => setZoomedImageUrl(singleGeneratedImage)}
+                            />
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
                               <button 
                                 onClick={() => downloadImage(singleGeneratedImage, `single-tool-${Date.now()}`)}
@@ -2212,7 +2217,7 @@ ${p.prompt}
                       onClick={() => document.getElementById('base-image-upload')?.click()}
                     >
                       {replacementBaseImage ? (
-                        <div className="relative w-full h-full">
+                        <div className="relative w-full h-full cursor-zoom-in" onClick={(e) => { e.stopPropagation(); setZoomedImageUrl(replacementBaseImage); }}>
                           <img src={replacementBaseImage} className="w-full h-full object-cover" />
                           {segmentedObjects.map((obj, idx) => (
                             <div 
@@ -2283,7 +2288,7 @@ ${p.prompt}
                       <div className="space-y-4">
                         {segmentedObjects.map((obj, idx) => (
                           <div key={obj.id} className="bg-[#F5F5F7] p-6 rounded-[24px] border border-black/5 flex gap-6 items-start">
-                            <div className="w-24 h-24 rounded-xl bg-white border border-black/5 overflow-hidden flex-shrink-0 relative">
+                            <div className="w-24 h-24 rounded-xl bg-white border border-black/5 overflow-hidden flex-shrink-0 relative cursor-zoom-in" onClick={() => setZoomedImageUrl(obj.original_crop_path)}>
                               <img src={obj.original_crop_path} className="w-full h-full object-cover" />
                               <div className={`absolute top-1 left-1 text-white text-[10px] font-black px-1.5 rounded-md ${LABEL_COLORS[idx % LABEL_COLORS.length]}`}>#{obj.id}</div>
                             </div>
@@ -2306,7 +2311,7 @@ ${p.prompt}
                                   onClick={() => document.getElementById(`replace-upload-${obj.id}`)?.click()}
                                 >
                                   {obj.replacementImage ? (
-                                    <img src={obj.replacementImage} className="h-full object-contain p-2" />
+                                    <img src={obj.replacementImage} className="h-full object-contain p-2 cursor-zoom-in" onClick={(e) => { e.stopPropagation(); setZoomedImageUrl(obj.replacementImage); }} />
                                   ) : (
                                     <>
                                       <i className="fas fa-plus text-black/20 mb-1"></i>
@@ -2477,7 +2482,12 @@ ${p.prompt}
                           </div>
                         ) : singleGeneratedImage ? (
                           <>
-                            <img src={singleGeneratedImage} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            <img 
+                              src={singleGeneratedImage} 
+                              className="w-full h-full object-cover cursor-zoom-in" 
+                              referrerPolicy="no-referrer" 
+                              onClick={() => setZoomedImageUrl(singleGeneratedImage)}
+                            />
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
                               <button 
                                 onClick={() => downloadImage(singleGeneratedImage, `replacement-tool-${Date.now()}`)}
