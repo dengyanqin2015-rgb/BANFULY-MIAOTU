@@ -57,27 +57,12 @@ export enum AppStep {
   SINGLE_TOOL = 7,
   DETAIL_ASSISTANT = 8,
   FULL_PLAN = 9,
-  WORKFLOW = 10
+  CHAT = 10
 }
 
-export interface WorkflowNode {
-  id: string;
-  type: 'input' | 'result';
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  imageUrl: string;
-  prompt?: string;
-  parentId?: string; // For connections
-  status?: 'idle' | 'loading' | 'done' | 'error';
-  errorMessage?: string;
-}
-
-export interface WorkflowConnection {
-  id: string;
-  sourceId: string;
-  targetId: string;
+export interface ChatMessage {
+  role: 'user' | 'model';
+  content: string;
 }
 
 export enum SingleToolMode {

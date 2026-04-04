@@ -214,42 +214,41 @@ export const generateEcomImage = async (params: {
   aspectRatio: string,
   imageSize?: string,
   refImageB64?: string,
+  refImagesB64?: string[], // Support plural for WorkflowView
   productImageB64?: string,
   productImagesB64?: string[], // Support multiple product images
   apiKey?: string
 }): Promise<string | undefined> => {
   const ai = getAiClient(params.apiKey);
-  const parts: Part[] = [{ text: params.prompt }];
+  const parts: Part[] = [];
   
-  if (params.refImageB64) {
-    const { mimeType, data } = parseB64(params.refImageB64);
-    parts.push({
-      inlineData: { data, mimeType }
-    });
-  }
+  // Collect all reference images
+  const allRefImages: string[] = [];
+  if (params.refImageB64) allRefImages.push(params.refImageB64);
+  if (params.refImagesB64) allRefImages.push(...params.refImagesB64);
+  if (params.productImageB64) allRefImages.push(params.productImageB64);
+  if (params.productImagesB64) allRefImages.push(...params.productImagesB64);
 
-  if (params.productImageB64) {
-    const { mimeType, data } = parseB64(params.productImageB64);
-    parts.push({
-      inlineData: { data, mimeType }
-    });
-  }
-
-  if (params.productImagesB64 && params.productImagesB64.length > 0) {
-    params.productImagesB64.forEach(b64 => {
+  if (allRefImages.length > 0) {
+    allRefImages.forEach((b64, index) => {
       const { mimeType, data } = parseB64(b64);
+      parts.push({ text: `参考图${index + 1}:` });
       parts.push({
         inlineData: { data, mimeType }
       });
     });
   }
 
+  parts.push({ text: `指令:\n${params.prompt}` });
+
   let actualModel = 'gemini-2.5-flash-image';
-  if (params.model === 'nanobanana2') {
-    actualModel = 'gemini-3.1-flash-image-preview';
-  } else if (params.model === 'nanobanana pro') {
+  if (params.model.includes('PRO 3.0') || params.model === 'nanobanana pro') {
     actualModel = 'gemini-3-pro-image-preview';
-  } else if (params.model === 'imagen') {
+  } else if (params.model.includes('FLASH 3.1') || params.model === 'nanobanana2') {
+    actualModel = 'gemini-3.1-flash-image-preview';
+  } else if (params.model.includes('Flash 2.5') || params.model === 'nanobanana') {
+    actualModel = 'gemini-2.5-flash-image';
+  } else if (params.model.includes('Image 1.5') || params.model === 'imagen') {
     actualModel = 'imagen-4.0-generate-001';
   }
 
@@ -257,7 +256,7 @@ export const generateEcomImage = async (params: {
     aspectRatio: params.aspectRatio || "1:1"
   };
   
-  if (actualModel !== 'gemini-2.5-flash-image') {
+  if (actualModel.includes('pro') || actualModel.includes('3.1')) {
     const sizeMap: Record<string, string> = {
       '0.5K': '512px',
       '1K': '1K',
@@ -289,6 +288,7 @@ export const generateEcomImage = async (params: {
       model: actualModel,
       contents: [{ parts }],
       config: {
+        systemInstruction: "你是一个专业的电商视觉设计师。你的任务是根据参考图和指令生成高质量的电商海报或产品图。你需要精准识别参考图中的产品、风格、构图和光影。如果指令要求替换文案，请确保排版美观、字体协调，并严格遵守文案替换规则（如年份替换为2026）。对于疑似品牌的英文，请进行去品牌化处理或替换为中性词汇。确保产品细节一致，特别是白色等浅色调应保持纯净，无明显色差。请直接输出生成的图像，不要返回任何确认性的文字。",
         imageConfig,
         maxOutputTokens: 2048,
         safetySettings: [

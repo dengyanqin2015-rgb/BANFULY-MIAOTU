@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
+import Markdown from 'react-markdown';
 
 declare global {
   interface Window {
@@ -11,9 +12,8 @@ declare global {
 }
 
 import * as XLSX from 'xlsx';
-import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory, DetailStoryboard } from './types';
-import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regenerateSinglePrompt, */ deconstructImage, segmentImage, detailAssistantStep1, detailAssistantStep2, detailAssistantStep3, regenerateSingleDetailStoryboard, updateDetailPromptFromFields } from './geminiService';
-import WorkflowView from './src/components/Workflow/WorkflowView';
+import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory, DetailStoryboard, ChatMessage } from './types';
+import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regenerateSinglePrompt, */ deconstructImage, segmentImage, detailAssistantStep1, detailAssistantStep2, detailAssistantStep3, regenerateSingleDetailStoryboard, updateDetailPromptFromFields, chatWithAi } from './geminiService';
 
 const BBOX_COLORS = [
   'border-blue-400 bg-blue-400/20',
@@ -32,11 +32,38 @@ const LABEL_COLORS = [
 
 const App: React.FC = () => {
   const [step, setStep] = useState<AppStep>(AppStep.FULL_PLAN);
-  const [model, setModel] = useState('gemini-3-flash-preview');
+  const [analysisModel, setAnalysisModel] = useState('gemini-3-flash-preview');
   const [loading, setLoading] = useState(false);
-  const [userApiKey, setUserApiKey] = useState<string>(() => {
-    return localStorage.getItem('user_gemini_api_key') || process.env.GEMINI_API_KEY || '';
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>(() => {
+    const saved = localStorage.getItem('user_api_keys');
+    if (saved) return JSON.parse(saved);
+    return {
+      google: process.env.GEMINI_API_KEY || '',
+      doubao: '',
+      doubao_vision_endpoint: '',
+      doubao_gen_endpoint: '',
+      claude: '',
+      deepseek: '',
+      qwen: ''
+    };
   });
+  const [showKeyConfig, setShowKeyConfig] = useState(false);
+
+  const getActiveKey = (modelName: string) => {
+    if (modelName.includes('gemini') || modelName.includes('nanobanana')) return apiKeys.google;
+    if (modelName.includes('doubao')) {
+      // Return both key and endpoints for Doubao
+      return {
+        key: apiKeys.doubao,
+        doubaoVisionEndpoint: apiKeys.doubao_vision_endpoint,
+        doubaoGenEndpoint: apiKeys.doubao_gen_endpoint
+      };
+    }
+    if (modelName.includes('claude')) return apiKeys.claude;
+    if (modelName.includes('deepseek')) return apiKeys.deepseek;
+    if (modelName.includes('qwen')) return apiKeys.qwen;
+    return apiKeys.google;
+  };
 
   // Auth 状态
   const [auth, setAuth] = useState<AuthState>({ user: null, token: null, loading: true });
@@ -142,6 +169,11 @@ const App: React.FC = () => {
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
 
+  // 问答助手状态
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatting, setIsChatting] = useState(false);
+
   useEffect(() => {
     if (zoomedImageUrl) {
       document.body.style.overflow = 'hidden';
@@ -226,15 +258,15 @@ const App: React.FC = () => {
 
   const MODEL_COSTS: Record<string, ModelCost> = {
     'nanobanana': { 
-      name: 'FLASH 2.5', 
-      label: 'BALANCED',
+      name: 'Gemini 2.5 Flash', 
+      label: '平衡型 (Balanced)',
       resolutions: {
         '1K': { cost: 0.039, rmb: 0.3 }
       }
     },
     'nanobanana2': { 
-      name: 'FLASH 3.1', 
-      label: 'HIGH FIDELITY',
+      name: 'Gemini 3.1 Flash', 
+      label: '高保真 (High Fidelity)',
       resolutions: {
         '0.5K': { cost: 0.045, rmb: 0.3 },
         '1K': { cost: 0.067, rmb: 0.5 },
@@ -243,12 +275,33 @@ const App: React.FC = () => {
       }
     },
     'nanobanana pro': { 
-      name: 'PRO 3.0', 
-      label: 'CINEMA GRADE',
+      name: 'Gemini 3.0 Pro', 
+      label: '电影级 (Cinema Grade)',
       resolutions: {
         '1K': { cost: 0.134, rmb: 1.0 },
         '2K': { cost: 0.134, rmb: 1.0 },
         '4K': { cost: 0.24, rmb: 1.7 }
+      }
+    },
+    'doubao-seedream-5.0-lite': {
+      name: 'Doubao-Seedream-5.0-lite',
+      label: '字节跳动旗舰生图',
+      resolutions: {
+        '1K': { cost: 0.1, rmb: 0.8 }
+      }
+    },
+    'doubao-seedream-4.5': {
+      name: 'Doubao-Seedream-4.5',
+      label: '高保真生图',
+      resolutions: {
+        '1K': { cost: 0.08, rmb: 0.6 }
+      }
+    },
+    'doubao-seedream-4.0': {
+      name: 'Doubao-Seedream-4.0',
+      label: '经典生图',
+      resolutions: {
+        '1K': { cost: 0.05, rmb: 0.4 }
       }
     }
   };
@@ -643,12 +696,37 @@ ${p.prompt}
     });
   };
 
+  const handleChat = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || isChatting) return;
+
+    const userMsg: ChatMessage = { role: 'user', content: chatInput };
+    setChatMessages(prev => [...prev, userMsg]);
+    setChatInput('');
+    setIsChatting(true);
+
+    try {
+      const history = chatMessages.map(m => ({
+        role: m.role === 'user' ? 'user' as const : 'model' as const,
+        parts: [{ text: m.content }]
+      }));
+      const response = await chatWithAi(chatInput, history, analysisModel, getActiveKey(analysisModel));
+      const modelMsg: ChatMessage = { role: 'ai', content: response };
+      setChatMessages(prev => [...prev, modelMsg]);
+    } catch (err: unknown) {
+      const error = err as Error;
+      alert("对话失败: " + error.message);
+    } finally {
+      setIsChatting(false);
+    }
+  };
+
   // 步骤执行函数
   const runStep1 = async () => {
     if (!styleImage) return;
     setLoading(true);
     try {
-      const res = await decodeStyle(styleImage, model, userApiKey);
+      const res = await decodeStyle(styleImage, analysisModel, getActiveKey(analysisModel));
       setConstitution(res);
     } catch (err) {
       alert("分析风格失败: " + err.message);
@@ -664,7 +742,7 @@ ${p.prompt}
     }
     setDetailLoading(true);
     try {
-      const res = await detailAssistantStep1(productImages, productKeywords, model, userApiKey);
+      const res = await detailAssistantStep1(productImages, productKeywords, analysisModel, getActiveKey(analysisModel));
       setDetailProductAnalysis(res);
       setDetailStep(2);
     } catch (err: unknown) {
@@ -679,7 +757,7 @@ ${p.prompt}
     if (!detailProductAnalysis) return;
     setDetailLoading(true);
     try {
-      const res = await detailAssistantStep2(detailProductAnalysis, productKeywords, model, userApiKey);
+      const res = await detailAssistantStep2(detailProductAnalysis, productKeywords, analysisModel, getActiveKey(analysisModel));
       setDetailDesignGuide(res);
       setDetailStep(3);
     } catch (err: unknown) {
@@ -694,7 +772,7 @@ ${p.prompt}
     if (!detailDesignGuide) return;
     setDetailLoading(true);
     try {
-      const res = await detailAssistantStep3(detailDesignGuide, productKeywords, detailScreenCount, model, userApiKey);
+      const res = await detailAssistantStep3(detailDesignGuide, productKeywords, detailScreenCount, analysisModel, getActiveKey(analysisModel));
       setDetailStoryboards(res);
     } catch (err: unknown) {
       const error = err as Error;
@@ -710,7 +788,7 @@ ${p.prompt}
     
     setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, status: 'loading' } : s));
     try {
-      const res = await regenerateSingleDetailStoryboard(detailDesignGuide, sb, productKeywords, model, userApiKey);
+      const res = await regenerateSingleDetailStoryboard(detailDesignGuide, sb, productKeywords, analysisModel, getActiveKey(analysisModel));
       // Keep existing images and ID
       setDetailStoryboards(prev => prev.map(s => s.id === id ? { 
         ...res, 
@@ -731,7 +809,7 @@ ${p.prompt}
     if (!sb || !detailDesignGuide) return;
     
     try {
-      const newPrompt = await updateDetailPromptFromFields(detailDesignGuide, sb, model, userApiKey);
+      const newPrompt = await updateDetailPromptFromFields(detailDesignGuide, sb, analysisModel, getActiveKey(analysisModel));
       updateDetailStoryboard(id, 'prompt', newPrompt);
     } catch (err: unknown) {
       console.error("更新提示词失败", err);
@@ -742,8 +820,8 @@ ${p.prompt}
     const sb = detailStoryboards.find(s => s.id === id);
     if (!sb) return;
 
-    if (!userApiKey) {
-      alert("请先配置 API Key（点击右上角设置图标）");
+    if (!getActiveKey(genModel)) {
+      alert("请先配置该品牌的 API Key（点击右上角设置图标）");
       return;
     }
 
@@ -770,7 +848,7 @@ ${p.prompt}
         aspectRatio: genAspectRatio,
         imageSize: genResolution,
         refImageB64: refImage,
-        apiKey: userApiKey
+        apiKey: getActiveKey(genModel)
       });
 
       if (imageUrl) {
@@ -851,12 +929,12 @@ ${p.prompt}
     setAnalysis(null);
     const combinedInfo = `卖点:${sellingPoints}, 允许:${allowedElements}, 禁止:${prohibitedElements}`;
     try {
-      const res = await analyzeProduct(productImages, combinedInfo, strategyType, model, compositionRefImage, userApiKey);
+      const res = await analyzeProduct(productImages, combinedInfo, strategyType, analysisModel, compositionRefImage, getActiveKey(analysisModel));
       setAnalysis({ ...res, selling_points: sellingPoints, allowed_elements: allowedElements, prohibited_elements: prohibitedElements });
       
       // 方案融合：将视觉风格与策划分镜结合，生成最终生图指令
       if (constitution) {
-        const prompts = await fusePrompts(constitution, { ...res, selling_points: sellingPoints, allowed_elements: allowedElements, prohibited_elements: prohibitedElements }, model, userApiKey);
+        const prompts = await fusePrompts(constitution, { ...res, selling_points: sellingPoints, allowed_elements: allowedElements, prohibited_elements: prohibitedElements }, analysisModel, getActiveKey(analysisModel));
         
         // 新增：全案预览（6宫格）卡片
         const previewPrompt: FinalPrompt = {
@@ -950,7 +1028,7 @@ ${p.prompt}
         aspectRatio: genAspectRatio,
         imageSize: genResolution,
         refImageB64: overrideRefImage || cardRefImages[cardId],
-        apiKey: userApiKey
+        apiKey: getActiveKey(genModel)
       });
       if (res) {
         // 成功后扣除点数
@@ -1003,7 +1081,7 @@ ${p.prompt}
       const storyboard = analysis.storyboards.find(sb => sb.id === cardId);
       if (!storyboard) throw new Error('Storyboard not found');
 
-      const newPrompt = await regenerateSinglePrompt(constitution, storyboard, analysis, model, userApiKey);
+      const newPrompt = await regenerateSinglePrompt(constitution, storyboard, analysis, analysisModel, getActiveKey(analysisModel));
       setFinalPrompts(prev => prev.map(p => p.id === cardId ? { ...p, prompt: newPrompt } : p));
     } catch (err) {
       alert(`重新生成失败: ${err.message}`);
@@ -1127,16 +1205,16 @@ ${p.prompt}
 
   const runSingleDeconstruction = async (base64: string) => {
     console.log("Starting single deconstruction with base64 length:", base64.length);
-    if (!userApiKey) {
-      console.warn("No API Key found");
-      alert("请先配置 API Key");
+    if (!getActiveKey(analysisModel)) {
+      console.warn("No API Key found for current model");
+      alert("请先配置该品牌的 API Key");
       return;
     }
     setDeconstructionResult(null);
     setIsDeconstructing(true);
     try {
-      console.log("Calling deconstructImage with model:", model);
-      const result = await deconstructImage(base64, model, userApiKey);
+      console.log("Calling deconstructImage with model:", analysisModel);
+      const result = await deconstructImage(base64, analysisModel, getActiveKey(analysisModel));
       console.log("Deconstruction result received successfully:", result);
       setDeconstructionResult(result);
       setEditablePrompt(result.generated_prompt);
@@ -1150,8 +1228,8 @@ ${p.prompt}
   };
 
   const runSingleGeneration = async () => {
-    if (!userApiKey) {
-      alert("请先配置 API Key");
+    if (!getActiveKey(genModel)) {
+      alert("请先配置该品牌的 API Key");
       return;
     }
     if (!deconstructionResult || !singleProductImage) {
@@ -1176,7 +1254,7 @@ ${p.prompt}
         model: genModel,
         aspectRatio: genAspectRatio,
         imageSize: genResolution,
-        apiKey: userApiKey
+        apiKey: getActiveKey(genModel)
       });
 
       if (imageUrl) {
@@ -1201,13 +1279,13 @@ ${p.prompt}
   };
 
   const runSegmentation = async (imageB64: string) => {
-    if (!userApiKey) {
-      alert("请先配置 API Key");
+    if (!getActiveKey(analysisModel)) {
+      alert("请先配置该品牌的 API Key");
       return;
     }
     setIsSegmenting(true);
     try {
-      const objects = await segmentImage(imageB64, model, userApiKey);
+      const objects = await segmentImage(imageB64, analysisModel, getActiveKey(analysisModel));
       
       // 为每个物体生成裁剪图
       const objectsWithCrops = await Promise.all(objects.map(async obj => {
@@ -1225,8 +1303,8 @@ ${p.prompt}
   };
 
   const runReplacementGeneration = async () => {
-    if (!userApiKey) {
-      alert("请先配置 API Key");
+    if (!getActiveKey(genModel)) {
+      alert("请先配置该品牌的 API Key");
       return;
     }
     if (!replacementBaseImage || segmentedObjects.length === 0) {
@@ -1263,7 +1341,7 @@ ${p.prompt}
         model: genModel,
         aspectRatio: genAspectRatio,
         imageSize: genResolution,
-        apiKey: userApiKey
+        apiKey: getActiveKey(genModel)
       });
 
       if (imageUrl) {
@@ -1370,85 +1448,174 @@ ${p.prompt}
   return (
     <div className="min-h-screen flex flex-col selection:bg-black selection:text-white">
       {/* 导航栏 */}
-      {step !== AppStep.WORKFLOW && (
-        <header className="h-14 glass-nav flex items-center justify-between px-8 sticky top-0 z-50 shadow-sm">
-          <div className="flex items-center gap-6">
-            <div className="text-lg font-extrabold tracking-tighter text-black cursor-pointer" onClick={() => setStep(AppStep.FULL_PLAN)}>BANFULY <span className="text-[#6e6e73] font-light">ARCHITECT</span></div>
-            <div className="step-capsule flex gap-1 items-center bg-[#F5F5F7] border border-black/5 shadow-inner">
-              {[
-                { id: AppStep.FULL_PLAN, label: '全案策划' },
-                { id: AppStep.WORKFLOW, label: '工作流生图' },
-                { id: AppStep.DETAIL_ASSISTANT, label: '详情助手' },
-                { id: AppStep.SINGLE_TOOL, label: '单图灵活工具' },
-                { id: AppStep.HISTORY, label: '生图历史' },
-                { id: AppStep.PROFILE, label: '个人中心' },
-                ...(auth.user.role === 'admin' ? [{ id: AppStep.ADMIN_PANEL, label: '管理后台' }] : [])
-              ].map((s) => (
-                <button
-                  key={s.id}
-                  disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL && s.id !== AppStep.DETAIL_ASSISTANT && s.id !== AppStep.FULL_PLAN && s.id !== AppStep.WORKFLOW}
-                  onClick={() => activeStep(s.id)}
-                  className={`px-4 py-1.5 rounded-full text-[11px] font-bold transition-all duration-500 ${step === s.id ? 'bg-white shadow-md text-black scale-105' : 'text-[#86868b] opacity-60 hover:opacity-100'}`}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-4 mr-4 border-r border-black/10 pr-4">
-              <div className="text-right">
-                <p className="text-[10px] font-black text-black leading-none">{auth.user.username}</p>
-                <p className="text-[9px] font-bold text-[#0071e3] mt-1">生图点数: {auth.user.credits}</p>
-              </div>
-              <button onClick={handleLogout} className="w-8 h-8 rounded-full bg-[#F5F5F7] flex items-center justify-center text-[#86868b] hover:text-red-500 transition-all">
-                <i className="fas fa-sign-out-alt text-xs"></i>
+      <header className="h-14 glass-nav flex items-center justify-between px-8 sticky top-0 z-50 shadow-sm">
+        <div className="flex items-center gap-6">
+          <div className="text-lg font-extrabold tracking-tighter text-black cursor-pointer" onClick={() => setStep(AppStep.FULL_PLAN)}>BANFULY <span className="text-[#6e6e73] font-light">ARCHITECT</span></div>
+          <div className="step-capsule flex gap-1 items-center bg-[#F5F5F7] border border-black/5 shadow-inner">
+            {[
+              { id: AppStep.FULL_PLAN, label: '全案策划' },
+              { id: AppStep.DETAIL_ASSISTANT, label: '详情助手' },
+              { id: AppStep.SINGLE_TOOL, label: '单图灵活工具' },
+              { id: AppStep.CHAT, label: '问答助手' },
+              { id: AppStep.HISTORY, label: '生图历史' },
+              { id: AppStep.PROFILE, label: '个人中心' },
+              ...(auth.user.role === 'admin' ? [{ id: AppStep.ADMIN_PANEL, label: '管理后台' }] : [])
+            ].map((s) => (
+              <button
+                key={s.id}
+                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL && s.id !== AppStep.DETAIL_ASSISTANT && s.id !== AppStep.FULL_PLAN}
+                onClick={() => activeStep(s.id)}
+                className={`px-4 py-1.5 rounded-full text-[11px] font-bold transition-all duration-500 ${step === s.id ? 'bg-white shadow-md text-black scale-105' : 'text-[#86868b] opacity-60 hover:opacity-100'}`}
+              >
+                {s.label}
               </button>
-            </div>
-            <div className="flex items-center gap-2">
-            </div>
-            <button 
-              onClick={async () => {
-                if (typeof window !== 'undefined' && window.aistudio) {
-                  await window.aistudio.openSelectKey();
-                } else {
-                  const key = prompt("请输入您的 Google Gemini API Key (将保存在本地浏览器中):", userApiKey);
-                  if (key) {
-                    setUserApiKey(key);
-                    localStorage.setItem('user_gemini_api_key', key);
-                    alert("API Key 已保存");
-                  }
-                }
-              }}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#F5F5F7] text-[#0071e3] border border-[#0071e3]/20 hover:bg-[#0071e3]/5 transition-all shadow-sm"
-            >
-              <i className="fas fa-key"></i>
-              {userApiKey ? '已配置 Key' : '配置 API Key'}
-            </button>
-            <select 
-              value={model} 
-              onChange={(e) => setModel(e.target.value)}
-              className="bg-white border border-black/10 px-3 py-1.5 rounded-lg text-[11px] font-bold outline-none cursor-pointer shadow-sm hover:border-[#0071e3]/30 transition-all"
-            >
-              <option value="gemini-3-flash-preview">FLASH 3.0 (极速引擎)</option>
-              <option value="gemini-3.1-pro-preview">PRO 3.1 (高保真引擎)</option>
-            </select>
+            ))}
           </div>
-        </header>
-      )}
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 mr-4 border-r border-black/10 pr-4">
+            <div className="text-right">
+              <p className="text-[10px] font-black text-black leading-none">{auth.user.username}</p>
+              <p className="text-[9px] font-bold text-[#0071e3] mt-1">生图点数: {auth.user.credits}</p>
+            </div>
+            <button onClick={handleLogout} className="w-8 h-8 rounded-full bg-[#F5F5F7] flex items-center justify-center text-[#86868b] hover:text-red-500 transition-all">
+              <i className="fas fa-sign-out-alt text-xs"></i>
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+          </div>
+          <button 
+            onClick={() => setShowKeyConfig(true)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#F5F5F7] text-[#0071e3] border border-[#0071e3]/20 hover:bg-[#0071e3]/5 transition-all shadow-sm"
+          >
+            <i className="fas fa-key"></i>
+            {Object.values(apiKeys).some(k => k) ? '已配置 Key' : '配置 API Key'}
+          </button>
+          <select 
+            value={analysisModel} 
+            onChange={(e) => setAnalysisModel(e.target.value)}
+            className="bg-white border border-black/10 px-3 py-1.5 rounded-lg text-[11px] font-bold outline-none cursor-pointer shadow-sm hover:border-[#0071e3]/30 transition-all"
+          >
+            <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite (极致性价比)</option>
+            <option value="gemini-3-flash-preview">Gemini 3.0 Flash (极速引擎)</option>
+            <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (高保真引擎)</option>
+            <option value="doubao-seedream-5.0-lite">Doubao-Seedream-5.0-lite (旗舰生图)</option>
+            <option value="doubao-seedream-4.5">Doubao-Seedream-4.5 (高保真生图)</option>
+            <option value="doubao-seedream-4.0">Doubao-Seedream-4.0 (经典生图)</option>
+          </select>
+        </div>
+      </header>
 
-      <main className={`flex-1 ${step === AppStep.WORKFLOW ? 'w-full h-screen p-0 overflow-hidden' : 'max-w-[1440px] mx-auto w-full px-8 py-8'}`}>
-        {step === AppStep.WORKFLOW && (
-          <WorkflowView 
-            userApiKey={userApiKey}
-            auth={auth}
-            deductCredit={deductCredit}
-            genModel={genModel}
-            genResolution={genResolution}
-            genAspectRatio={genAspectRatio}
-            onBack={() => setStep(AppStep.FULL_PLAN)}
-          />
+      <main className="flex-1 max-w-[1440px] mx-auto w-full px-8 py-8">
+        {/* API Key 配置模态框 */}
+        {showKeyConfig && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 animate-fade-in">
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-md" onClick={() => setShowKeyConfig(false)}></div>
+            <div className="relative w-full max-w-md bg-white rounded-[32px] shadow-2xl overflow-hidden animate-scale-up">
+              <div className="p-8 border-b border-black/5 flex justify-between items-center bg-[#fbfbfd]">
+                <div>
+                  <h2 className="text-xl font-black tracking-tight text-black">多品牌 API Key 配置</h2>
+                  <p className="text-[10px] text-[#86868b] font-bold mt-1 uppercase tracking-widest">系统将根据所选模型自动切换 Key</p>
+                </div>
+                <button onClick={() => setShowKeyConfig(false)} className="w-8 h-8 rounded-full bg-black/5 flex items-center justify-center hover:bg-black hover:text-white transition-all">
+                  <i className="fas fa-times text-xs"></i>
+                </button>
+              </div>
+              <div className="p-8 space-y-6">
+                <div className="space-y-4">
+                  <div>
+                    <label className="section-label text-[9px] mb-2 block opacity-60 font-black uppercase tracking-widest">Google Gemini Key</label>
+                    <input 
+                      type="password" 
+                      value={apiKeys.google}
+                      onChange={(e) => setApiKeys(prev => ({ ...prev, google: e.target.value }))}
+                      placeholder="输入 Google AI Studio API Key"
+                      className="w-full bg-[#F5F5F7] border border-black/5 rounded-xl p-3 text-[13px] font-bold outline-none focus:ring-2 focus:ring-[#0071e3]/20 transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="section-label text-[9px] mb-2 block opacity-60 font-black uppercase tracking-widest">字节跳动 豆包 Key</label>
+                    <input 
+                      type="password" 
+                      value={apiKeys.doubao}
+                      onChange={(e) => setApiKeys(prev => ({ ...prev, doubao: e.target.value }))}
+                      placeholder="输入火山引擎 API Key"
+                      className="w-full bg-[#F5F5F7] border border-black/5 rounded-xl p-3 text-[13px] font-bold outline-none focus:ring-2 focus:ring-[#0071e3]/20 transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="section-label text-[9px] mb-2 block opacity-60 font-black uppercase tracking-widest">豆包 视觉/文本分析 Endpoint ID (可选)</label>
+                    <input 
+                      type="text" 
+                      value={apiKeys.doubao_vision_endpoint}
+                      onChange={(e) => setApiKeys(prev => ({ ...prev, doubao_vision_endpoint: e.target.value }))}
+                      placeholder="输入推理端点 ID (如 ep-2024...)"
+                      className="w-full bg-[#F5F5F7] border border-black/5 rounded-xl p-3 text-[13px] font-bold outline-none focus:ring-2 focus:ring-[#0071e3]/20 transition-all"
+                    />
+                    <p className="text-[10px] text-[#86868b] mt-1 flex justify-between">
+                      <span>分析任务回退端点。若不填则默认使用 doubao-pro-32k</span>
+                      <a href="https://console.volcengine.com/ark/region:ark+cn-beijing/endpoint" target="_blank" rel="noopener noreferrer" className="text-[#0071e3] hover:underline">去控制台查看</a>
+                    </p>
+                  </div>
+                  <div>
+                    <label className="section-label text-[9px] mb-2 block opacity-60 font-black uppercase tracking-widest">豆包 Seedream 生图 Endpoint ID (必填)</label>
+                    <input 
+                      type="text" 
+                      value={apiKeys.doubao_gen_endpoint}
+                      onChange={(e) => setApiKeys(prev => ({ ...prev, doubao_gen_endpoint: e.target.value }))}
+                      placeholder="输入生图推理端点 ID (如 ep-2024...)"
+                      className="w-full bg-[#F5F5F7] border border-black/5 rounded-xl p-3 text-[13px] font-bold outline-none focus:ring-2 focus:ring-[#0071e3]/20 transition-all"
+                    />
+                    <p className="text-[10px] text-[#86868b] mt-1">生图任务必须提供有效的推理端点 ID。请在火山引擎控制台创建并获取。</p>
+                  </div>
+                  <div>
+                    <label className="section-label text-[9px] mb-2 block opacity-60 font-black uppercase tracking-widest">Anthropic Claude Key</label>
+                    <input 
+                      type="password" 
+                      value={apiKeys.claude}
+                      onChange={(e) => setApiKeys(prev => ({ ...prev, claude: e.target.value }))}
+                      placeholder="输入 Anthropic API Key"
+                      className="w-full bg-[#F5F5F7] border border-black/5 rounded-xl p-3 text-[13px] font-bold outline-none focus:ring-2 focus:ring-[#0071e3]/20 transition-all"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="section-label text-[9px] mb-2 block opacity-60 font-black uppercase tracking-widest">DeepSeek Key</label>
+                      <input 
+                        type="password" 
+                        value={apiKeys.deepseek}
+                        onChange={(e) => setApiKeys(prev => ({ ...prev, deepseek: e.target.value }))}
+                        placeholder="DeepSeek Key"
+                        className="w-full bg-[#F5F5F7] border border-black/5 rounded-xl p-3 text-[13px] font-bold outline-none focus:ring-2 focus:ring-[#0071e3]/20 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="section-label text-[9px] mb-2 block opacity-60 font-black uppercase tracking-widest">通义千问 Key</label>
+                      <input 
+                        type="password" 
+                        value={apiKeys.qwen}
+                        onChange={(e) => setApiKeys(prev => ({ ...prev, qwen: e.target.value }))}
+                        placeholder="阿里云 Key"
+                        className="w-full bg-[#F5F5F7] border border-black/5 rounded-xl p-3 text-[13px] font-bold outline-none focus:ring-2 focus:ring-[#0071e3]/20 transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => {
+                    localStorage.setItem('user_api_keys', JSON.stringify(apiKeys));
+                    setShowKeyConfig(false);
+                    alert("配置已保存，系统将自动匹配模型调用");
+                  }}
+                  className="w-full py-4 bg-black text-white rounded-2xl text-[14px] font-black shadow-xl hover:scale-[1.02] active:scale-95 transition-all"
+                >
+                  保存配置
+                </button>
+              </div>
+            </div>
+          </div>
         )}
+
         {step === AppStep.DETAIL_ASSISTANT && (
           <div className="animate-slide-up">
             <div className="flex items-end justify-between mb-10">
@@ -1493,12 +1660,9 @@ ${p.prompt}
 
                   <div className="flex-1 overflow-y-auto max-h-[250px] mb-6 prose-orange border-t border-black/5 pt-4 no-scrollbar">
                     {detailProductAnalysis ? (
-                      <textarea 
-                        className="w-full h-full bg-transparent text-[13px] font-medium text-black leading-relaxed border-none focus:ring-0 p-0 outline-none resize-none no-scrollbar"
-                        value={detailProductAnalysis}
-                        onChange={(e) => setDetailProductAnalysis(e.target.value)}
-                        placeholder="产品识别结果..."
-                      />
+                      <div className="markdown-body">
+                        <Markdown>{detailProductAnalysis}</Markdown>
+                      </div>
                     ) : (
                       <div className="h-full flex flex-col items-center justify-center text-[#86868b] opacity-40 italic py-10">
                         <i className="fas fa-microchip text-4xl mb-4"></i>
@@ -1537,12 +1701,9 @@ ${p.prompt}
 
                   <div className="flex-1 overflow-y-auto max-h-[250px] mb-6 prose-orange no-scrollbar">
                     {detailDesignGuide ? (
-                      <textarea 
-                        className="w-full h-full bg-transparent text-[13px] font-medium text-black leading-relaxed border-none focus:ring-0 p-0 outline-none resize-none no-scrollbar"
-                        value={detailDesignGuide}
-                        onChange={(e) => setDetailDesignGuide(e.target.value)}
-                        placeholder="设计规范结果..."
-                      />
+                      <div className="markdown-body">
+                        <Markdown>{detailDesignGuide}</Markdown>
+                      </div>
                     ) : (
                       <div className="h-full flex flex-col items-center justify-center text-[#86868b] opacity-40 italic py-10">
                         <i className="fas fa-drafting-compass text-4xl mb-4"></i>
@@ -1597,7 +1758,13 @@ ${p.prompt}
                           return (
                             <button 
                               key={key}
-                              onClick={() => setGenModel(key)} 
+                              onClick={() => {
+                                setGenModel(key);
+                                // 如果当前分辨率在该模型中不存在，重置为该模型的第一个可用分辨率
+                                if (!cfg.resolutions[genResolution]) {
+                                  setGenResolution(Object.keys(cfg.resolutions)[0]);
+                                }
+                              }} 
                               className={`p-4 rounded-2xl border-2 text-left transition-all duration-300 flex flex-col gap-1 ${isSelected ? 'border-black bg-black text-white shadow-xl scale-[1.02]' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}
                             >
                               <div className="flex justify-between items-start">
@@ -3177,6 +3344,102 @@ ${p.prompt}
           </div>
         )}
 
+        {step === AppStep.CHAT && (
+          <div className="max-w-4xl mx-auto animate-slide-up h-[calc(100vh-180px)] flex flex-col">
+            <div className="flex items-end justify-between mb-8">
+              <div>
+                <div className="section-label mb-3 text-[#0071e3]">AI Chat Assistant</div>
+                <h1 className="text-4xl font-black tracking-tighter text-black">问答助手</h1>
+                <p className="text-[#86868b] text-sm mt-2">咨询电商设计、AI生图技巧或模型费用</p>
+              </div>
+              <button 
+                onClick={() => setChatMessages([])}
+                className="text-[11px] font-bold text-[#86868b] hover:text-red-500 transition-all"
+              >
+                清除对话历史
+              </button>
+            </div>
+
+            <div className="flex-1 apple-card bg-white border-black/10 shadow-xl flex flex-col overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-8 space-y-6 no-scrollbar">
+                {chatMessages.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-[#86868b] opacity-40 italic">
+                    <i className="fas fa-comments text-5xl mb-4"></i>
+                    <p className="text-sm font-bold">你好！我是你的电商视觉助手，有什么可以帮你的吗？</p>
+                    <div className="mt-8 grid grid-cols-2 gap-4 w-full max-w-md not-italic">
+                      {[
+                        "如何写出高质量的生图提示词？",
+                        "不同模型的生图费用是怎么计算的？",
+                        "DeepSeek 模型有什么优势？",
+                        "帮我策划一个高端护肤品的详情页。"
+                      ].map(q => (
+                        <button 
+                          key={q}
+                          onClick={() => { setChatInput(q); }}
+                          className="p-3 rounded-xl bg-[#F5F5F7] text-[11px] font-bold text-black hover:bg-black hover:text-white transition-all text-left"
+                        >
+                          {q}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  chatMessages.map((msg, i) => (
+                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[80%] p-5 rounded-2xl text-[14px] leading-relaxed shadow-sm ${
+                        msg.role === 'user' 
+                          ? 'bg-black text-white rounded-tr-none' 
+                          : 'bg-[#F5F5F7] text-black rounded-tl-none border border-black/5'
+                      }`}>
+                        <div className="markdown-body">
+                          <Markdown>{msg.content}</Markdown>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+                {isChatting && (
+                  <div className="flex justify-start">
+                    <div className="bg-[#F5F5F7] p-5 rounded-2xl rounded-tl-none border border-black/5 shadow-sm">
+                      <div className="flex gap-1">
+                        <div className="w-1.5 h-1.5 bg-[#86868b] rounded-full animate-bounce"></div>
+                        <div className="w-1.5 h-1.5 bg-[#86868b] rounded-full animate-bounce [animation-delay:0.2s]"></div>
+                        <div className="w-1.5 h-1.5 bg-[#86868b] rounded-full animate-bounce [animation-delay:0.4s]"></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <form onSubmit={handleChat} className="p-6 border-t border-black/5 bg-[#fbfbfd]">
+                <div className="relative flex items-center">
+                  <input 
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    placeholder="输入您的问题..."
+                    className="w-full bg-white border border-black/10 rounded-2xl py-4 pl-6 pr-16 text-[14px] font-bold outline-none focus:ring-2 focus:ring-[#0071e3]/20 shadow-inner transition-all"
+                  />
+                  <button 
+                    type="submit"
+                    disabled={!chatInput.trim() || isChatting}
+                    className="absolute right-3 w-10 h-10 bg-black text-white rounded-xl flex items-center justify-center hover:scale-105 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed transition-all shadow-lg"
+                  >
+                    <i className="fas fa-paper-plane text-xs"></i>
+                  </button>
+                </div>
+                <div className="mt-3 flex items-center justify-between px-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-black text-[#86868b] uppercase tracking-widest">当前模型:</span>
+                    <span className="text-[9px] font-black text-[#0071e3] uppercase tracking-widest">{model}</span>
+                  </div>
+                  <p className="text-[9px] font-bold text-[#86868b] opacity-60">按回车键发送消息</p>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
         {step === AppStep.FULL_PLAN && (
           <div className="space-y-20 animate-slide-up pb-20">
             {/* Section 1: Style Decoder */}
@@ -3482,7 +3745,7 @@ ${p.prompt}
                         <>
                           <img 
                             src={cardGeneratedImages[p.id]} 
-                            className="w-full h-full object-cover transition-all duration-700 hover:opacity-80" 
+                            className="w-full h-full object-contain transition-all duration-700 hover:opacity-80" 
                             alt={p.title}
                           />
                           <div className="absolute inset-0 bg-black/0 group-hover/img:bg-black/10 transition-all flex items-center justify-center pointer-events-none">
@@ -3501,10 +3764,24 @@ ${p.prompt}
                     <div className="space-y-6 flex-1 flex flex-col">
                       <div className="bg-[#F5F5F7] p-5 rounded-[20px] border border-black/5 shadow-inner">
                         <div className="section-label text-[8px] mb-2 opacity-60 font-black flex justify-between tracking-widest uppercase">
+                           <span>策划构思 / CONCEPT</span>
+                        </div>
+                        <p className="text-[12px] font-bold text-[#6e6e73] leading-relaxed">{p.concept}</p>
+                      </div>
+
+                      <div className="bg-[#F5F5F7] p-5 rounded-[20px] border border-black/5 shadow-inner">
+                        <div className="section-label text-[8px] mb-2 opacity-60 font-black flex justify-between tracking-widest uppercase">
                            <span>核心营销文案</span>
                            <span className="text-[#0071e3] opacity-60 text-[7px] cursor-pointer">修改</span>
                         </div>
                         <textarea className="w-full bg-transparent border-none text-[15px] font-black text-black leading-snug focus:ring-0 p-0 resize-none min-h-[40px] tracking-tight no-scrollbar" value={p.copy} rows={2} onChange={(e) => updatePromptCopy(p.id, e.target.value)} />
+                      </div>
+
+                      <div className="bg-[#F5F5F7] p-5 rounded-[20px] border border-black/5 shadow-inner">
+                        <div className="section-label text-[8px] mb-2 opacity-60 font-black flex justify-between tracking-widest uppercase">
+                           <span>生图指令 / PROMPT</span>
+                        </div>
+                        <p className="text-[11px] font-medium text-[#86868b] line-clamp-3 hover:line-clamp-none transition-all cursor-help" title={p.prompt}>{p.prompt}</p>
                       </div>
                       
                       <div className="grid grid-cols-2 gap-3">
@@ -3576,7 +3853,12 @@ ${p.prompt}
                       return (
                         <button 
                           key={key}
-                          onClick={() => setGenModel(key)} 
+                          onClick={() => {
+                            setGenModel(key);
+                            if (!cfg.resolutions[genResolution]) {
+                              setGenResolution(Object.keys(cfg.resolutions)[0]);
+                            }
+                          }} 
                           className={`p-6 rounded-2xl border-2 text-left transition-all duration-500 relative overflow-hidden ${isSelected ? 'border-black bg-black text-white shadow-lg scale-[1.02]' : 'border-[#F5F5F7] bg-[#F5F5F7] hover:border-black/10'}`}
                         >
                           <div className={`text-[15px] font-black ${isSelected ? 'text-white' : 'text-black'}`}>{cfg.name}</div>
@@ -3745,15 +4027,13 @@ ${p.prompt}
       )}
 
       {/* 页脚 */}
-      {step !== AppStep.WORKFLOW && (
-        <footer className="h-14 glass-nav flex items-center px-10 justify-between text-[10px] font-black tracking-widest text-[#86868b] border-t border-black/5">
-          <div className="flex items-center gap-6">
-            <span className="flex items-center gap-2.5"><div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-md"></div> RENDER ENGINE READY</span>
-            <span className="opacity-50 uppercase">Architect Core V3.3 · Mode: {strategyType === StrategyType.DETAIL ? 'Detail Story' : 'Marketing Impact'}</span>
-          </div>
-          <div className="opacity-40 uppercase">Copyright © 2025 BANFULY Visual LAB.</div>
-        </footer>
-      )}
+      <footer className="h-14 glass-nav flex items-center px-10 justify-between text-[10px] font-black tracking-widest text-[#86868b] border-t border-black/5">
+        <div className="flex items-center gap-6">
+          <span className="flex items-center gap-2.5"><div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-md"></div> RENDER ENGINE READY</span>
+          <span className="opacity-50 uppercase">Architect Core V3.3 · Mode: {strategyType === StrategyType.DETAIL ? 'Detail Story' : 'Marketing Impact'}</span>
+        </div>
+        <div className="opacity-40 uppercase">Copyright © 2025 BANFULY Visual LAB.</div>
+      </footer>
     </div>
   );
 };
