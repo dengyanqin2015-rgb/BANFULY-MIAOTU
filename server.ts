@@ -476,42 +476,6 @@ const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
   next();
 };
 
-app.post("/api/proxy/volcengine/:targetPath*", authenticateToken, async (req: AuthRequest, res: Response) => {
-  const targetPath = req.params.targetPath;
-  const volcUrl = `https://ark.cn-beijing.volces.com/api/v3/${targetPath}`;
-  
-  console.log(`[Proxy] Forwarding to Volcengine: ${volcUrl}`);
-  
-  try {
-    const volcKey = req.get('x-volcengine-key');
-    const response = await fetch(volcUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${volcKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(req.body)
-    });
-
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("application/json")) {
-      const data = await response.json();
-      res.status(response.status).json(data);
-    } else {
-      const text = await response.text();
-      console.error(`[Proxy] Volcengine returned non-JSON response (${response.status}):`, text.substring(0, 200));
-      res.status(response.status).json({ 
-        error: { 
-          message: `Volcengine returned an unexpected response format (${response.status}). Please check your Endpoint ID and API Key.` 
-        } 
-      });
-    }
-  } catch (err) {
-    console.error("Volcengine Proxy Error:", err);
-    res.status(500).json({ error: { message: "Failed to proxy request to Volcengine" } });
-  }
-});
-
 // --- API Routes (REGISTERED FIRST) ---
 
 app.get("/api/test", async (req, res) => {
@@ -736,11 +700,6 @@ async function startServer() {
     dbInitialized = true; // Fallback to file DB is handled inside init()
   }
 
-  // Fallback for unmatched API routes to prevent them from returning HTML
-  app.use("/api", (req, res) => {
-    res.status(404).json({ message: `API route not found: ${req.method} ${req.originalUrl}` });
-  });
-
   // 2. Static files or Vite middleware (AFTER API routes)
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -752,12 +711,12 @@ async function startServer() {
     const distPath = path.join(process.cwd(), "dist");
     if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));
-      app.get("*all", (req, res) => {
+      app.get(/.*/, (req, res) => {
         res.sendFile(path.join(distPath, "index.html"));
       });
     } else {
       console.warn("Warning: dist folder not found. Static files will not be served.");
-      app.get("*all", (req, res) => {
+      app.get(/.*/, (req, res) => {
         res.status(200).send(`
           <html>
             <body style="font-family: sans-serif; padding: 2rem; text-align: center;">
@@ -772,6 +731,11 @@ async function startServer() {
       });
     }
   }
+
+  // Fallback for unmatched API routes to prevent them from returning HTML
+  app.use("/api", (req, res) => {
+    res.status(404).json({ message: `API route not found: ${req.method} ${req.originalUrl}` });
+  });
 
   const PORT = process.env.PORT || 3000;
 

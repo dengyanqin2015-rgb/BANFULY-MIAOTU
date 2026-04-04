@@ -13,7 +13,6 @@ declare global {
 import * as XLSX from 'xlsx';
 import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory, DetailStoryboard } from './types';
 import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regenerateSinglePrompt, */ deconstructImage, segmentImage, detailAssistantStep1, detailAssistantStep2, detailAssistantStep3, regenerateSingleDetailStoryboard, updateDetailPromptFromFields } from './geminiService';
-import WorkflowView from './src/components/Workflow/WorkflowView';
 
 const BBOX_COLORS = [
   'border-blue-400 bg-blue-400/20',
@@ -1370,85 +1369,71 @@ ${p.prompt}
   return (
     <div className="min-h-screen flex flex-col selection:bg-black selection:text-white">
       {/* 导航栏 */}
-      {step !== AppStep.WORKFLOW && (
-        <header className="h-14 glass-nav flex items-center justify-between px-8 sticky top-0 z-50 shadow-sm">
-          <div className="flex items-center gap-6">
-            <div className="text-lg font-extrabold tracking-tighter text-black cursor-pointer" onClick={() => setStep(AppStep.FULL_PLAN)}>BANFULY <span className="text-[#6e6e73] font-light">ARCHITECT</span></div>
-            <div className="step-capsule flex gap-1 items-center bg-[#F5F5F7] border border-black/5 shadow-inner">
-              {[
-                { id: AppStep.FULL_PLAN, label: '全案策划' },
-                { id: AppStep.WORKFLOW, label: '工作流生图' },
-                { id: AppStep.DETAIL_ASSISTANT, label: '详情助手' },
-                { id: AppStep.SINGLE_TOOL, label: '单图灵活工具' },
-                { id: AppStep.HISTORY, label: '生图历史' },
-                { id: AppStep.PROFILE, label: '个人中心' },
-                ...(auth.user.role === 'admin' ? [{ id: AppStep.ADMIN_PANEL, label: '管理后台' }] : [])
-              ].map((s) => (
-                <button
-                  key={s.id}
-                  disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL && s.id !== AppStep.DETAIL_ASSISTANT && s.id !== AppStep.FULL_PLAN && s.id !== AppStep.WORKFLOW}
-                  onClick={() => activeStep(s.id)}
-                  className={`px-4 py-1.5 rounded-full text-[11px] font-bold transition-all duration-500 ${step === s.id ? 'bg-white shadow-md text-black scale-105' : 'text-[#86868b] opacity-60 hover:opacity-100'}`}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-4 mr-4 border-r border-black/10 pr-4">
-              <div className="text-right">
-                <p className="text-[10px] font-black text-black leading-none">{auth.user.username}</p>
-                <p className="text-[9px] font-bold text-[#0071e3] mt-1">生图点数: {auth.user.credits}</p>
-              </div>
-              <button onClick={handleLogout} className="w-8 h-8 rounded-full bg-[#F5F5F7] flex items-center justify-center text-[#86868b] hover:text-red-500 transition-all">
-                <i className="fas fa-sign-out-alt text-xs"></i>
+      <header className="h-14 glass-nav flex items-center justify-between px-8 sticky top-0 z-50 shadow-sm">
+        <div className="flex items-center gap-6">
+          <div className="text-lg font-extrabold tracking-tighter text-black cursor-pointer" onClick={() => setStep(AppStep.FULL_PLAN)}>BANFULY <span className="text-[#6e6e73] font-light">ARCHITECT</span></div>
+          <div className="step-capsule flex gap-1 items-center bg-[#F5F5F7] border border-black/5 shadow-inner">
+            {[
+              { id: AppStep.FULL_PLAN, label: '全案策划' },
+              { id: AppStep.DETAIL_ASSISTANT, label: '详情助手' },
+              { id: AppStep.SINGLE_TOOL, label: '单图灵活工具' },
+              { id: AppStep.HISTORY, label: '生图历史' },
+              { id: AppStep.PROFILE, label: '个人中心' },
+              ...(auth.user.role === 'admin' ? [{ id: AppStep.ADMIN_PANEL, label: '管理后台' }] : [])
+            ].map((s) => (
+              <button
+                key={s.id}
+                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL && s.id !== AppStep.DETAIL_ASSISTANT && s.id !== AppStep.FULL_PLAN}
+                onClick={() => activeStep(s.id)}
+                className={`px-4 py-1.5 rounded-full text-[11px] font-bold transition-all duration-500 ${step === s.id ? 'bg-white shadow-md text-black scale-105' : 'text-[#86868b] opacity-60 hover:opacity-100'}`}
+              >
+                {s.label}
               </button>
-            </div>
-            <div className="flex items-center gap-2">
-            </div>
-            <button 
-              onClick={async () => {
-                if (typeof window !== 'undefined' && window.aistudio) {
-                  await window.aistudio.openSelectKey();
-                } else {
-                  const key = prompt("请输入您的 Google Gemini API Key (将保存在本地浏览器中):", userApiKey);
-                  if (key) {
-                    setUserApiKey(key);
-                    localStorage.setItem('user_gemini_api_key', key);
-                    alert("API Key 已保存");
-                  }
-                }
-              }}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#F5F5F7] text-[#0071e3] border border-[#0071e3]/20 hover:bg-[#0071e3]/5 transition-all shadow-sm"
-            >
-              <i className="fas fa-key"></i>
-              {userApiKey ? '已配置 Key' : '配置 API Key'}
-            </button>
-            <select 
-              value={model} 
-              onChange={(e) => setModel(e.target.value)}
-              className="bg-white border border-black/10 px-3 py-1.5 rounded-lg text-[11px] font-bold outline-none cursor-pointer shadow-sm hover:border-[#0071e3]/30 transition-all"
-            >
-              <option value="gemini-3-flash-preview">FLASH 3.0 (极速引擎)</option>
-              <option value="gemini-3.1-pro-preview">PRO 3.1 (高保真引擎)</option>
-            </select>
+            ))}
           </div>
-        </header>
-      )}
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 mr-4 border-r border-black/10 pr-4">
+            <div className="text-right">
+              <p className="text-[10px] font-black text-black leading-none">{auth.user.username}</p>
+              <p className="text-[9px] font-bold text-[#0071e3] mt-1">生图点数: {auth.user.credits}</p>
+            </div>
+            <button onClick={handleLogout} className="w-8 h-8 rounded-full bg-[#F5F5F7] flex items-center justify-center text-[#86868b] hover:text-red-500 transition-all">
+              <i className="fas fa-sign-out-alt text-xs"></i>
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+          </div>
+          <button 
+            onClick={async () => {
+              if (typeof window !== 'undefined' && window.aistudio) {
+                await window.aistudio.openSelectKey();
+              } else {
+                const key = prompt("请输入您的 Google Gemini API Key (将保存在本地浏览器中):", userApiKey);
+                if (key) {
+                  setUserApiKey(key);
+                  localStorage.setItem('user_gemini_api_key', key);
+                  alert("API Key 已保存");
+                }
+              }
+            }}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#F5F5F7] text-[#0071e3] border border-[#0071e3]/20 hover:bg-[#0071e3]/5 transition-all shadow-sm"
+          >
+            <i className="fas fa-key"></i>
+            {userApiKey ? '已配置 Key' : '配置 API Key'}
+          </button>
+          <select 
+            value={model} 
+            onChange={(e) => setModel(e.target.value)}
+            className="bg-white border border-black/10 px-3 py-1.5 rounded-lg text-[11px] font-bold outline-none cursor-pointer shadow-sm hover:border-[#0071e3]/30 transition-all"
+          >
+            <option value="gemini-3-flash-preview">FLASH 3.0 (极速引擎)</option>
+            <option value="gemini-3.1-pro-preview">PRO 3.1 (高保真引擎)</option>
+          </select>
+        </div>
+      </header>
 
-      <main className={`flex-1 ${step === AppStep.WORKFLOW ? 'w-full h-screen p-0 overflow-hidden' : 'max-w-[1440px] mx-auto w-full px-8 py-8'}`}>
-        {step === AppStep.WORKFLOW && (
-          <WorkflowView 
-            userApiKey={userApiKey}
-            auth={auth}
-            deductCredit={deductCredit}
-            genModel={genModel}
-            genResolution={genResolution}
-            genAspectRatio={genAspectRatio}
-            onBack={() => setStep(AppStep.FULL_PLAN)}
-          />
-        )}
+      <main className="flex-1 max-w-[1440px] mx-auto w-full px-8 py-8">
         {step === AppStep.DETAIL_ASSISTANT && (
           <div className="animate-slide-up">
             <div className="flex items-end justify-between mb-10">
@@ -3745,15 +3730,13 @@ ${p.prompt}
       )}
 
       {/* 页脚 */}
-      {step !== AppStep.WORKFLOW && (
-        <footer className="h-14 glass-nav flex items-center px-10 justify-between text-[10px] font-black tracking-widest text-[#86868b] border-t border-black/5">
-          <div className="flex items-center gap-6">
-            <span className="flex items-center gap-2.5"><div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-md"></div> RENDER ENGINE READY</span>
-            <span className="opacity-50 uppercase">Architect Core V3.3 · Mode: {strategyType === StrategyType.DETAIL ? 'Detail Story' : 'Marketing Impact'}</span>
-          </div>
-          <div className="opacity-40 uppercase">Copyright © 2025 BANFULY Visual LAB.</div>
-        </footer>
-      )}
+      <footer className="h-14 glass-nav flex items-center px-10 justify-between text-[10px] font-black tracking-widest text-[#86868b] border-t border-black/5">
+        <div className="flex items-center gap-6">
+          <span className="flex items-center gap-2.5"><div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-md"></div> RENDER ENGINE READY</span>
+          <span className="opacity-50 uppercase">Architect Core V3.3 · Mode: {strategyType === StrategyType.DETAIL ? 'Detail Story' : 'Marketing Impact'}</span>
+        </div>
+        <div className="opacity-40 uppercase">Copyright © 2025 BANFULY Visual LAB.</div>
+      </footer>
     </div>
   );
 };
