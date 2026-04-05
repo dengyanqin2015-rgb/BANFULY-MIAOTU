@@ -125,7 +125,9 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
         body: JSON.stringify({
           model: doubaoModelId,
           prompt: params.prompt,
-          size: params.aspectRatio === '9:16' ? '720x1280' : (params.aspectRatio === '16:9' ? '1280x720' : '1024x1024'),
+          size: params.imageSize === '4K' 
+            ? (params.aspectRatio === '9:16' ? '2160x3840' : (params.aspectRatio === '16:9' ? '3840x2160' : '3072x3072'))
+            : (params.aspectRatio === '9:16' ? '1440x2560' : (params.aspectRatio === '16:9' ? '2560x1440' : '2048x2048')),
           n: 1
         })
       });

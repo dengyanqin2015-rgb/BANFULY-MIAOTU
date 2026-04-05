@@ -1,4 +1,4 @@
-import React, { useState, useRef, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
 import { Send, ChevronDown, Key, Image as ImageIcon, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
@@ -56,7 +56,6 @@ const MODEL_COSTS: Record<ImageModel, ModelCost> = {
     name: 'Doubao-Seedream-5.0-lite',
     label: 'BYTEDANCE',
     resolutions: {
-      '1K': { cost: 0.067, rmb: 0.3 },
       '2K': { cost: 0.067, rmb: 0.3 },
       '4K': { cost: 0.067, rmb: 0.3 }
     }
@@ -93,6 +92,17 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
     }
   }, [prompt]);
+
+  useEffect(() => {
+    const lookupId = imageSize === "512px" ? "0.5K" : imageSize;
+    if (!MODEL_COSTS[model].resolutions[lookupId]) {
+      const available = Object.keys(MODEL_COSTS[model].resolutions);
+      if (available.length > 0) {
+        const first = available[0];
+        setImageSize(first === "0.5K" ? "512px" : first as ImageSize);
+      }
+    }
+  }, [model]);
 
   useImperativeHandle(ref, () => ({
     addImage: (data, mimeType, preview, sourceNodeId) => {
@@ -422,7 +432,10 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                   <div>
                     <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-3 px-1">渲染精度 / RESOLUTION</div>
                     <div className="flex flex-wrap gap-2">
-                      {IMAGE_SIZES.map((size) => (
+                      {IMAGE_SIZES.filter(size => {
+                        const lookupId = size.id === "512px" ? "0.5K" : size.id;
+                        return !!MODEL_COSTS[model].resolutions[lookupId];
+                      }).map((size) => (
                         <button
                           key={size.id}
                           type="button"
