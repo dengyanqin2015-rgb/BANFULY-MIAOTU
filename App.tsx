@@ -84,6 +84,10 @@ const App: React.FC = () => {
   const [userApiKey, setUserApiKey] = useState<string>(() => {
     return localStorage.getItem('user_gemini_api_key') || process.env.GEMINI_API_KEY || '';
   });
+  const [paidImageApiKey, setPaidImageApiKey] = useState<string>(() => {
+    return localStorage.getItem('user_paid_image_api_key') || '';
+  });
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
 
   // Auth 状态
   const [auth, setAuth] = useState<AuthState>({ user: null, token: null, loading: true });
@@ -1454,22 +1458,11 @@ ${p.prompt}
           <div className="flex items-center gap-2">
           </div>
           <button 
-            onClick={async () => {
-              if (typeof window !== 'undefined' && window.aistudio) {
-                await window.aistudio.openSelectKey();
-              } else {
-                const key = prompt("请输入您的 Google Gemini API Key (将保存在本地浏览器中):", userApiKey);
-                if (key) {
-                  setUserApiKey(key);
-                  localStorage.setItem('user_gemini_api_key', key);
-                  alert("API Key 已保存");
-                }
-              }
-            }}
+            onClick={() => setShowApiKeyModal(true)}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#F5F5F7] text-[#0071e3] border border-[#0071e3]/20 hover:bg-[#0071e3]/5 transition-all shadow-sm"
           >
             <i className="fas fa-key"></i>
-            {userApiKey ? '已配置 Key' : '配置 API Key'}
+            {(userApiKey || paidImageApiKey) ? '已配置 Key' : '配置 API Key'}
           </button>
           <select 
             value={model} 
@@ -3802,6 +3795,115 @@ ${p.prompt}
         </div>
         <div className="opacity-40 uppercase">Copyright © 2025 BANFULY Visual LAB.</div>
       </footer>
+
+      {/* API Key 配置弹窗 */}
+      {showApiKeyModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-4">
+          <div 
+            className="bg-[#1c1c1e] border border-white/10 rounded-[32px] w-full max-w-lg shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-8">
+              <div className="flex items-center justify-between mb-8">
+                <div>
+                  <h3 className="text-2xl font-black text-white tracking-tight">配置 API 密钥</h3>
+                  <p className="text-[#86868b] text-sm mt-1 font-medium">设置您的 Google Gemini 密钥，支持双 Key 自动切换</p>
+                </div>
+                <button 
+                  onClick={() => setShowApiKeyModal(false)}
+                  className="w-10 h-10 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-white transition-all"
+                >
+                  <i className="fas fa-times"></i>
+                </button>
+              </div>
+
+              <div className="space-y-6">
+                {/* 免费 Key 配置 */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between px-1">
+                    <label className="text-[11px] font-black text-[#86868b] uppercase tracking-widest flex items-center gap-2">
+                      <i className="fas fa-brain text-blue-500"></i>
+                      识图/文案 (免费 Key)
+                    </label>
+                    <span className="text-[10px] font-bold text-blue-500/60 bg-blue-500/10 px-2 py-0.5 rounded-full">推荐使用 AI Studio 免费额度</span>
+                  </div>
+                  <div className="relative group">
+                    <input 
+                      type="password"
+                      value={userApiKey}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setUserApiKey(val);
+                        localStorage.setItem('user_gemini_api_key', val);
+                      }}
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-blue-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="输入您的免费 API Key..."
+                    />
+                    <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none opacity-20 group-focus-within:opacity-100 transition-opacity">
+                      <i className="fas fa-shield-alt text-xs text-blue-500"></i>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-[#86868b] leading-relaxed px-1">
+                    用于：班小夫助理对话、全案策划分析、详情助手识图、单图风格拆解等。
+                  </p>
+                </div>
+
+                {/* 付费 Key 配置 */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between px-1">
+                    <label className="text-[11px] font-black text-[#86868b] uppercase tracking-widest flex items-center gap-2">
+                      <i className="fas fa-image text-orange-500"></i>
+                      专业生图 (付费 Key)
+                    </label>
+                    <span className="text-[10px] font-bold text-orange-500/60 bg-orange-500/10 px-2 py-0.5 rounded-full">保障 2K/4K 高清输出</span>
+                  </div>
+                  <div className="relative group">
+                    <input 
+                      type="password"
+                      value={paidImageApiKey}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPaidImageApiKey(val);
+                        localStorage.setItem('user_paid_image_api_key', val);
+                      }}
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-orange-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="输入您的付费 API Key (可选)..."
+                    />
+                    <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none opacity-20 group-focus-within:opacity-100 transition-opacity">
+                      <i className="fas fa-bolt text-xs text-orange-500"></i>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-[#86868b] leading-relaxed px-1">
+                    用于：ImageNode 节点生图。若不填，生图将自动回退使用上方的免费 Key。
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-10">
+                <button 
+                  onClick={() => {
+                    setShowApiKeyModal(false);
+                    alert("配置已保存，系统将根据任务自动切换 Key");
+                  }}
+                  className="w-full py-5 bg-white text-black rounded-2xl font-black text-sm hover:scale-[1.02] active:scale-95 transition-all shadow-[0_20px_40px_rgba(255,255,255,0.1)]"
+                >
+                  保存并开始创作
+                </button>
+                <div className="mt-4 text-center">
+                  <a 
+                    href="https://aistudio.google.com/app/apikey" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="text-[10px] font-bold text-blue-500 hover:underline"
+                  >
+                    获取您的 Google Gemini API Key <i className="fas fa-external-link-alt ml-1"></i>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

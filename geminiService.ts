@@ -8,7 +8,9 @@ const parseB64 = (b64: string) => {
 };
 
 const getAiClient = (apiKey?: string) => {
-  const key = apiKey || process.env.GEMINI_API_KEY;
+  // 优先使用传入的 apiKey，其次检查 localStorage 中的免费 Key，最后检查环境变量
+  const localKey = typeof window !== 'undefined' ? localStorage.getItem('user_gemini_api_key') : null;
+  const key = apiKey || localKey || process.env.GEMINI_API_KEY;
   if (!key) throw new Error("未配置 API Key。请点击右上角'配置 API Key'按钮进行设置。");
   return new GoogleGenAI({ apiKey: key });
 };
@@ -218,7 +220,16 @@ export const generateEcomImage = async (params: {
   productImagesB64?: string[], // Support multiple product images
   apiKey?: string
 }): Promise<string | undefined> => {
-  const ai = getAiClient(params.apiKey);
+  // 自动切换逻辑：
+  // 1. 优先检查环境变量中配置的付费生图专用 Key (VITE_PAID_IMAGE_API_KEY)
+  // 2. 其次检查用户在浏览器本地存储中设置的付费 Key (user_paid_image_api_key)
+  // 3. 然后使用传入的 apiKey
+  // 4. 最后回退到系统默认的免费 Key
+  const envPaidKey = process.env.VITE_PAID_IMAGE_API_KEY;
+  const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
+  const finalApiKey = envPaidKey || localPaidKey || params.apiKey;
+  
+  const ai = getAiClient(finalApiKey);
   const parts: Part[] = [{ text: params.prompt }];
   
   if (params.refImageB64) {

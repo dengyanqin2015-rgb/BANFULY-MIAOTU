@@ -46,6 +46,7 @@ export async function openApiKeyDialog() {
 }
 
 export async function chatWithAssistant(params: ChatParams): Promise<string> {
+  // 聊天和识图始终优先使用默认的免费 Key (环境变量中的 GEMINI_API_KEY)
   const apiKey = params.apiKey || process.env.API_KEY || process.env.GEMINI_API_KEY;
   const ai = new GoogleGenAI({ apiKey: apiKey as string });
   
@@ -104,7 +105,15 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
 }
 
 export async function generateImage(params: GenerationParams): Promise<string[]> {
-  const apiKey = params.apiKey || process.env.API_KEY || process.env.GEMINI_API_KEY;
+  // 自动切换逻辑：
+  // 1. 优先检查环境变量中配置的付费生图专用 Key (VITE_PAID_IMAGE_API_KEY)
+  // 2. 其次检查用户在浏览器本地存储中设置的付费 Key (user_paid_image_api_key)
+  // 3. 然后使用用户在 UI 中手动传入的 Key (params.apiKey)
+  // 4. 最后回退到系统默认的免费 Key
+  const envPaidKey = import.meta.env.VITE_PAID_IMAGE_API_KEY || process.env.VITE_PAID_IMAGE_API_KEY;
+  const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
+  const apiKey = envPaidKey || localPaidKey || params.apiKey || process.env.API_KEY || process.env.GEMINI_API_KEY;
+  
   const ai = new GoogleGenAI({ apiKey: apiKey as string });
   
   try {
