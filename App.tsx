@@ -87,6 +87,12 @@ const App: React.FC = () => {
   const [paidImageApiKey, setPaidImageApiKey] = useState<string>(() => {
     return localStorage.getItem('user_paid_image_api_key') || '';
   });
+  const [doubaoApiKey, setDoubaoApiKey] = useState<string>(() => {
+    return localStorage.getItem('user_doubao_api_key') || '';
+  });
+  const [doubaoModelId, setDoubaoModelId] = useState<string>(() => {
+    return localStorage.getItem('user_doubao_model_id') || '';
+  });
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
 
   // Auth 状态
@@ -300,6 +306,15 @@ const App: React.FC = () => {
         '1K': { cost: 0.134, rmb: 1.0 },
         '2K': { cost: 0.134, rmb: 1.0 },
         '4K': { cost: 0.24, rmb: 1.7 }
+      }
+    },
+    'doubao-pro-v1': {
+      name: 'Doubao-Seedream-5.0-lite',
+      label: 'BYTEDANCE',
+      resolutions: {
+        '1K': { cost: 0.067, rmb: 0.3 },
+        '2K': { cost: 0.067, rmb: 0.3 },
+        '4K': { cost: 0.067, rmb: 0.3 }
       }
     }
   };
@@ -1462,7 +1477,7 @@ ${p.prompt}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#F5F5F7] text-[#0071e3] border border-[#0071e3]/20 hover:bg-[#0071e3]/5 transition-all shadow-sm"
           >
             <i className="fas fa-key"></i>
-            {(userApiKey || paidImageApiKey) ? '已配置 Key' : '配置 API Key'}
+            {(userApiKey || paidImageApiKey || doubaoApiKey) ? '已配置 Key' : '配置 API Key'}
           </button>
           <select 
             value={model} 
@@ -3875,6 +3890,43 @@ ${p.prompt}
                   </div>
                   <p className="text-[10px] text-[#86868b] leading-relaxed px-1">
                     用于：ImageNode 节点生图。若不填，生图将自动回退使用上方的免费 Key。
+                  </p>
+                </div>
+                {/* 豆包 Key 配置 */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between px-1">
+                    <label className="text-[11px] font-black text-[#86868b] uppercase tracking-widest flex items-center gap-2">
+                      <i className="fas fa-rocket text-red-500"></i>
+                      豆包生图 (Doubao Key)
+                    </label>
+                    <span className="text-[10px] font-bold text-red-500/60 bg-red-500/10 px-2 py-0.5 rounded-full">字节跳动自研模型</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <input 
+                      type="password"
+                      value={doubaoApiKey}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDoubaoApiKey(val);
+                        localStorage.setItem('user_doubao_api_key', val);
+                      }}
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-red-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="API Key..."
+                    />
+                    <input 
+                      type="text"
+                      value={doubaoModelId}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDoubaoModelId(val);
+                        localStorage.setItem('user_doubao_model_id', val);
+                      }}
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-red-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="Model ID (Endpoint)..."
+                    />
+                  </div>
+                  <p className="text-[10px] text-[#86868b] leading-relaxed px-1">
+                    用于：豆包专业生图。请前往火山引擎 Ark 平台获取 API Key 和接入点 ID。
                   </p>
                 </div>
               </div>

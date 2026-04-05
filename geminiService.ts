@@ -229,6 +229,47 @@ export const generateEcomImage = async (params: {
   const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
   const finalApiKey = envPaidKey || localPaidKey || params.apiKey;
   
+  // 豆包模型特殊处理逻辑
+  if (params.model === 'doubao-pro-v1') {
+    const doubaoApiKey = localStorage.getItem('user_doubao_api_key') || process.env.VITE_DOUBAO_API_KEY;
+    const doubaoEndpoint = localStorage.getItem('user_doubao_endpoint') || process.env.VITE_DOUBAO_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
+    const doubaoModelId = localStorage.getItem('user_doubao_model_id') || process.env.VITE_DOUBAO_MODEL_ID || 'Doubao-Seedream-5.0-lite';
+
+    if (!doubaoApiKey || !doubaoModelId) {
+      throw new Error("豆包 API 配置不完整。请在设置中配置 Doubao API Key 和 Model ID。");
+    }
+
+    try {
+      const response = await fetch(doubaoEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${doubaoApiKey}`
+        },
+        body: JSON.stringify({
+          model: doubaoModelId,
+          prompt: params.prompt,
+          size: params.aspectRatio === '9:16' ? '720x1280' : (params.aspectRatio === '16:9' ? '1280x720' : '1024x1024'),
+          n: 1
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`豆包生成失败: ${errorData.error?.message || response.statusText}`);
+      }
+
+      const result = await response.json();
+      const b64 = result.data?.[0]?.b64_json || result.data?.[0]?.url;
+      if (!b64) throw new Error("豆包未返回图像数据");
+      
+      return b64.startsWith('http') ? b64 : `data:image/png;base64,${b64}`;
+    } catch (err) {
+      console.error("Doubao generation error:", err);
+      throw err;
+    }
+  }
+
   const ai = getAiClient(finalApiKey);
   const parts: Part[] = [{ text: params.prompt }];
   

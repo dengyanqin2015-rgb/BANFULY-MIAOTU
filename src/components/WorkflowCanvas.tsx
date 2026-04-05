@@ -88,6 +88,15 @@ const MODEL_COSTS: Record<ImageModel, ModelCost> = {
       '2K': { cost: 0.134, rmb: 1.0 },
       '4K': { cost: 0.24, rmb: 1.7 }
     }
+  },
+  'doubao-pro-v1': {
+    name: 'Doubao-Seedream-5.0-lite',
+    label: 'BYTEDANCE',
+    resolutions: {
+      '1K': { cost: 0.067, rmb: 0.3 },
+      '2K': { cost: 0.067, rmb: 0.3 },
+      '4K': { cost: 0.067, rmb: 0.3 }
+    }
   }
 };
 

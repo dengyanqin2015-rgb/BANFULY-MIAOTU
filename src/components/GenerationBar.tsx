@@ -51,6 +51,15 @@ const MODEL_COSTS: Record<ImageModel, ModelCost> = {
       '2K': { cost: 0.134, rmb: 1.0 },
       '4K': { cost: 0.24, rmb: 1.7 }
     }
+  },
+  'doubao-pro-v1': {
+    name: 'Doubao-Seedream-5.0-lite',
+    label: 'BYTEDANCE',
+    resolutions: {
+      '1K': { cost: 0.067, rmb: 0.3 },
+      '2K': { cost: 0.067, rmb: 0.3 },
+      '4K': { cost: 0.067, rmb: 0.3 }
+    }
   }
 };
 
@@ -65,6 +74,7 @@ const MODELS: { id: ImageModel; name: string; version: string; desc: string }[] 
   { id: "gemini-2.5-flash-image", name: "FLASH", version: "2.5", desc: "BALANCED" },
   { id: "gemini-3.1-flash-image-preview", name: "FLASH", version: "3.1", desc: "HIGH FIDELITY" },
   { id: "gemini-3-pro-image-preview", name: "PRO", version: "3.0", desc: "CINEMA GRADE" },
+  { id: "doubao-pro-v1", name: "DOUBAO", version: "5.0", desc: "BYTEDANCE" },
 ];
 
 export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({ onGenerate, hasApiKey, onOpenApiKey }, ref) => {

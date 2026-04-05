@@ -1,6 +1,6 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
-export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview";
+export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "doubao-pro-v1";
 export type ChatModel = "gemini-3-flash-preview" | "gemini-3.1-pro-preview";
 export type ImageSize = "512px" | "1K" | "2K" | "4K";
 export type AspectRatio = "AUTO" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9" | "1:4" | "1:8" | "4:1" | "8:1";
@@ -105,6 +105,48 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
 }
 
 export async function generateImage(params: GenerationParams): Promise<string[]> {
+  // 豆包模型特殊处理逻辑
+  if (params.model === 'doubao-pro-v1') {
+    const doubaoApiKey = localStorage.getItem('user_doubao_api_key') || import.meta.env.VITE_DOUBAO_API_KEY || process.env.VITE_DOUBAO_API_KEY;
+    const doubaoEndpoint = localStorage.getItem('user_doubao_endpoint') || import.meta.env.VITE_DOUBAO_ENDPOINT || process.env.VITE_DOUBAO_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
+    const doubaoModelId = localStorage.getItem('user_doubao_model_id') || import.meta.env.VITE_DOUBAO_MODEL_ID || process.env.VITE_DOUBAO_MODEL_ID || 'Doubao-Seedream-5.0-lite';
+
+    if (!doubaoApiKey || !doubaoModelId) {
+      throw new Error("DOUBAO_CONFIG_REQUIRED");
+    }
+
+    try {
+      const response = await fetch(doubaoEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${doubaoApiKey}`
+        },
+        body: JSON.stringify({
+          model: doubaoModelId,
+          prompt: params.prompt,
+          size: params.aspectRatio === '9:16' ? '720x1280' : (params.aspectRatio === '16:9' ? '1280x720' : '1024x1024'),
+          n: 1
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`豆包生成失败: ${errorData.error?.message || response.statusText}`);
+      }
+
+      const result = await response.json();
+      const b64 = result.data?.[0]?.b64_json || result.data?.[0]?.url;
+      if (!b64) throw new Error("豆包未返回图像数据");
+      
+      const finalUrl = b64.startsWith('http') ? b64 : `data:image/png;base64,${b64}`;
+      return [finalUrl];
+    } catch (err) {
+      console.error("Doubao generation error:", err);
+      throw err;
+    }
+  }
+
   // 自动切换逻辑：
   // 1. 优先检查环境变量中配置的付费生图专用 Key (VITE_PAID_IMAGE_API_KEY)
   // 2. 其次检查用户在浏览器本地存储中设置的付费 Key (user_paid_image_api_key)
