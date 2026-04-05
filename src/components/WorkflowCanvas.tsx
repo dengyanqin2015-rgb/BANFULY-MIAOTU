@@ -103,7 +103,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(true);
   const [lastNodeId, setLastNodeId] = useState<string | null>(null);
   const [renamingProject, setRenamingProject] = useState<{ id: string, name: string } | null>(null);
@@ -510,8 +509,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     images?: { data: string; mimeType: string; sourceNodeId?: string }[],
     targetNodeId?: string
   ) => {
-    setIsGenerating(true);
-
     // Calculate cost
     const modelCfg = MODEL_COSTS[model];
     const lookupId = imageSize === "512px" ? "0.5K" : imageSize;
@@ -519,7 +516,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     if (user && user.credits < cost) {
       alert(`点数不足，本次生成需要 ${cost} 点，当前剩余 ${user.credits} 点`);
-      setIsGenerating(false);
       return;
     }
 
@@ -558,8 +554,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           ...n,
           data: { ...n.data, isLoading: false, error: error.message }
         } : n));
-      } finally {
-        setIsGenerating(false);
       }
       return;
     }
@@ -761,10 +755,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           return node;
         })
       );
-    } finally {
-      setIsGenerating(false);
     }
-  }, [user, userApiKey, onDeductCredit]);
+  }, [user, userApiKey, onDeductCredit, findSafePosition]);
 
   const handleGenerateRef = useRef(handleGenerate);
   useEffect(() => {
@@ -1005,7 +997,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       <GenerationBar 
         ref={genBarRef}
         onGenerate={handleGenerate} 
-        isGenerating={isGenerating} 
         hasApiKey={hasApiKey}
         onOpenApiKey={handleOpenApiKey}
       />

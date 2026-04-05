@@ -11,7 +11,6 @@ export interface GenerationBarRef {
 
 interface GenerationBarProps {
   onGenerate: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; sourceNodeId?: string }[]) => void;
-  isGenerating: boolean;
   hasApiKey: boolean;
   onOpenApiKey: () => void;
 }
@@ -68,7 +67,7 @@ const MODELS: { id: ImageModel; name: string; version: string; desc: string }[] 
   { id: "gemini-3-pro-image-preview", name: "PRO", version: "3.0", desc: "CINEMA GRADE" },
 ];
 
-export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({ onGenerate, isGenerating, hasApiKey, onOpenApiKey }, ref) => {
+export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({ onGenerate, hasApiKey, onOpenApiKey }, ref) => {
   const [prompt, setPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
   const [imageSize, setImageSize] = useState<ImageSize>("1K");
@@ -173,7 +172,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || isGenerating) return;
+    if (!prompt.trim()) return;
     
     let finalAspectRatio = aspectRatio;
     let finalImageSize = imageSize;
@@ -329,10 +328,10 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
               ) : (
                 <button
                   type="submit"
-                  disabled={!prompt.trim() || isGenerating}
+                  disabled={!prompt.trim()}
                   className={cn(
                     "p-2 rounded-xl transition-all flex items-center justify-center min-w-[44px]",
-                    !prompt.trim() || isGenerating
+                    !prompt.trim()
                       ? "bg-[#333] text-gray-600 cursor-not-allowed" 
                       : "bg-red-600 text-white hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(220,38,38,0.3)]"
                   )}
