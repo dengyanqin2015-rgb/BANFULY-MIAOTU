@@ -252,7 +252,8 @@ export const generateEcomImage = async (params: {
           size: params.imageSize === '4K' 
             ? (params.aspectRatio === '9:16' ? '2160x3840' : (params.aspectRatio === '16:9' ? '3840x2160' : '3072x3072'))
             : (params.aspectRatio === '9:16' ? '1440x2560' : (params.aspectRatio === '16:9' ? '2560x1440' : '2048x2048')),
-          n: 1
+          n: 1,
+          watermark: false
         })
       });
 
