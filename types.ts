@@ -56,7 +56,8 @@ export enum AppStep {
   PROFILE = 6,
   SINGLE_TOOL = 7,
   DETAIL_ASSISTANT = 8,
-  FULL_PLAN = 9
+  FULL_PLAN = 9,
+  WORKFLOW = 10
 }
 
 export enum SingleToolMode {

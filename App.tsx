@@ -11,8 +11,10 @@ declare global {
 }
 
 import * as XLSX from 'xlsx';
+import { cn } from './src/lib/utils';
 import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory, DetailStoryboard } from './types';
 import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regenerateSinglePrompt, */ deconstructImage, segmentImage, detailAssistantStep1, detailAssistantStep2, detailAssistantStep3, regenerateSingleDetailStoryboard, updateDetailPromptFromFields } from './geminiService';
+import { WorkflowCanvas } from './src/components/WorkflowCanvas';
 
 const BBOX_COLORS = [
   'border-blue-400 bg-blue-400/20',
@@ -29,8 +31,54 @@ const LABEL_COLORS = [
   'bg-violet-400',
 ];
 
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: Error | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-[#000] flex items-center justify-center p-8 text-center">
+          <div className="max-w-md space-y-6">
+            <div className="w-20 h-20 bg-red-500/20 rounded-3xl flex items-center justify-center mx-auto mb-8">
+              <i className="fas fa-exclamation-triangle text-3xl text-red-500"></i>
+            </div>
+            <h1 className="text-3xl font-black text-white tracking-tight">应用运行异常</h1>
+            <p className="text-[#86868b] text-sm leading-relaxed">
+              很抱歉，程序在运行过程中遇到了一个不可预期的错误。这可能是由于网络波动或组件加载失败导致的。
+            </p>
+            <div className="bg-[#1c1c1e] rounded-2xl p-4 text-left overflow-auto max-h-40">
+              <code className="text-xs text-red-400 font-mono">
+                {this.state.error?.toString()}
+              </code>
+            </div>
+            <button
+              onClick={() => window.location.reload()}
+              className="w-full py-4 bg-white text-black rounded-2xl font-bold hover:scale-[1.02] active:scale-95 transition-all"
+            >
+              重新加载应用
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 const App: React.FC = () => {
-  const [step, setStep] = useState<AppStep>(AppStep.FULL_PLAN);
+  const [step, setStep] = useState<AppStep>(AppStep.WORKFLOW);
   const [model, setModel] = useState('gemini-3-flash-preview');
   const [loading, setLoading] = useState(false);
   const [userApiKey, setUserApiKey] = useState<string>(() => {
@@ -1367,13 +1415,14 @@ ${p.prompt}
   }
 
   return (
-    <div className="min-h-screen flex flex-col selection:bg-black selection:text-white">
+    <div className={cn("h-screen flex flex-col selection:bg-black selection:text-white overflow-hidden")}>
       {/* 导航栏 */}
       <header className="h-14 glass-nav flex items-center justify-between px-8 sticky top-0 z-50 shadow-sm">
         <div className="flex items-center gap-6">
           <div className="text-lg font-extrabold tracking-tighter text-black cursor-pointer" onClick={() => setStep(AppStep.FULL_PLAN)}>BANFULY <span className="text-[#6e6e73] font-light">ARCHITECT</span></div>
           <div className="step-capsule flex gap-1 items-center bg-[#F5F5F7] border border-black/5 shadow-inner">
             {[
+              { id: AppStep.WORKFLOW, label: '创意工作流' },
               { id: AppStep.FULL_PLAN, label: '全案策划' },
               { id: AppStep.DETAIL_ASSISTANT, label: '详情助手' },
               { id: AppStep.SINGLE_TOOL, label: '单图灵活工具' },
@@ -1383,7 +1432,7 @@ ${p.prompt}
             ].map((s) => (
               <button
                 key={s.id}
-                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL && s.id !== AppStep.DETAIL_ASSISTANT && s.id !== AppStep.FULL_PLAN}
+                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL && s.id !== AppStep.DETAIL_ASSISTANT && s.id !== AppStep.FULL_PLAN && s.id !== AppStep.WORKFLOW}
                 onClick={() => activeStep(s.id)}
                 className={`px-4 py-1.5 rounded-full text-[11px] font-bold transition-all duration-500 ${step === s.id ? 'bg-white shadow-md text-black scale-105' : 'text-[#86868b] opacity-60 hover:opacity-100'}`}
               >
@@ -1433,7 +1482,7 @@ ${p.prompt}
         </div>
       </header>
 
-      <main className="flex-1 max-w-[1440px] mx-auto w-full px-8 py-8">
+      <main className={cn("flex-1 w-full mx-auto relative", step === AppStep.WORKFLOW ? "h-[calc(100vh-112px)] max-w-none px-0 py-0 overflow-hidden" : "max-w-[1440px] px-8 py-8 overflow-y-auto")}>
         {step === AppStep.DETAIL_ASSISTANT && (
           <div className="animate-slide-up">
             <div className="flex items-end justify-between mb-10">
@@ -3162,6 +3211,14 @@ ${p.prompt}
           </div>
         )}
 
+        {step === AppStep.WORKFLOW && (
+          <WorkflowCanvas 
+            userApiKey={userApiKey} 
+            user={auth.user}
+            onDeductCredit={deductCredit}
+          />
+        )}
+
         {step === AppStep.FULL_PLAN && (
           <div className="space-y-20 animate-slide-up pb-20">
             {/* Section 1: Style Decoder */}
@@ -3169,7 +3226,15 @@ ${p.prompt}
               <div className="lg:col-span-7">
                 <div className="apple-card p-8 h-full flex flex-col border-black/10 bg-white">
                   <div className="section-label mb-6 text-[#0071e3]">Step 01 / Decoder</div>
-                  <h1 className="text-3xl font-extrabold mb-8 leading-tight tracking-tight">上传风格参考图，<br/><span className="text-[#86868b]">确立详情全案审美骨架。</span></h1>
+                  <div className="flex justify-between items-start mb-8">
+                    <h1 className="text-3xl font-extrabold leading-tight tracking-tight">上传风格参考图，<br/><span className="text-[#86868b]">确立详情全案审美骨架。</span></h1>
+                    <button 
+                      onClick={() => setStep(AppStep.WORKFLOW)}
+                      className="px-4 py-2 bg-black text-white text-[11px] font-black rounded-xl shadow-lg hover:scale-105 active:scale-95 transition-all flex items-center gap-2"
+                    >
+                      <i className="fas fa-project-diagram"></i> 进入创意工作流
+                    </button>
+                  </div>
                   <div 
                     className={`flex-1 rounded-[24px] border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all duration-700 overflow-hidden relative group shadow-inner min-h-[400px] ${styleImage ? 'border-transparent' : 'border-black/15 bg-[#fbfbfd] hover:bg-white hover:border-[#0071e3]/30'}`}
                     onClick={() => styleImage ? setZoomedImageUrl(styleImage) : document.getElementById('style-upload')?.click()}
@@ -3741,4 +3806,10 @@ ${p.prompt}
   );
 };
 
-export default App;
+const SafeApp = () => (
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
+
+export default SafeApp;

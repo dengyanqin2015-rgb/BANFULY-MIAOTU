@@ -368,6 +368,30 @@ export const regenerateSinglePrompt = async (constitution: VisualConstitution, s
   return response.text || storyboard.prompt; // Fallback to old prompt
 };
 
+export const refinePrompt = async (concept: string, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<string> => {
+  const ai = getAiClient(apiKey);
+
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: {
+      parts: [{
+        text: `请将以下创意概念转化为一段高质量、具有视觉冲击力的 AI 生图提示词 (Prompt)。
+        创意概念：${concept}
+        要求：
+        1. 使用【纯中文】描述。
+        2. 包含光影、材质、构图、氛围等专业摄影/艺术词汇。
+        3. 直接输出提示词字符串，不要有任何多余文字。`
+      }]
+    },
+    config: {
+      systemInstruction: "你是一个顶尖的视觉架构师和 AI 提示词专家。你的任务是基于用户的简单概念，生成极具视觉张力的中文生图指令。",
+      maxOutputTokens: 1024,
+    }
+  });
+
+  return response.text || concept;
+};
+
 export const segmentImage = async (imageB64: string, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<SegmentedObject[]> => {
   const ai = getAiClient(apiKey);
   const { mimeType, data } = parseB64(imageB64);

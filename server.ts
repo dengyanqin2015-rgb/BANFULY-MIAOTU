@@ -711,12 +711,25 @@ async function startServer() {
     const distPath = path.join(process.cwd(), "dist");
     if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));
-      app.get(/.*/, (req, res) => {
+    } else {
+      console.warn("Warning: dist folder not found. Static files will not be served.");
+    }
+  }
+
+  // Fallback for unmatched API routes to prevent them from returning HTML
+  app.use("/api", (req, res) => {
+    res.status(404).json({ message: `API route not found: ${req.method} ${req.originalUrl}` });
+  });
+
+  // SPA Fallback - MUST BE LAST
+  if (process.env.NODE_ENV === "production") {
+    const distPath = path.join(process.cwd(), "dist");
+    if (fs.existsSync(distPath)) {
+      app.get("*all", (req, res) => {
         res.sendFile(path.join(distPath, "index.html"));
       });
     } else {
-      console.warn("Warning: dist folder not found. Static files will not be served.");
-      app.get(/.*/, (req, res) => {
+      app.get("*all", (req, res) => {
         res.status(200).send(`
           <html>
             <body style="font-family: sans-serif; padding: 2rem; text-align: center;">
@@ -730,12 +743,9 @@ async function startServer() {
         `);
       });
     }
+  } else {
+    // In dev mode, Vite handles SPA fallback via middleware
   }
-
-  // Fallback for unmatched API routes to prevent them from returning HTML
-  app.use("/api", (req, res) => {
-    res.status(404).json({ message: `API route not found: ${req.method} ${req.originalUrl}` });
-  });
 
   const PORT = process.env.PORT || 3000;
 
