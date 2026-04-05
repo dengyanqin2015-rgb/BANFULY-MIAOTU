@@ -13,6 +13,7 @@ import {
   Panel,
   type NodeMouseHandler,
   ReactFlowInstance,
+  SelectionMode,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { ImageNode, ImageNodeData } from './ImageNode';
@@ -107,6 +108,9 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [lastNodeId, setLastNodeId] = useState<string | null>(null);
   const [renamingProject, setRenamingProject] = useState<{ id: string, name: string } | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
+  const selectedNodes = nodes.filter(n => n.selected);
+  
   const genBarRef = useRef<GenerationBarRef>(null);
   const rfInstance = useRef<ReactFlowInstance | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -260,6 +264,31 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     localStorage.removeItem(STORAGE_KEY);
     await ImageStorage.clear();
     window.location.reload();
+  };
+
+  const handleBatchDelete = () => {
+    if (selectedNodes.length === 0) return;
+    setShowBatchDeleteConfirm(true);
+  };
+
+  const confirmBatchDelete = () => {
+    const selectedIds = new Set(selectedNodes.map(n => n.id));
+    setNodes(nds => nds.filter(n => !selectedIds.has(n.id)));
+    setEdges(eds => eds.filter(e => !selectedIds.has(e.source) && !selectedIds.has(e.target)));
+    setShowBatchDeleteConfirm(false);
+  };
+
+  const handleBatchAddToGenBar = () => {
+    if (selectedNodes.length === 0 || !genBarRef.current) return;
+    
+    selectedNodes.forEach(node => {
+      const nodeData = node.data as ImageNodeData;
+      if (nodeData.imageUrl) {
+        const data = nodeData.imageUrl.split(',')[1];
+        const mimeType = nodeData.imageUrl.split(';')[0].split(':')[1];
+        genBarRef.current?.addImage(data, mimeType, nodeData.imageUrl, node.id);
+      }
+    });
   };
 
   const loadProject = async (project: Project) => {
@@ -843,12 +872,50 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         onInit={(instance) => { rfInstance.current = instance; }}
         nodeTypes={nodeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
+        selectionOnDrag
+        selectionMode={SelectionMode.Partial}
+        panOnScroll
+        selectionKeyCode="Shift"
+        multiSelectionKeyCode="Control"
         fitView
         colorMode="dark"
         style={{ width: '100%', height: '100%' }}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.5} color="#333" />
         <Controls />
+
+        <AnimatePresence>
+          {selectedNodes.length > 1 && (
+            <Panel position="bottom-center" className="mb-24">
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.9 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 20, scale: 0.9 }}
+                className="bg-[#1a1a1a]/90 backdrop-blur-xl border border-red-600/30 rounded-2xl p-2 shadow-2xl flex items-center gap-2"
+              >
+                <div className="px-4 py-2 border-r border-[#333] mr-2">
+                  <span className="text-xs font-bold text-white">已选中 {selectedNodes.length} 个节点</span>
+                </div>
+                
+                <button
+                  onClick={handleBatchAddToGenBar}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 rounded-xl text-xs font-bold transition-all"
+                >
+                  <Plus size={14} />
+                  批量作为参考图
+                </button>
+
+                <button
+                  onClick={handleBatchDelete}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-red-600/20 text-red-500 hover:bg-red-600/30 rounded-xl text-xs font-bold transition-all"
+                >
+                  <Trash2 size={14} />
+                  批量删除
+                </button>
+              </motion.div>
+            </Panel>
+          )}
+        </AnimatePresence>
         
         <Panel position="top-left" className="flex items-center gap-4 p-4">
           <div className="flex items-center gap-6">
@@ -1073,6 +1140,40 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                     className="flex-1 px-4 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-all shadow-[0_0_20px_rgba(220,38,38,0.3)]"
                   >
                     确定重置
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {showBatchDeleteConfirm && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-[#1a1a1a] border border-[#333] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden"
+            >
+              <div className="p-6">
+                <div className="w-12 h-12 bg-red-600/20 rounded-full flex items-center justify-center mb-4">
+                  <Trash2 className="text-red-600" size={24} />
+                </div>
+                <h3 className="text-lg font-bold text-white mb-2">批量删除节点？</h3>
+                <p className="text-sm text-gray-400 mb-6">确定要删除选中的 {selectedNodes.length} 个节点吗？此操作不可撤销。</p>
+                
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => setShowBatchDeleteConfirm(false)}
+                    className="flex-1 px-4 py-3 bg-[#222] text-gray-400 font-bold rounded-xl hover:bg-[#333] transition-all"
+                  >
+                    取消
+                  </button>
+                  <button 
+                    onClick={confirmBatchDelete}
+                    className="flex-1 px-4 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-all shadow-[0_0_20px_rgba(220,38,38,0.3)]"
+                  >
+                    确定删除
                   </button>
                 </div>
               </div>

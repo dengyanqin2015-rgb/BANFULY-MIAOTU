@@ -124,6 +124,8 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
             width: img.width,
             height: img.height
           }]);
+          // Auto expand options when image is uploaded
+          setShowOptions(true);
         };
         img.src = preview;
       };
@@ -232,6 +234,8 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
     })));
     setPrompt('');
     setImages([]);
+    // Auto collapse options after sending
+    setShowOptions(false);
   };
 
   const calculatePrice = (mId: ImageModel, sId: ImageSize) => {
@@ -298,7 +302,15 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
 
             <input
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => {
+                setPrompt(e.target.value);
+                if (e.target.value.trim() && !showOptions) {
+                  setShowOptions(true);
+                }
+              }}
+              onFocus={() => {
+                if (!showOptions) setShowOptions(true);
+              }}
               placeholder="请输入你想生成的画面描述..."
               className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-gray-200 placeholder-gray-500 py-3"
             />
