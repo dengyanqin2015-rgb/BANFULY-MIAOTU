@@ -559,10 +559,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           onDelete: () => {
             setNodes((nds) => nds.filter((n) => n.id !== node.id));
           },
-          onChange: (title: string, content: string) => {
+          onChange: (title: string, content: string, fontSize: number, color: string, isLocked: boolean) => {
             setNodes((nds) => nds.map(n => n.id === node.id ? {
               ...n,
-              data: { ...n.data, title, content }
+              data: { ...n.data, title, content, fontSize, color, isLocked }
             } : n));
           }
         }
