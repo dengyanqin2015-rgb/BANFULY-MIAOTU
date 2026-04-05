@@ -1,4 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ReactFlow,
   Controls,
@@ -17,17 +18,19 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { ImageNode, ImageNodeData } from './ImageNode';
+import { NoteNode, NoteNodeData } from './NoteNode';
 import { GenerationBar, GenerationBarRef } from './GenerationBar';
 import { Assistant, AssistantRef } from './Assistant';
 import { generateImage, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
 import { ImageStorage } from '../lib/storage';
-import { Trash2, ChevronDown, Plus, Download, Upload, Edit2 } from 'lucide-react';
+import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
 
 const nodeTypes = {
   imageNode: ImageNode,
+  noteNode: NoteNode,
 };
 
 interface Project {
@@ -110,6 +113,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [renamingProject, setRenamingProject] = useState<{ id: string, name: string } | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
+  const [paneMenu, setPaneMenu] = useState<{ show: boolean; x: number; y: number } | null>(null);
   const selectedNodes = nodes.filter(n => n.selected);
   
   const genBarRef = useRef<GenerationBarRef>(null);
@@ -298,6 +302,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     
     // Hydrate nodes with images from IndexedDB
     const hydratedNodes = await Promise.all((project.nodes || []).map(async (node) => {
+      if (node.type === 'noteNode') {
+        return attachNodeActions(node);
+      }
+
       const nodeData = node.data as ImageNodeData;
       const newNodeData = { ...nodeData };
 
@@ -327,10 +335,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         ).filter(Boolean);
       }
 
-      return {
+      return attachNodeActions({
         ...node,
         data: newNodeData
-      };
+      });
     }));
 
     setNodes(hydratedNodes);
@@ -344,6 +352,14 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     
     // Extract images to IndexedDB and store references in localStorage
     const nodesToSave = await Promise.all(nodes.map(async (node) => {
+      if (node.type === 'noteNode') {
+        const nodeData = node.data as NoteNodeData;
+        const newNodeData = { ...nodeData };
+        delete newNodeData.onDelete;
+        delete newNodeData.onChange;
+        return { ...node, data: newNodeData };
+      }
+
       const nodeData = node.data as ImageNodeData;
       const newNodeData = { ...nodeData };
       
@@ -351,6 +367,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       delete newNodeData.onDelete;
       delete newNodeData.onRegenerate;
       delete newNodeData.onAdjust;
+      delete newNodeData.onSendToAssistant;
 
       // Extract imageUrl
       if (nodeData.imageUrl && !nodeData.imageUrl.startsWith('db://')) {
@@ -533,6 +550,25 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   };
 
   const attachNodeActions = useCallback((node: Node): Node => {
+    if (node.type === 'noteNode') {
+      const nodeData = node.data as NoteNodeData;
+      return {
+        ...node,
+        data: {
+          ...nodeData,
+          onDelete: () => {
+            setNodes((nds) => nds.filter((n) => n.id !== node.id));
+          },
+          onChange: (title: string, content: string) => {
+            setNodes((nds) => nds.map(n => n.id === node.id ? {
+              ...n,
+              data: { ...n.data, title, content }
+            } : n));
+          }
+        }
+      };
+    }
+
     const nodeData = node.data as ImageNodeData;
     
     // Recovery logic for legacy nodes
@@ -593,6 +629,137 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }
     };
   }, [setNodes, setEdges]);
+
+  const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    setPaneMenu({
+      show: true,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }, []);
+
+  const handleCreateNote = useCallback(() => {
+    if (!paneMenu) return;
+    const position = rfInstance.current?.screenToFlowPosition({
+      x: paneMenu.x,
+      y: paneMenu.y,
+    }) || { x: 0, y: 0 };
+
+    const newNodeId = `note-${Date.now()}`;
+    const newNode = attachNodeActions({
+      id: newNodeId,
+      type: 'noteNode',
+      position,
+      data: {
+        title: '操作说明',
+        content: '',
+      },
+    });
+
+    setNodes((nds) => [...nds, newNode]);
+    setPaneMenu(null);
+  }, [paneMenu, attachNodeActions, setNodes]);
+
+  const handleBatchImport = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = 'image/*';
+    input.onchange = async (e) => {
+      const files = (e.target as HTMLInputElement).files;
+      if (!files) return;
+
+      const position = paneMenu ? rfInstance.current?.screenToFlowPosition({
+        x: paneMenu.x,
+        y: paneMenu.y,
+      }) : { x: 100, y: 100 };
+
+      let currentX = position?.x || 100;
+      let currentY = position?.y || 100;
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          const base64 = event.target?.result as string;
+          const newNodeId = `import-${Date.now()}-${i}`;
+          
+          const newNode = attachNodeActions({
+            id: newNodeId,
+            type: 'imageNode',
+            position: { x: currentX, y: currentY },
+            data: {
+              prompt: file.name,
+              imageUrl: base64,
+              type: 'source',
+            },
+          });
+
+          setNodes((nds) => [...nds, newNode]);
+        };
+        reader.readAsDataURL(file);
+        
+        currentX += 350;
+        if ((i + 1) % 3 === 0) {
+          currentX = position?.x || 100;
+          currentY += 450;
+        }
+      }
+      setPaneMenu(null);
+    };
+    input.click();
+  }, [paneMenu, attachNodeActions, setNodes]);
+
+  useEffect(() => {
+    const handlePaste = async (event: ClipboardEvent) => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+
+      for (const item of items) {
+        if (item.type.indexOf('image') !== -1) {
+          const file = item.getAsFile();
+          if (file) {
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+              const base64 = e.target?.result as string;
+              
+              const position = rfInstance.current?.screenToFlowPosition({
+                x: window.innerWidth / 2,
+                y: window.innerHeight / 2,
+              }) || { x: 0, y: 0 };
+              
+              const newNodeId = `paste-${Date.now()}`;
+              const newNode = attachNodeActions({
+                id: newNodeId,
+                type: 'imageNode',
+                position,
+                data: {
+                  prompt: 'Pasted Image',
+                  imageUrl: base64,
+                  type: 'source',
+                },
+              });
+              
+              setNodes((nds) => [...nds, newNode]);
+            };
+            reader.readAsDataURL(file);
+          }
+        }
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [attachNodeActions, setNodes]);
+
+  useEffect(() => {
+    const handleClickOutside = () => setPaneMenu(null);
+    if (paneMenu?.show) {
+      window.addEventListener('click', handleClickOutside);
+    }
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, [paneMenu]);
 
   const handleGenerate = useCallback(async (
     prompt: string, 
@@ -859,6 +1026,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         onConnect={onConnect}
         onNodeDoubleClick={handleNodeDoubleClick}
         onInit={(instance) => { rfInstance.current = instance; }}
+        onPaneContextMenu={onPaneContextMenu}
         nodeTypes={nodeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
         selectionOnDrag
@@ -905,6 +1073,54 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             </Panel>
           )}
         </AnimatePresence>
+
+        {/* Pane Context Menu */}
+        {paneMenu && createPortal(
+          <AnimatePresence>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: -10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: -10 }}
+              style={{ 
+                position: 'fixed', 
+                left: paneMenu.x, 
+                top: paneMenu.y,
+                zIndex: 10000 
+              }}
+              className="w-56 bg-[#1a1a1a] border border-[#333] rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] overflow-hidden py-1.5 backdrop-blur-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 py-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-widest">新建 / CREATE</div>
+              <button 
+                onClick={handleCreateNote}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition-colors"
+              >
+                <FileText size={16} className="text-blue-400" />
+                <span>新建工作流说明</span>
+              </button>
+              <div className="h-px bg-[#333] my-1.5 mx-2" />
+              <div className="px-4 py-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-widest">导入 / IMPORT</div>
+              <button 
+                onClick={handleBatchImport}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition-colors"
+              >
+                <Upload size={16} className="text-red-600" />
+                <span>批量导入素材</span>
+              </button>
+              <button 
+                onClick={() => {
+                  setPaneMenu(null);
+                  alert('请直接使用 Ctrl+V 粘贴图片到画布');
+                }}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition-colors"
+              >
+                <Clipboard size={16} className="text-green-500" />
+                <span>粘贴图片 (Ctrl+V)</span>
+              </button>
+            </motion.div>
+          </AnimatePresence>,
+          document.body
+        )}
         
         <Panel position="top-left" className="flex items-center gap-4 p-4">
           <div className="flex items-center gap-6">
