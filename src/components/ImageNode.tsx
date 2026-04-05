@@ -108,7 +108,8 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
   return (
     <div className="flex flex-col gap-1.5 w-[320px]" onContextMenu={handleContextMenu}>
       <div className="flex items-center justify-between px-1">
-        <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+        <div className="flex items-center gap-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+          <span className="w-1.5 h-1.5 bg-green-500 rounded-full shadow-[0_0_5px_rgba(34,197,94,0.5)]" />
           {headerText}
         </div>
         {data.type === 'generated' && (

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
-import { motion, AnimatePresence, useDragControls } from 'motion/react';
-import { MessageSquare, X, Send, Image as ImageIcon, Loader2, Copy, Check, Sparkles, BrainCircuit, Maximize2 } from 'lucide-react';
+import { motion, AnimatePresence, useDragControls, PanInfo } from 'motion/react';
+import { MessageSquare, X, Send, Image as ImageIcon, Loader2, Copy, Check, Sparkles, BrainCircuit } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { cn } from '../lib/utils';
 import { chatWithAssistant } from '../lib/gemini';
@@ -39,6 +39,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   const [pendingImages, setPendingImages] = useState<{ data: string; mimeType: string; preview: string }[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 450, height: 650 });
+  const [position, setPosition] = useState({ x: window.innerWidth - 500, y: 100 });
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -125,6 +126,21 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    const handleWindowResize = () => {
+      setPosition(prev => {
+        const windowWidth = window.innerWidth;
+        const currentRight = windowWidth - (prev.x + size.width);
+        if (currentRight < 20) {
+          return { ...prev, x: windowWidth - size.width - 20 };
+        }
+        return prev;
+      });
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, [size.width]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -220,18 +236,47 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const handleResize = (e: React.MouseEvent) => {
+  const handleResize = (e: React.MouseEvent, direction: string) => {
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;
     const startY = e.clientY;
     const startWidth = size.width;
     const startHeight = size.height;
+    const startPos = position;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
-      const newWidth = Math.max(350, startWidth + (moveEvent.clientX - startX));
-      const newHeight = Math.max(400, startHeight + (moveEvent.clientY - startY));
+      let newWidth = startWidth;
+      let newHeight = startHeight;
+      let newX = startPos.x;
+      let newY = startPos.y;
+
+      const deltaX = moveEvent.clientX - startX;
+      const deltaY = moveEvent.clientY - startY;
+
+      if (direction.includes('e')) {
+        newWidth = Math.max(350, startWidth + deltaX);
+      }
+      if (direction.includes('w')) {
+        const width = Math.max(350, startWidth - deltaX);
+        if (width !== startWidth) {
+          newWidth = width;
+          newX = startPos.x + (startWidth - width);
+        }
+      }
+      if (direction.includes('s')) {
+        newHeight = Math.max(400, startHeight + deltaY);
+      }
+      if (direction.includes('n')) {
+        const height = Math.max(400, startHeight - deltaY);
+        if (height !== startHeight) {
+          newHeight = height;
+          newY = startPos.y + (startHeight - height);
+        }
+      }
+
       setSize({ width: newWidth, height: newHeight });
+      setPosition({ x: newX, y: newY });
     };
 
     const onMouseUp = () => {
@@ -243,6 +288,22 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     document.addEventListener('mouseup', onMouseUp);
   };
 
+  const handleDragEnd = (_: unknown, info: PanInfo) => {
+    const newX = position.x + info.offset.x;
+    const newY = position.y + info.offset.y;
+    
+    const threshold = 50;
+    const windowWidth = window.innerWidth;
+    const currentRight = windowWidth - (newX + size.width);
+    
+    if (currentRight < threshold) {
+      // Snap to right
+      setPosition({ x: windowWidth - size.width - 20, y: newY });
+    } else {
+      setPosition({ x: newX, y: newY });
+    }
+  };
+
   return (
     <>
       {/* Floating Button */}
@@ -252,8 +313,8 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
         onClick={() => setIsOpen(true)}
         className="fixed bottom-32 right-8 z-[60] w-16 h-16 bg-red-600 rounded-full shadow-[0_0_30px_rgba(220,38,38,0.4)] flex flex-col items-center justify-center text-white border-2 border-white/20 group"
       >
-        <div className="relative">
-          <MessageSquare size={24} />
+        <div className="relative flex items-center justify-center">
+          <span className="text-2xl font-black text-white leading-none">B</span>
           <motion.div 
             animate={{ scale: [1, 1.2, 1] }}
             transition={{ repeat: Infinity, duration: 2 }}
@@ -271,26 +332,45 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
             dragControls={dragControls}
             dragListener={false}
             dragMomentum={false}
-            initial={{ opacity: 0, scale: 0.9, y: 0, x: 0 }}
-            animate={{ opacity: 1, scale: 1, y: 0, x: 0 }}
-            exit={{ opacity: 0, scale: 0.9, y: 20, x: 20 }}
+            onDragEnd={handleDragEnd}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ 
+              opacity: 1, 
+              scale: 1,
+              x: position.x,
+              y: position.y
+            }}
+            exit={{ opacity: 0, scale: 0.9 }}
             style={{ 
               width: size.width, 
               height: size.height,
               position: 'fixed',
-              bottom: '128px',
-              right: '112px'
+              top: 0,
+              left: 0,
+              zIndex: 100
             }}
-            className="z-[100] bg-[#1a1a1a] border border-[#333] rounded-3xl shadow-[0_30px_100px_rgba(0,0,0,0.8)] flex flex-col overflow-hidden backdrop-blur-2xl"
+            className="bg-[#1a1a1a] border border-[#333] rounded-3xl shadow-[0_30px_100px_rgba(0,0,0,0.8)] flex flex-col overflow-hidden backdrop-blur-2xl"
           >
+            {/* Resize Handles */}
+            <div className="absolute inset-0 pointer-events-none">
+              <div onMouseDown={(e) => handleResize(e, 'n')} className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize pointer-events-auto" />
+              <div onMouseDown={(e) => handleResize(e, 's')} className="absolute bottom-0 left-0 right-0 h-1 cursor-ns-resize pointer-events-auto" />
+              <div onMouseDown={(e) => handleResize(e, 'w')} className="absolute top-0 bottom-0 left-0 w-1 cursor-ew-resize pointer-events-auto" />
+              <div onMouseDown={(e) => handleResize(e, 'e')} className="absolute top-0 bottom-0 right-0 w-1 cursor-ew-resize pointer-events-auto" />
+              <div onMouseDown={(e) => handleResize(e, 'nw')} className="absolute top-0 left-0 w-3 h-3 cursor-nwse-resize pointer-events-auto" />
+              <div onMouseDown={(e) => handleResize(e, 'ne')} className="absolute top-0 right-0 w-3 h-3 cursor-nesw-resize pointer-events-auto" />
+              <div onMouseDown={(e) => handleResize(e, 'sw')} className="absolute bottom-0 left-0 w-3 h-3 cursor-nesw-resize pointer-events-auto" />
+              <div onMouseDown={(e) => handleResize(e, 'se')} className="absolute bottom-0 right-0 w-3 h-3 cursor-nwse-resize pointer-events-auto" />
+            </div>
+
             {/* Header - Drag Handle */}
             <div 
               onPointerDown={(e) => dragControls.start(e)}
-              className="p-4 border-b border-[#333] flex items-center justify-between bg-gradient-to-r from-red-600/10 to-transparent cursor-move select-none"
+              className="p-4 border-b border-[#333] flex items-center justify-between bg-gradient-to-r from-red-600/10 to-transparent cursor-move select-none shrink-0"
             >
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-red-600 rounded-xl flex items-center justify-center shadow-lg">
-                  <Sparkles className="text-white" size={20} />
+                  <span className="text-xl font-black text-white">B</span>
                 </div>
                 <div>
                   <h3 className="text-sm font-black text-white tracking-tight">班小夫助理 / AI ASSISTANT</h3>
@@ -309,7 +389,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
             </div>
 
             {/* Mode Switcher */}
-            <div className="p-2 bg-[#111] flex gap-2">
+            <div className="p-2 bg-[#111] flex gap-2 shrink-0">
               <button
                 onClick={() => setMode('normal')}
                 className={cn(
@@ -370,7 +450,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                             if (!inline) {
                               return (
                                 <div className="relative group/code my-4">
-                                  <div className="absolute right-2 top-2 opacity-0 group-hover/code:opacity-100 transition-opacity">
+                                  <div className="absolute right-2 top-2 opacity-0 group-hover/code:opacity-100 transition-opacity z-10">
                                     <button
                                       onClick={() => handleCopy(codeString, `code-${idx}`)}
                                       className="p-1.5 bg-black/50 hover:bg-black/80 rounded-lg text-white transition-all border border-white/10"
@@ -379,7 +459,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                                       {copiedId === `code-${idx}` ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
                                     </button>
                                   </div>
-                                  <code className={cn(className, "block bg-black/40 p-4 rounded-xl border border-white/5 overflow-x-auto")} {...props}>
+                                  <code className={cn(className, "block bg-black/40 p-4 rounded-xl border border-white/5 whitespace-pre-wrap break-words")} {...props}>
                                     {children}
                                   </code>
                                 </div>
@@ -418,7 +498,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
             </div>
 
             {/* Input Area */}
-            <div className="p-4 border-t border-[#333] bg-[#111]">
+            <div className="p-4 border-t border-[#333] bg-[#111] shrink-0">
               <AnimatePresence>
                 {pendingImages.length > 0 && (
                   <motion.div 
@@ -484,17 +564,6 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                 >
                   <Send size={20} />
                 </button>
-              </div>
-            </div>
-
-            {/* Resize Handle */}
-            <div 
-              onMouseDown={handleResize}
-              className="absolute bottom-0 right-0 w-6 h-6 cursor-nwse-resize flex items-center justify-center group/resize"
-            >
-              <div className="w-1 h-1 bg-gray-600 rounded-full group-hover/resize:bg-red-600 transition-colors" />
-              <div className="absolute bottom-1 right-1">
-                <Maximize2 size={10} className="text-gray-600 group-hover/resize:text-red-600 rotate-90" />
               </div>
             </div>
           </motion.div>
