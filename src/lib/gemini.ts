@@ -1,6 +1,7 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview";
+export type ChatModel = "gemini-3-flash-preview" | "gemini-3.1-pro-preview";
 export type ImageSize = "512px" | "1K" | "2K" | "4K";
 export type AspectRatio = "AUTO" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9" | "1:4" | "1:8" | "4:1" | "8:1";
 
@@ -10,6 +11,14 @@ export interface GenerationParams {
   imageSize: ImageSize;
   model: ImageModel;
   images?: { data: string; mimeType: string }[];
+  apiKey?: string;
+}
+
+export interface ChatParams {
+  message: string;
+  images?: { data: string; mimeType: string }[];
+  mode: 'normal' | 'deep';
+  history?: { role: 'user' | 'model'; parts: { text: string }[] }[];
   apiKey?: string;
 }
 
@@ -33,6 +42,61 @@ export async function checkApiKey() {
 export async function openApiKeyDialog() {
   if (typeof window.aistudio !== 'undefined' && window.aistudio.openSelectKey) {
     await window.aistudio.openSelectKey();
+  }
+}
+
+export async function chatWithAssistant(params: ChatParams): Promise<string> {
+  const apiKey = params.apiKey || process.env.API_KEY || process.env.GEMINI_API_KEY;
+  const ai = new GoogleGenAI({ apiKey: apiKey as string });
+  
+  const modelName = params.mode === 'deep' ? 'gemini-3.1-pro-preview' : 'gemini-3-flash-preview';
+  
+  const parts: { text?: string; inlineData?: { data: string; mimeType: string } }[] = [{ text: params.message }];
+  if (params.images && params.images.length > 0) {
+    params.images.forEach(img => {
+      parts.push({
+        inlineData: {
+          data: img.data,
+          mimeType: img.mimeType
+        }
+      });
+    });
+  }
+
+  const config: { systemInstruction: string; thinkingConfig?: { thinkingLevel: ThinkingLevel } } = {
+    systemInstruction: `你是一位专业的电商视觉架构助手，名叫‘班小夫’。你的任务是辅助用户进行生图创作，提供深度的审美分析、营销逻辑建议以及高质量的生图提示词（Prompt）。
+
+你的回复应当遵循以下结构化规范：
+1. **深度分析**：对图片或需求进行多维度的专业拆解。
+2. **视觉建议**：提供构图、色彩、灯光等方面的改进建议。
+3. **核心提示词（重点）**：将生成的生图提示词（Prompt）或核心关键词放在独立的 Markdown 代码块中（使用 \`\`\` 语法），以便用户一键复制。
+4. **段落核心**：如果段落中出现了非常关键的短语或参数，请使用加粗或特殊标记，我会为你生成独立的复制块。
+
+请确保回复专业、富有洞察力，逻辑清晰，不要将所有内容混在一起。`,
+  };
+
+  if (params.mode === 'deep') {
+    config.thinkingConfig = { thinkingLevel: ThinkingLevel.HIGH };
+  }
+
+  try {
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: [
+        ...(params.history || []),
+        { role: 'user', parts }
+      ],
+      config: config,
+    });
+
+    return response.text || "抱歉，我无法生成回复。";
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Assistant chat failed:", error);
+    if (error.message?.includes("Requested entity was not found")) {
+      throw new Error("API_KEY_REQUIRED");
+    }
+    throw error;
   }
 }
 

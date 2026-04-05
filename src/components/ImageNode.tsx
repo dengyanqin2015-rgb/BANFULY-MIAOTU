@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position, NodeProps, type Node } from '@xyflow/react';
-import { Download, Trash2, Loader2, Search, RefreshCw, Settings2, FileImage, X, Copy, Check } from 'lucide-react';
+import { Download, Trash2, Loader2, Search, RefreshCw, Settings2, FileImage, X, Copy, Check, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
@@ -14,6 +14,7 @@ export interface ImageNodeData extends Record<string, unknown> {
   onDelete?: () => void;
   onRegenerate?: () => void;
   onAdjust?: () => void;
+  onSendToAssistant?: () => void;
   refImages?: string[]; // Base64 or URLs of reference images used
   originalImages?: { data: string; mimeType: string; sourceNodeId?: string }[];
   resolution?: string;
@@ -105,7 +106,7 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
     : '图片';
 
   return (
-    <div className="flex flex-col gap-1.5" onContextMenu={handleContextMenu}>
+    <div className="flex flex-col gap-1.5 w-[320px]" onContextMenu={handleContextMenu}>
       <div className="flex items-center justify-between px-1">
         <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
           {headerText}
@@ -125,13 +126,13 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         className={cn(
-          "bg-[#1a1a1a] rounded-lg overflow-hidden shadow-2xl transition-all duration-200",
+          "bg-[#1a1a1a] rounded-lg overflow-hidden shadow-2xl transition-all duration-200 w-full",
           selected ? "ring-2 ring-red-600 ring-offset-2 ring-offset-[#0a0a0a]" : "border border-[#333]"
         )}
       >
         <Handle type="target" position={Position.Left} className="!w-2 !h-2 !bg-red-600 !border-none -left-1" />
         
-        <div className="relative min-w-[200px] max-w-[320px] bg-[#0a0a0a] flex items-center justify-center group cursor-pointer">
+        <div className="relative w-full bg-[#0a0a0a] flex items-center justify-center group cursor-pointer">
           {data.isLoading ? (
             <div className="flex flex-col items-center gap-3 py-20">
               <Loader2 className="animate-spin text-red-600" size={32} />
@@ -200,7 +201,7 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
               </div>
             )}
             <div 
-              className="text-[10px] text-gray-400 line-clamp-2 leading-relaxed flex-1 cursor-help"
+              className="text-[10px] text-gray-400 leading-relaxed flex-1 cursor-help break-words line-clamp-2"
               onMouseEnter={() => setIsHoveringPrompt(true)}
               onMouseLeave={() => setIsHoveringPrompt(false)}
             >
@@ -302,6 +303,13 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
             >
               <Settings2 size={16} className="text-blue-400" />
               <span>调整图片重新生成</span>
+            </button>
+            <button 
+              onClick={() => { data.onSendToAssistant?.(); setShowMenu(false); }}
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition-colors"
+            >
+              <Sparkles size={16} className="text-yellow-400" />
+              <span>一键发送助理分析</span>
             </button>
             <div className="h-px bg-[#333] my-1.5 mx-2" />
             <div className="px-4 py-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-widest">导出图片 / EXPORT</div>

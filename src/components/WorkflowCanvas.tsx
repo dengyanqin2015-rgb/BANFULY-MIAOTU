@@ -18,6 +18,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { ImageNode, ImageNodeData } from './ImageNode';
 import { GenerationBar, GenerationBarRef } from './GenerationBar';
+import { Assistant, AssistantRef } from './Assistant';
 import { generateImage, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
 import { ImageStorage } from '../lib/storage';
 import { Trash2, ChevronDown, Plus, Download, Upload, Edit2 } from 'lucide-react';
@@ -112,6 +113,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const selectedNodes = nodes.filter(n => n.selected);
   
   const genBarRef = useRef<GenerationBarRef>(null);
+  const assistantRef = useRef<AssistantRef>(null);
   const rfInstance = useRef<ReactFlowInstance | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -530,6 +532,68 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     return { x: finalX, y: finalY };
   };
 
+  const attachNodeActions = useCallback((node: Node): Node => {
+    const nodeData = node.data as ImageNodeData;
+    
+    // Recovery logic for legacy nodes
+    const originalImages = nodeData.originalImages || nodeData.refImages?.map(img => {
+      const match = img.match(/^data:([^;]+);base64,(.+)$/);
+      return {
+        data: match ? match[2] : '',
+        mimeType: match ? match[1] : 'image/png',
+      };
+    });
+
+    return {
+      ...node,
+      data: {
+        ...nodeData,
+        onDelete: () => {
+          setNodes((nds) => nds.filter((n) => n.id !== node.id));
+          setEdges((eds) => eds.filter((e) => e.source !== node.id && e.target !== node.id));
+        },
+        onRegenerate: nodeData.type === 'generated' ? () => {
+          console.log(`[Workflow] Regenerating node ${node.id}`);
+          handleGenerateRef.current(
+            nodeData.prompt, 
+            nodeData.aspectRatio || '1:1', 
+            nodeData.imageSize || '1K', 
+            nodeData.model || 'gemini-3.1-flash-image-preview', 
+            originalImages, 
+            node.id
+          );
+        } : undefined,
+        onAdjust: nodeData.type === 'generated' ? () => {
+          console.log(`[Workflow] Adjusting node ${node.id}`);
+          if (genBarRef.current) {
+            genBarRef.current.setParams(
+              nodeData.prompt, 
+              nodeData.aspectRatio || '1:1', 
+              nodeData.imageSize || '1K', 
+              nodeData.model || 'gemini-3.1-flash-image-preview', 
+              originalImages?.map(img => ({ 
+                data: img.data, 
+                mimeType: img.mimeType, 
+                preview: `data:${img.mimeType};base64,${img.data}`,
+                sourceNodeId: img.sourceNodeId 
+              }))
+            );
+          }
+        } : undefined,
+        onSendToAssistant: nodeData.imageUrl ? () => {
+          if (assistantRef.current) {
+            const match = nodeData.imageUrl!.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+              assistantRef.current.sendImage(match[2], match[1], nodeData.imageUrl!);
+            } else {
+              assistantRef.current.open();
+            }
+          }
+        } : undefined
+      }
+    };
+  }, [setNodes, setEdges]);
+
   const handleGenerate = useCallback(async (
     prompt: string, 
     aspectRatio: AspectRatio, 
@@ -572,10 +636,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           await onDeductCredit(cost);
         }
 
-        setNodes((nds) => nds.map(n => n.id === targetNodeId ? {
+        setNodes((nds) => nds.map(n => n.id === targetNodeId ? attachNodeActions({
           ...n,
           data: { ...n.data, isLoading: false, imageUrl: urls[0] }
-        } : n));
+        }) : n));
       } catch (err: unknown) {
         const error = err as Error;
         console.error(`[Workflow] Regeneration failed for node ${targetNodeId}:`, error);
@@ -659,7 +723,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     posX = safePos.x;
     posY = safePos.y;
 
-    const newNode: Node<ImageNodeData> = {
+    const newNode: Node<ImageNodeData> = attachNodeActions({
       id: newNodeId,
       type: 'imageNode',
       position: { x: posX, y: posY },
@@ -681,31 +745,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           if (aspectRatio === '3:4') return `${Math.round(base * 3 / 4)} x ${base}`;
           return `${base} x ${base}`;
         })(),
-        onDelete: () => {
-          setNodes((nds) => nds.filter((n) => n.id !== newNodeId));
-          setEdges((eds) => eds.filter((e) => e.source !== newNodeId && e.target !== newNodeId));
-        },
-        onRegenerate: () => {
-          handleGenerateRef.current(prompt, aspectRatio, imageSize, model, images, newNodeId);
-        },
-        onAdjust: () => {
-          if (genBarRef.current) {
-            genBarRef.current.setParams(
-              prompt, 
-              aspectRatio, 
-              imageSize, 
-              model, 
-              images?.map(img => ({ 
-                data: img.data, 
-                mimeType: img.mimeType, 
-                preview: `data:${img.mimeType};base64,${img.data}`,
-                sourceNodeId: img.sourceNodeId 
-              }))
-            );
-          }
-        }
       },
-    };
+    });
 
     setNodes((nds) => [...nds, ...newSourceNodes, newNode]);
 
@@ -749,14 +790,14 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       setNodes((nds) =>
         nds.map((node) => {
           if (node.id === newNodeId) {
-            return {
+            return attachNodeActions({
               ...node,
               data: {
                 ...node.data,
                 isLoading: false,
                 imageUrl: urls[0],
               },
-            };
+            });
           }
           return node;
         })
@@ -785,7 +826,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         })
       );
     }
-  }, [user, userApiKey, onDeductCredit, findSafePosition]);
+  }, [user, userApiKey, onDeductCredit, findSafePosition, attachNodeActions]);
 
   const handleGenerateRef = useRef(handleGenerate);
   useEffect(() => {
@@ -797,65 +838,13 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setHasApiKey(true);
   };
 
-  const attachNodeActions = useCallback((node: Node): Node => {
-    const nodeData = node.data as ImageNodeData;
-    
-    // Recovery logic for legacy nodes
-    const originalImages = nodeData.originalImages || nodeData.refImages?.map(img => {
-      const match = img.match(/^data:([^;]+);base64,(.+)$/);
-      return {
-        data: match ? match[2] : '',
-        mimeType: match ? match[1] : 'image/png',
-      };
-    });
-
-    return {
-      ...node,
-      data: {
-        ...nodeData,
-        onDelete: () => {
-          setNodes((nds) => nds.filter((n) => n.id !== node.id));
-          setEdges((eds) => eds.filter((e) => e.source !== node.id && e.target !== node.id));
-        },
-        onRegenerate: nodeData.type === 'generated' ? () => {
-          console.log(`[Workflow] Regenerating node ${node.id}`);
-          handleGenerateRef.current(
-            nodeData.prompt, 
-            nodeData.aspectRatio || '1:1', 
-            nodeData.imageSize || '1K', 
-            nodeData.model || 'gemini-3.1-flash-image-preview', 
-            originalImages, 
-            node.id
-          );
-        } : undefined,
-        onAdjust: nodeData.type === 'generated' ? () => {
-          console.log(`[Workflow] Adjusting node ${node.id}`);
-          if (genBarRef.current) {
-            genBarRef.current.setParams(
-              nodeData.prompt, 
-              nodeData.aspectRatio || '1:1', 
-              nodeData.imageSize || '1K', 
-              nodeData.model || 'gemini-3.1-flash-image-preview', 
-              originalImages?.map(img => ({ 
-                data: img.data, 
-                mimeType: img.mimeType, 
-                preview: `data:${img.mimeType};base64,${img.data}`,
-                sourceNodeId: img.sourceNodeId 
-              }))
-            );
-          }
-        } : undefined
-      }
-    };
-  }, [setNodes, setEdges]);
-
   // Hydrate nodes with actions when project changes or handleGenerate is ready
   useEffect(() => {
     if (!currentProjectId || !handleGenerateRef.current) return;
     
     setNodes(nds => nds.map(node => {
-      // If actions are already attached, skip
-      if (node.data.onDelete) return node;
+      // If actions are already attached and onSendToAssistant is correctly set, skip
+      if (node.data.onDelete && (node.data.imageUrl ? !!node.data.onSendToAssistant : true)) return node;
       return attachNodeActions(node);
     }));
   }, [currentProjectId, attachNodeActions]);
@@ -1067,6 +1056,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         hasApiKey={hasApiKey}
         onOpenApiKey={handleOpenApiKey}
       />
+
+      <Assistant ref={assistantRef} userApiKey={userApiKey} />
 
       <AnimatePresence>
         {renamingProject && (
