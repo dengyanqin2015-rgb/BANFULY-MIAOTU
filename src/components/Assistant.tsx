@@ -4,11 +4,18 @@ import { MessageSquare, X, Send, Image as ImageIcon, Loader2, Copy, Check, Spark
 import ReactMarkdown from 'react-markdown';
 import { cn } from '../lib/utils';
 import { chatWithAssistant } from '../lib/gemini';
+import { User } from '../types';
 
 export interface AssistantRef {
   open: () => void;
   sendImage: (data: string, mimeType: string, preview: string, autoSend?: boolean) => void;
 }
+
+const ASSISTANT_COSTS = {
+  normal: 0.05,
+  deep: 0.1,
+  perImage: 0.05
+};
 
 interface Message {
   role: 'user' | 'model';
@@ -19,9 +26,11 @@ interface Message {
 
 interface AssistantProps {
   userApiKey?: string;
+  user?: User | null;
+  onDeductCredit?: (amount: number) => Promise<boolean>;
 }
 
-export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey }, ref) => {
+export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey, user, onDeductCredit }, ref) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -56,6 +65,18 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey 
   const handleSendWithParams = async (text: string, images: { data: string; mimeType: string; preview: string }[]) => {
     if (isLoading) return;
 
+    // Calculate cost
+    const cost = (mode === 'deep' ? ASSISTANT_COSTS.deep : ASSISTANT_COSTS.normal) + (images.length * ASSISTANT_COSTS.perImage);
+
+    if (user && user.credits < cost) {
+      setMessages(prev => [...prev, {
+        role: 'model',
+        content: `抱歉，点数不足。本次分析需要 ${cost.toFixed(2)} 点，当前剩余 ${user.credits.toFixed(2)} 点。`,
+        timestamp: Date.now()
+      }]);
+      return;
+    }
+
     // Clear these specific images from pending
     setPendingImages(prev => prev.filter(p => !images.some(img => img.preview === p.preview)));
 
@@ -83,6 +104,10 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey 
         apiKey: userApiKey
       });
 
+      if (onDeductCredit) {
+        await onDeductCredit(cost);
+      }
+
       setMessages(prev => [...prev, {
         role: 'model',
         content: response,
@@ -109,6 +134,18 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey 
 
   const handleSend = async () => {
     if ((!input.trim() && pendingImages.length === 0) || isLoading) return;
+
+    // Calculate cost
+    const cost = (mode === 'deep' ? ASSISTANT_COSTS.deep : ASSISTANT_COSTS.normal) + (pendingImages.length * ASSISTANT_COSTS.perImage);
+
+    if (user && user.credits < cost) {
+      setMessages(prev => [...prev, {
+        role: 'model',
+        content: `抱歉，点数不足。本次分析需要 ${cost.toFixed(2)} 点，当前剩余 ${user.credits.toFixed(2)} 点。`,
+        timestamp: Date.now()
+      }]);
+      return;
+    }
 
     const userMessage: Message = {
       role: 'user',
@@ -138,6 +175,10 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey 
         history,
         apiKey: userApiKey
       });
+
+      if (onDeductCredit) {
+        await onDeductCredit(cost);
+      }
 
       setMessages(prev => [...prev, {
         role: 'model',

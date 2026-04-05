@@ -1057,7 +1057,12 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         onOpenApiKey={handleOpenApiKey}
       />
 
-      <Assistant ref={assistantRef} userApiKey={userApiKey} />
+      <Assistant 
+        ref={assistantRef} 
+        userApiKey={userApiKey} 
+        user={user}
+        onDeductCredit={onDeductCredit}
+      />
 
       <AnimatePresence>
         {renamingProject && (
