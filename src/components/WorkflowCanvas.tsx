@@ -19,7 +19,7 @@ import { ImageNode, ImageNodeData } from './ImageNode';
 import { GenerationBar, GenerationBarRef } from './GenerationBar';
 import { generateImage, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
 import { ImageStorage } from '../lib/storage';
-import { Trash2, ChevronDown, Plus, Download, Upload } from 'lucide-react';
+import { Trash2, ChevronDown, Plus, Download, Upload, Edit2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
@@ -35,6 +35,7 @@ interface Project {
   edges: Edge[];
   lastNodeId: string | null;
   updatedAt: number;
+  version?: number;
 }
 
 const STORAGE_KEY = 'banfuly_ai_projects';
@@ -43,8 +44,8 @@ const defaultEdgeOptions = {
   type: 'default',
   animated: false,
   style: {
-    stroke: '#333',
-    strokeWidth: 1,
+    stroke: '#555',
+    strokeWidth: 2,
   },
 };
 
@@ -105,21 +106,85 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(true);
   const [lastNodeId, setLastNodeId] = useState<string | null>(null);
+  const [renamingProject, setRenamingProject] = useState<{ id: string, name: string } | null>(null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const genBarRef = useRef<GenerationBarRef>(null);
   const rfInstance = useRef<ReactFlowInstance | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const nodesRef = useRef<Node[]>([]);
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
   // Load projects on mount
   useEffect(() => {
     console.log('BANFULY-AI v1.0.2 initialized');
+    console.log('Current projects in state:', projects);
     const init = async () => {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         try {
           const parsed = JSON.parse(saved) as Project[];
-          setProjects(parsed);
-          if (parsed.length > 0) {
-            await loadProject(parsed[0]);
+          
+          // Migration: Move large data from localStorage to IndexedDB
+          let changed = false;
+          const migrated = await Promise.all(parsed.map(async (project) => {
+            let projectChanged = false;
+            const migratedNodes = await Promise.all((project.nodes || []).map(async (node) => {
+              const nodeData = node.data as ImageNodeData;
+              const newNodeData = { ...nodeData };
+              let nodeChanged = false;
+
+              // Extract imageUrl
+              if (nodeData.imageUrl && !nodeData.imageUrl.startsWith('db://') && nodeData.imageUrl.startsWith('data:')) {
+                const imageId = `img-${node.id}`;
+                await ImageStorage.set(imageId, nodeData.imageUrl);
+                newNodeData.imageUrl = `db://${imageId}`;
+                nodeChanged = true;
+              }
+
+              // Extract originalImages
+              if (nodeData.originalImages) {
+                newNodeData.originalImages = await Promise.all(nodeData.originalImages.map(async (img, idx) => {
+                  if (img.data && !img.data.startsWith('db://')) {
+                    const imageId = `orig-${node.id}-${idx}`;
+                    await ImageStorage.set(imageId, img.data);
+                    nodeChanged = true;
+                    return { ...img, data: `db://${imageId}` };
+                  }
+                  return img;
+                }));
+              }
+
+              // Remove refImages
+              if (newNodeData.refImages) {
+                delete newNodeData.refImages;
+                nodeChanged = true;
+              }
+
+              if (nodeChanged) {
+                projectChanged = true;
+                return { ...node, data: newNodeData };
+              }
+              return node;
+            }));
+
+            if (projectChanged) {
+              changed = true;
+              return { ...project, nodes: migratedNodes };
+            }
+            return project;
+          }));
+
+          const finalProjects = changed ? migrated : parsed;
+          if (changed) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(finalProjects));
+          }
+
+          setProjects(finalProjects);
+          if (finalProjects.length > 0) {
+            await loadProject(finalProjects[0]);
           } else {
             createNewProject('默认项目');
           }
@@ -159,6 +224,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       edges: [],
       lastNodeId: null,
       updatedAt: Date.now(),
+      version: 1,
     };
     
     const updatedProjects = [newProject, ...projects];
@@ -171,24 +237,70 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     loadProject(newProject);
   };
 
+  const renameProject = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const project = projects.find(p => p.id === id);
+    if (!project) return;
+    setRenamingProject({ id: project.id, name: project.name });
+  };
+
+  const handleConfirmRename = () => {
+    if (!renamingProject) return;
+    const trimmedName = renamingProject.name.trim();
+    if (trimmedName) {
+      setProjects(prev => {
+        const updated = prev.map(p => p.id === renamingProject.id ? { ...p, name: trimmedName, updatedAt: Date.now() } : p);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        return updated;
+      });
+    }
+    setRenamingProject(null);
+  };
+
+  const handleResetAll = async () => {
+    localStorage.removeItem(STORAGE_KEY);
+    await ImageStorage.clear();
+    window.location.reload();
+  };
+
   const loadProject = async (project: Project) => {
     setCurrentProjectId(project.id);
     
     // Hydrate nodes with images from IndexedDB
     const hydratedNodes = await Promise.all((project.nodes || []).map(async (node) => {
       const nodeData = node.data as ImageNodeData;
+      const newNodeData = { ...nodeData };
+
+      // Hydrate imageUrl
       if (nodeData.imageUrl?.startsWith('db://')) {
         const imageId = nodeData.imageUrl.replace('db://', '');
         const realUrl = await ImageStorage.get(imageId);
-        return {
-          ...node,
-          data: {
-            ...nodeData,
-            imageUrl: realUrl || undefined
-          }
-        };
+        newNodeData.imageUrl = realUrl || undefined;
       }
-      return node;
+
+      // Hydrate originalImages
+      if (nodeData.originalImages) {
+        newNodeData.originalImages = await Promise.all(nodeData.originalImages.map(async (img) => {
+          if (img.data.startsWith('db://')) {
+            const imageId = img.data.replace('db://', '');
+            const realData = await ImageStorage.get(imageId);
+            return { ...img, data: realData || '' };
+          }
+          return img;
+        }));
+      }
+
+      // Re-derive refImages if needed
+      if (newNodeData.originalImages) {
+        newNodeData.refImages = newNodeData.originalImages.map(img => 
+          img.data ? `data:${img.mimeType};base64,${img.data}` : ''
+        ).filter(Boolean);
+      }
+
+      return {
+        ...node,
+        data: newNodeData
+      };
     }));
 
     setNodes(hydratedNodes);
@@ -203,29 +315,53 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     // Extract images to IndexedDB and store references in localStorage
     const nodesToSave = await Promise.all(nodes.map(async (node) => {
       const nodeData = node.data as ImageNodeData;
+      const newNodeData = { ...nodeData };
+      
+      // Remove functions and other non-serializable data
+      delete newNodeData.onDelete;
+      delete newNodeData.onRegenerate;
+      delete newNodeData.onAdjust;
+
+      // Extract imageUrl
       if (nodeData.imageUrl && !nodeData.imageUrl.startsWith('db://')) {
         const imageId = `img-${node.id}`;
         await ImageStorage.set(imageId, nodeData.imageUrl);
-        return {
-          ...node,
-          data: {
-            ...nodeData,
-            imageUrl: `db://${imageId}`
-          }
-        };
+        newNodeData.imageUrl = `db://${imageId}`;
       }
-      return node;
+
+      // Extract originalImages data
+      if (nodeData.originalImages) {
+        newNodeData.originalImages = await Promise.all(nodeData.originalImages.map(async (img, idx) => {
+          if (img.data && !img.data.startsWith('db://')) {
+            const imageId = `orig-${node.id}-${idx}`;
+            await ImageStorage.set(imageId, img.data);
+            return { ...img, data: `db://${imageId}` };
+          }
+          return img;
+        }));
+      }
+
+      // Remove refImages as it's redundant and large
+      delete newNodeData.refImages;
+
+      return {
+        ...node,
+        data: newNodeData
+      };
     }));
 
     setProjects(prev => {
       const updated = prev.map(p => {
         if (p.id === currentProjectId) {
+          // Increment version on modification
+          const currentVersion = p.version || 0;
           return {
             ...p,
             nodes: nodesToSave,
             edges,
             lastNodeId,
             updatedAt: Date.now(),
+            version: currentVersion + 1
           };
         }
         return p;
@@ -366,14 +502,68 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     return { x: finalX, y: finalY };
   };
 
-  const handleGenerate = async (
+  const handleGenerate = useCallback(async (
     prompt: string, 
     aspectRatio: AspectRatio, 
     imageSize: ImageSize, 
     model: ImageModel,
-    images?: { data: string; mimeType: string; sourceNodeId?: string }[]
+    images?: { data: string; mimeType: string; sourceNodeId?: string }[],
+    targetNodeId?: string
   ) => {
     setIsGenerating(true);
+
+    // Calculate cost
+    const modelCfg = MODEL_COSTS[model];
+    const lookupId = imageSize === "512px" ? "0.5K" : imageSize;
+    const cost = modelCfg?.resolutions[lookupId]?.rmb || 0;
+
+    if (user && user.credits < cost) {
+      alert(`点数不足，本次生成需要 ${cost} 点，当前剩余 ${user.credits} 点`);
+      setIsGenerating(false);
+      return;
+    }
+
+    if (targetNodeId) {
+      // Update existing node to loading state
+      setNodes((nds) => nds.map(n => n.id === targetNodeId ? {
+        ...n,
+        data: { ...n.data, isLoading: true, error: undefined }
+      } : n));
+
+      console.log(`[Workflow] Starting regeneration for node ${targetNodeId}`, { prompt, aspectRatio, imageSize, model, imagesCount: images?.length });
+
+      try {
+        const urls = await generateImage({ 
+          prompt, 
+          aspectRatio, 
+          imageSize, 
+          model, 
+          images: images?.map(img => ({ data: img.data, mimeType: img.mimeType })),
+          apiKey: userApiKey
+        });
+        console.log(`[Workflow] Regeneration success for node ${targetNodeId}`, { url: urls[0] });
+        
+        if (onDeductCredit) {
+          await onDeductCredit(cost);
+        }
+
+        setNodes((nds) => nds.map(n => n.id === targetNodeId ? {
+          ...n,
+          data: { ...n.data, isLoading: false, imageUrl: urls[0] }
+        } : n));
+      } catch (err: unknown) {
+        const error = err as Error;
+        console.error(`[Workflow] Regeneration failed for node ${targetNodeId}:`, error);
+        setNodes((nds) => nds.map(n => n.id === targetNodeId ? {
+          ...n,
+          data: { ...n.data, isLoading: false, error: error.message }
+        } : n));
+      } finally {
+        setIsGenerating(false);
+      }
+      return;
+    }
+
     const newNodeId = `node-${Date.now()}`;
     
     // Separate images into those from existing nodes and those that are new uploads
@@ -383,18 +573,28 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     
     const newUploads = (images || []).filter(img => !img.sourceNodeId);
     
+    const currentNodes = nodesRef.current;
+
     // Create source nodes ONLY for new uploads
     const newSourceNodes: Node<ImageNodeData>[] = newUploads.map((img, i) => {
+      const sourceId = `upload-${newNodeId}-${i}`;
+      // Update the original image object with the new source ID
+      // This ensures that if we "Adjust" this node later, it knows its sources are already nodes
+      const imgIdx = (images || []).findIndex(orig => orig.data === img.data && !orig.sourceNodeId);
+      if (imgIdx !== -1 && images) {
+        images[imgIdx].sourceNodeId = sourceId;
+      }
+
       let basePosX = 100;
       let basePosY = 100;
       
-      if (nodes.length > 0) {
-        const lastNode = nodes[nodes.length - 1];
+      if (currentNodes.length > 0) {
+        const lastNode = currentNodes[currentNodes.length - 1];
         basePosX = lastNode.position.x;
         basePosY = lastNode.position.y + 400;
       }
       
-      const pos = findSafePosition(basePosX, basePosY + i * 400, nodes);
+      const pos = findSafePosition(basePosX, basePosY + i * 400, currentNodes);
       
       return {
         id: `upload-${newNodeId}-${i}`,
@@ -418,21 +618,21 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     if (existingSourceIds.length > 0 || newSourceNodes.length > 0) {
       // Position to the right of sources
-      const sourceNodesInCanvas = nodes.filter(n => existingSourceIds.includes(n.id));
+      const sourceNodesInCanvas = currentNodes.filter(n => existingSourceIds.includes(n.id));
       const allSources = [...sourceNodesInCanvas, ...newSourceNodes];
       
       if (allSources.length > 0) {
         posX = Math.max(...allSources.map(n => n.position.x)) + 400;
         posY = allSources.reduce((acc, n) => acc + n.position.y, 0) / allSources.length;
       }
-    } else if (nodes.length > 0) {
+    } else if (currentNodes.length > 0) {
       // If no sources, place it below the last node
-      const lastNode = nodes[nodes.length - 1];
+      const lastNode = currentNodes[currentNodes.length - 1];
       posX = lastNode.position.x;
       posY = lastNode.position.y + 450;
     }
 
-    const safePos = findSafePosition(posX, posY, [...nodes, ...newSourceNodes]);
+    const safePos = findSafePosition(posX, posY, [...currentNodes, ...newSourceNodes]);
     posX = safePos.x;
     posY = safePos.y;
 
@@ -445,6 +645,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         isLoading: true,
         type: 'generated',
         refImages: images?.map(img => `data:${img.mimeType};base64,${img.data}`),
+        originalImages: images,
         aspectRatio,
         imageSize,
         model,
@@ -462,7 +663,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           setEdges((eds) => eds.filter((e) => e.source !== newNodeId && e.target !== newNodeId));
         },
         onRegenerate: () => {
-          handleGenerate(prompt, aspectRatio, imageSize, model, images);
+          handleGenerateRef.current(prompt, aspectRatio, imageSize, model, images, newNodeId);
         },
         onAdjust: () => {
           if (genBarRef.current) {
@@ -504,18 +705,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
 
     setLastNodeId(newNodeId);
-
-    // Check credits
-    const modelCfg = MODEL_COSTS[model];
-    const lookupId = imageSize === "512px" ? "0.5K" : imageSize;
-    const cost = modelCfg?.resolutions[lookupId]?.rmb || 0;
-
-    if (user && user.credits < cost) {
-      alert(`点数不足，本次生成需要 ${cost} 点，当前剩余 ${user.credits} 点`);
-      setNodes((nds) => nds.filter(n => n.id !== newNodeId));
-      setEdges((eds) => eds.filter(e => e.target !== newNodeId));
-      return;
-    }
+    console.log(`[Workflow] Starting generation for node ${newNodeId}`, { prompt, aspectRatio, imageSize, model, imagesCount: images?.length });
 
     try {
       const urls = await generateImage({ 
@@ -526,6 +716,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         images: images?.map(img => ({ data: img.data, mimeType: img.mimeType })),
         apiKey: userApiKey
       });
+      console.log(`[Workflow] Generation success for node ${newNodeId}`, { url: urls[0] });
       
       // Deduct credit on success
       if (onDeductCredit) {
@@ -549,7 +740,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       );
     } catch (err: unknown) {
       const error = err as Error;
-      console.error(error);
+      console.error(`[Workflow] Generation failed for node ${newNodeId}:`, error);
       const isKeyError = error.message === "API_KEY_REQUIRED";
       if (isKeyError) {
         setHasApiKey(false);
@@ -563,7 +754,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               data: {
                 ...node.data,
                 isLoading: false,
-                error: isKeyError ? "API Key required" : "Generation failed",
+                error: isKeyError ? "API Key required" : error.message,
               },
             };
           }
@@ -573,15 +764,83 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     } finally {
       setIsGenerating(false);
     }
-  };
+  }, [user, userApiKey, onDeductCredit]);
+
+  const handleGenerateRef = useRef(handleGenerate);
+  useEffect(() => {
+    handleGenerateRef.current = handleGenerate;
+  }, [handleGenerate]);
 
   const handleOpenApiKey = async () => {
     await openApiKeyDialog();
     setHasApiKey(true);
   };
 
+  const attachNodeActions = useCallback((node: Node): Node => {
+    const nodeData = node.data as ImageNodeData;
+    
+    // Recovery logic for legacy nodes
+    const originalImages = nodeData.originalImages || nodeData.refImages?.map(img => {
+      const match = img.match(/^data:([^;]+);base64,(.+)$/);
+      return {
+        data: match ? match[2] : '',
+        mimeType: match ? match[1] : 'image/png',
+      };
+    });
+
+    return {
+      ...node,
+      data: {
+        ...nodeData,
+        onDelete: () => {
+          setNodes((nds) => nds.filter((n) => n.id !== node.id));
+          setEdges((eds) => eds.filter((e) => e.source !== node.id && e.target !== node.id));
+        },
+        onRegenerate: nodeData.type === 'generated' ? () => {
+          console.log(`[Workflow] Regenerating node ${node.id}`);
+          handleGenerateRef.current(
+            nodeData.prompt, 
+            nodeData.aspectRatio || '1:1', 
+            nodeData.imageSize || '1K', 
+            nodeData.model || 'gemini-3.1-flash-image-preview', 
+            originalImages, 
+            node.id
+          );
+        } : undefined,
+        onAdjust: nodeData.type === 'generated' ? () => {
+          console.log(`[Workflow] Adjusting node ${node.id}`);
+          if (genBarRef.current) {
+            genBarRef.current.setParams(
+              nodeData.prompt, 
+              nodeData.aspectRatio || '1:1', 
+              nodeData.imageSize || '1K', 
+              nodeData.model || 'gemini-3.1-flash-image-preview', 
+              originalImages?.map(img => ({ 
+                data: img.data, 
+                mimeType: img.mimeType, 
+                preview: `data:${img.mimeType};base64,${img.data}`,
+                sourceNodeId: img.sourceNodeId 
+              }))
+            );
+          }
+        } : undefined
+      }
+    };
+  }, [setNodes, setEdges]);
+
+  // Hydrate nodes with actions when project changes or handleGenerate is ready
+  useEffect(() => {
+    if (!currentProjectId || !handleGenerateRef.current) return;
+    
+    setNodes(nds => nds.map(node => {
+      // If actions are already attached, skip
+      if (node.data.onDelete) return node;
+      return attachNodeActions(node);
+    }));
+  }, [currentProjectId, attachNodeActions]);
+
   return (
-    <div className="w-full h-full bg-[#0a0a0a] relative overflow-hidden">
+    <div className="w-full h-full bg-[#1a1a1a] relative overflow-hidden">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -596,7 +855,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         colorMode="dark"
         style={{ width: '100%', height: '100%' }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#333" />
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1.5} color="#333" />
         <Controls />
         
         <Panel position="top-left" className="flex items-center gap-4 p-4">
@@ -607,8 +866,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               </div>
               <div className="flex flex-col">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg font-bold tracking-tight">BANFULY-AI</span>
-                  <span className="px-1.5 py-0.5 bg-yellow-500/20 text-yellow-500 text-[10px] font-bold rounded uppercase">体验版 v1.0.2</span>
+                  <span className="text-lg font-bold tracking-tight text-white">BANFULY-AI</span>
+                  <span className="px-1.5 py-0.5 bg-red-600/20 text-red-500 text-[10px] font-bold rounded uppercase">Pro版 v1.0.{currentProject?.version || 0}</span>
                 </div>
                 <span className="text-[10px] text-gray-500 font-medium uppercase tracking-widest">Workflow Engine</span>
               </div>
@@ -616,16 +875,27 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
             {/* Project Management UI */}
             <div className="relative">
-              <button 
+              <div 
                 onClick={() => setShowProjectMenu(!showProjectMenu)}
-                className="flex items-center gap-3 px-4 py-2 bg-[#1a1a1a] border border-[#333] rounded-xl hover:bg-[#222] transition-all group"
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setShowProjectMenu(!showProjectMenu); }}
+                role="button"
+                tabIndex={0}
+                className="flex items-center gap-3 px-4 py-2 bg-[#1a1a1a] border border-[#333] rounded-xl hover:bg-[#222] transition-all group cursor-pointer outline-none focus:border-red-600/50"
               >
                 <div className="flex flex-col items-start">
                   <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">当前项目</span>
-                  <span className="text-sm font-bold text-gray-200">{currentProject?.name || '未命名项目'}</span>
+                  <div className="flex items-center gap-2">
+                    <div 
+                      className="flex items-center gap-2 cursor-pointer group/name"
+                      onClick={(e) => { e.stopPropagation(); if (currentProject) renameProject(currentProject.id, e); }}
+                    >
+                      <span className="text-sm font-bold text-gray-200 group-hover/name:text-white transition-colors">{currentProject?.name || '未命名项目'}</span>
+                      <Edit2 size={10} className="text-gray-500 group-hover/name:text-red-500 transition-colors" />
+                    </div>
+                  </div>
                 </div>
                 <ChevronDown size={16} className={cn("text-gray-500 transition-transform", showProjectMenu && "rotate-180")} />
-              </button>
+              </div>
 
               <AnimatePresence>
                 {showProjectMenu && (
@@ -673,11 +943,29 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                             currentProjectId === p.id ? "bg-red-600/10 text-red-600" : "hover:bg-[#222] text-gray-400"
                           )}
                         >
-                          <div className="flex flex-col overflow-hidden">
+                          <div 
+                            className="flex flex-col overflow-hidden flex-1"
+                            onClick={(e) => {
+                              if (currentProjectId === p.id) {
+                                e.stopPropagation();
+                                renameProject(p.id, e);
+                              }
+                            }}
+                          >
                             <span className="text-sm font-bold truncate">{p.name}</span>
                             <span className="text-[9px] opacity-50">{new Date(p.updatedAt).toLocaleString()}</span>
                           </div>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                          <div className={cn(
+                            "flex items-center gap-1 transition-all",
+                            currentProjectId === p.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                          )}>
+                            <button 
+                              onClick={(e) => renameProject(p.id, e)}
+                              className="p-1.5 hover:bg-yellow-500/20 hover:text-yellow-500 rounded-lg"
+                              title="重命名"
+                            >
+                              <Edit2 size={14} />
+                            </button>
                             <button 
                               onClick={(e) => { e.stopPropagation(); exportProject(p); }}
                               className="p-1.5 hover:bg-blue-500/20 hover:text-blue-500 rounded-lg"
@@ -697,13 +985,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                       ))}
                       <div className="h-px bg-[#333] my-1.5 mx-2" />
                       <button 
-                        onClick={async () => {
-                            if (confirm('确定要清空所有项目数据吗？此操作不可撤销。')) {
-                              localStorage.removeItem(STORAGE_KEY);
-                              await ImageStorage.clear();
-                              window.location.reload();
-                            }
-                        }}
+                        onClick={() => setShowResetConfirm(true)}
                         className="w-full flex items-center gap-3 px-4 py-2.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
                       >
                         <Trash2 size={14} />
@@ -727,6 +1009,86 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         hasApiKey={hasApiKey}
         onOpenApiKey={handleOpenApiKey}
       />
+
+      <AnimatePresence>
+        {renamingProject && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-[#1a1a1a] border border-[#333] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden"
+            >
+              <div className="p-6">
+                <h3 className="text-lg font-bold text-white mb-1">重命名项目</h3>
+                <p className="text-xs text-gray-500 mb-6 uppercase tracking-widest">请输入新的项目名称</p>
+                
+                <input 
+                  autoFocus
+                  type="text"
+                  value={renamingProject.name}
+                  onChange={(e) => setRenamingProject({ ...renamingProject, name: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleConfirmRename();
+                    if (e.key === 'Escape') setRenamingProject(null);
+                  }}
+                  className="w-full bg-[#222] border border-[#333] rounded-xl px-4 py-3 text-white focus:border-red-600/50 outline-none transition-all mb-6"
+                  placeholder="项目名称..."
+                />
+                
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => setRenamingProject(null)}
+                    className="flex-1 px-4 py-3 bg-[#222] text-gray-400 font-bold rounded-xl hover:bg-[#333] transition-all"
+                  >
+                    取消
+                  </button>
+                  <button 
+                    onClick={handleConfirmRename}
+                    className="flex-1 px-4 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-all shadow-[0_0_20px_rgba(220,38,38,0.3)]"
+                  >
+                    确认修改
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {showResetConfirm && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-[#1a1a1a] border border-[#333] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden"
+            >
+              <div className="p-6">
+                <div className="w-12 h-12 bg-red-600/20 rounded-full flex items-center justify-center mb-4">
+                  <Trash2 className="text-red-600" size={24} />
+                </div>
+                <h3 className="text-lg font-bold text-white mb-2">重置所有数据？</h3>
+                <p className="text-sm text-gray-400 mb-6">此操作将永久删除所有项目和生成的图片，且不可撤销。确定要继续吗？</p>
+                
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => setShowResetConfirm(false)}
+                    className="flex-1 px-4 py-3 bg-[#222] text-gray-400 font-bold rounded-xl hover:bg-[#333] transition-all"
+                  >
+                    取消
+                  </button>
+                  <button 
+                    onClick={handleResetAll}
+                    className="flex-1 px-4 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-all shadow-[0_0_20px_rgba(220,38,38,0.3)]"
+                  >
+                    确定重置
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

@@ -15,6 +15,7 @@ export interface ImageNodeData extends Record<string, unknown> {
   onRegenerate?: () => void;
   onAdjust?: () => void;
   refImages?: string[]; // Base64 or URLs of reference images used
+  originalImages?: { data: string; mimeType: string; sourceNodeId?: string }[];
   resolution?: string;
   type?: 'source' | 'generated';
   sourceNodeId?: string;

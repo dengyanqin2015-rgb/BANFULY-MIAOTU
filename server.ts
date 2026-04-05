@@ -478,6 +478,10 @@ const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
 
 // --- API Routes (REGISTERED FIRST) ---
 
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", dbInitialized });
+});
+
 app.get("/api/test", async (req, res) => {
   console.log("API Test hit");
   res.json({ 
