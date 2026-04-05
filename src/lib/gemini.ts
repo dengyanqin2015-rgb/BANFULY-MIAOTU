@@ -141,12 +141,15 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
     });
 
     const imageUrls: string[] = [];
+    let responseText = "";
     
     if (response.candidates?.[0]?.content?.parts) {
       for (const part of response.candidates[0].content.parts) {
         if (part.inlineData) {
           const base64Data = part.inlineData.data;
           imageUrls.push(`data:${part.inlineData.mimeType};base64,${base64Data}`);
+        } else if (part.text) {
+          responseText += part.text;
         }
       }
     }
@@ -155,9 +158,16 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
       // Check if it was blocked by safety filters
       const safetyRatings = response.candidates?.[0]?.safetyRatings;
       const isBlocked = safetyRatings?.some(r => r.probability !== 'NEGLIGIBLE');
-      if (isBlocked) {
-        throw new Error("内容因安全策略被拦截，请尝试修改提示词");
+      const finishReason = response.candidates?.[0]?.finishReason;
+
+      if (isBlocked || finishReason === 'SAFETY') {
+        throw new Error("内容因安全策略被拦截，请尝试修改提示词（例如避免真实人物或敏感话题）");
       }
+      
+      if (responseText) {
+        throw new Error(`模型未返回图像，反馈信息：${responseText}`);
+      }
+
       throw new Error("模型未返回图像数据，请尝试更换模型或修改提示词");
     }
 

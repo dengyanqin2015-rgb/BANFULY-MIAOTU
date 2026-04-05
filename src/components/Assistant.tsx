@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
 import { motion, AnimatePresence, useDragControls, PanInfo } from 'motion/react';
 import { MessageSquare, X, Send, Image as ImageIcon, Loader2, Copy, Check, Sparkles, BrainCircuit } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -43,7 +43,15 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragControls = useDragControls();
+
+  useLayoutEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+    }
+  }, [input]);
 
   useImperativeHandle(ref, () => ({
     open: () => setIsOpen(true),
@@ -539,6 +547,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                 </button>
                 
                 <textarea
+                  ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -548,7 +557,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                     }
                   }}
                   placeholder="输入消息或上传图片..."
-                  className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-gray-200 placeholder-gray-600 py-3 resize-none max-h-32 min-h-[44px]"
+                  className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-gray-200 placeholder-gray-600 py-3 resize-none max-h-[300px] min-h-[44px] overflow-y-auto"
                   rows={1}
                 />
 

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useRef, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
 import { Send, ChevronDown, Key, Image as ImageIcon, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
@@ -75,6 +75,14 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const [showOptions, setShowOptions] = useState(false);
   const [images, setImages] = useState<{ data: string; mimeType: string; preview: string; width?: number; height?: number; sourceNodeId?: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+    }
+  }, [prompt]);
 
   useImperativeHandle(ref, () => ({
     addImage: (data, mimeType, preview, sourceNodeId) => {
@@ -300,7 +308,8 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
               <ImageIcon size={20} />
             </button>
 
-            <input
+            <textarea
+              ref={textareaRef}
               value={prompt}
               onChange={(e) => {
                 setPrompt(e.target.value);
@@ -311,8 +320,17 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
               onFocus={() => {
                 if (!showOptions) setShowOptions(true);
               }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  if (prompt.trim()) {
+                    handleSubmit(e as unknown as React.FormEvent);
+                  }
+                }
+              }}
               placeholder="请输入你想生成的画面描述..."
-              className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-gray-200 placeholder-gray-500 py-3"
+              className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-gray-200 placeholder-gray-500 py-3 resize-none max-h-[300px] min-h-[44px] overflow-y-auto"
+              rows={1}
             />
 
             <div className="flex items-center gap-1 px-2 border-l border-[#333]">
