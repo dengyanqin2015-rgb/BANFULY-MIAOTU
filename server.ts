@@ -683,6 +683,57 @@ app.delete("/api/user/history/:id", authenticateToken, async (req: AuthRequest, 
   res.json({ message: "已删除" });
 });
 
+app.post("/api/doubao/generate", authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { prompt, model, size, n, watermark, apiKey, endpoint } = req.body;
+  
+  if (!apiKey || !model) {
+    return res.status(400).json({ message: "API Key 或 Model ID 缺失" });
+  }
+
+  try {
+    let targetUrl = 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
+    if (endpoint && typeof endpoint === 'string' && endpoint.startsWith('http')) {
+      targetUrl = endpoint;
+    }
+    
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        prompt,
+        size,
+        n: n || 1,
+        watermark: false // 始终关闭水印以保证画面简洁
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorData;
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = { error: { message: errorText || response.statusText } };
+      }
+      return res.status(response.status).json({ 
+        message: `豆包生成失败: ${errorData.error?.message || response.statusText}`,
+        details: errorData
+      });
+    }
+
+    const result = await response.json();
+    res.json(result);
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Doubao Proxy Error:", error);
+    res.status(500).json({ message: "豆包代理请求失败", error: error.message });
+  }
+});
+
 app.post("/api/user/history/bulk-delete", authenticateToken, async (req: AuthRequest, res: Response) => {
   const { ids } = req.body;
   if (!Array.isArray(ids)) return res.status(400).json({ message: "无效的 ID 列表" });

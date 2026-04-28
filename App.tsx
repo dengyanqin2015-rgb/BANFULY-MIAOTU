@@ -93,6 +93,15 @@ const App: React.FC = () => {
   const [doubaoModelId, setDoubaoModelId] = useState<string>(() => {
     return localStorage.getItem('user_doubao_model_id') || '';
   });
+  const [doubaoEndpoint, setDoubaoEndpoint] = useState<string>(() => {
+    return localStorage.getItem('user_doubao_endpoint') || '';
+  });
+  const [gptApiKey, setGptApiKey] = useState<string>(() => {
+    return localStorage.getItem('user_gpt_api_key') || '';
+  });
+  const [gptEndpoint, setGptEndpoint] = useState<string>(() => {
+    return localStorage.getItem('user_gpt_endpoint') || '';
+  });
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
 
   // Auth 状态
@@ -314,6 +323,15 @@ const App: React.FC = () => {
       resolutions: {
         '2K': { cost: 0.067, rmb: 0.3 },
         '4K': { cost: 0.067, rmb: 0.3 }
+      }
+    },
+    'gpt-images-2': {
+      name: 'GPT IMAGES 2.0',
+      label: 'LATEST',
+      resolutions: {
+        '1K': { cost: 0.071, rmb: 0.5 },
+        '2K': { cost: 0.111, rmb: 0.8 },
+        '4K': { cost: 0.171, rmb: 1.2 }
       }
     }
   };
@@ -3921,11 +3939,64 @@ ${p.prompt}
                         localStorage.setItem('user_doubao_model_id', val);
                       }}
                       className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-red-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
-                      placeholder="Model ID (Endpoint)..."
+                      placeholder="接入点 ID (Model ID)..."
+                    />
+                  </div>
+                  <div className="relative group">
+                    <input 
+                      type="text"
+                      value={doubaoEndpoint}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDoubaoEndpoint(val);
+                        localStorage.setItem('user_doubao_endpoint', val);
+                      }}
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-red-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="API Endpoint (可选，默认使用 Ark V3)..."
                     />
                   </div>
                   <p className="text-[10px] text-[#86868b] leading-relaxed px-1">
                     用于：豆包专业生图。请前往火山引擎 Ark 平台获取 API Key 和接入点 ID。
+                  </p>
+                </div>
+
+                {/* GPT IMAGES Key 配置 */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between px-1">
+                    <label className="text-[11px] font-black text-[#86868b] uppercase tracking-widest flex items-center gap-2">
+                      <i className="fas fa-microchip text-blue-500"></i>
+                      GPT IMAGES 生图 (GPT Key)
+                    </label>
+                    <span className="text-[10px] font-bold text-blue-500/60 bg-blue-500/10 px-2 py-0.5 rounded-full">最新 GPTIMAGES2 模型</span>
+                  </div>
+                  <div className="relative group">
+                    <input 
+                      type="password"
+                      value={gptApiKey}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setGptApiKey(val);
+                        localStorage.setItem('user_gpt_api_key', val);
+                      }}
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-blue-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="GPT API Key..."
+                    />
+                  </div>
+                  <div className="relative group">
+                    <input 
+                      type="text"
+                      value={gptEndpoint}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setGptEndpoint(val);
+                        localStorage.setItem('user_gpt_endpoint', val);
+                      }}
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-blue-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="GPT API Endpoint (可选，默认使用中转或直连地址)..."
+                    />
+                  </div>
+                  <p className="text-[10px] text-[#86868b] leading-relaxed px-1">
+                    用于：GPT IMAGES 2.0 生图模型。模型 ID 固定为 GPTIMAGES2，请输入对应的 Key 和接入点。
                   </p>
                 </div>
               </div>

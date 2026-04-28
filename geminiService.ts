@@ -229,37 +229,71 @@ export const generateEcomImage = async (params: {
   const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
   const finalApiKey = envPaidKey || localPaidKey || params.apiKey;
   
-  // 豆包模型特殊处理逻辑
-  if (params.model === 'doubao-pro-v1') {
-    const doubaoApiKey = localStorage.getItem('user_doubao_api_key') || process.env.VITE_DOUBAO_API_KEY;
-    const doubaoEndpoint = localStorage.getItem('user_doubao_endpoint') || process.env.VITE_DOUBAO_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
-    const doubaoModelId = localStorage.getItem('user_doubao_model_id') || process.env.VITE_DOUBAO_MODEL_ID || 'Doubao-Seedream-5.0-lite';
+  // GPTIMAGES2 独立处理逻辑
+  if (params.model === 'gpt-images-2') {
+    const gptApiKey = typeof window !== 'undefined' ? localStorage.getItem('user_gpt_api_key') : null || process.env.VITE_GPT_API_KEY;
+    const gptEndpoint = typeof window !== 'undefined' ? localStorage.getItem('user_gpt_endpoint') : null || process.env.VITE_GPT_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
 
-    if (!doubaoApiKey || !doubaoModelId) {
-      throw new Error("豆包 API 配置不完整。请在设置中配置 Doubao API Key 和 Model ID。");
+    if (!gptApiKey) {
+      throw new Error("GPT IMAGES 配置不完整。请在设置中配置 GPT API Key。");
     }
 
     try {
-      const response = await fetch(doubaoEndpoint, {
+      const response = await fetch('/api/doubao/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: gptApiKey,
+          endpoint: gptEndpoint,
+          model: 'GPTIMAGES2',
+          prompt: params.prompt,
+          size: params.resolution === '4K' 
+            ? (params.aspectRatio === '9:16' ? '2160x3840' : (params.aspectRatio === '16:9' ? '3840x2160' : '3072x3072'))
+            : (params.resolution === '2K'
+                ? (params.aspectRatio === '9:16' ? '1440x2560' : (params.aspectRatio === '16:9' ? '2560x1440' : '2048x2048'))
+                : (params.aspectRatio === '9:16' ? '720x1280' : (params.aspectRatio === '16:9' ? '1280x720' : '1024x1024'))
+              ),
+          n: 1,
+          watermark: false
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.details || 'GPT IMAGES 调用失败');
+      return data.images.map((img: any) => img.url);
+    } catch (error) {
+      console.error('GPT IMAGES Error:', error);
+      throw error;
+    }
+  }
+
+  // 豆包模型特殊处理逻辑
+  if (params.model === 'doubao-pro-v1') {
+
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch('/api/doubao/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${doubaoApiKey}`
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
+          apiKey: doubaoApiKey,
+          endpoint: doubaoEndpoint,
           model: doubaoModelId,
           prompt: params.prompt,
           size: params.imageSize === '4K' 
             ? (params.aspectRatio === '9:16' ? '2160x3840' : (params.aspectRatio === '16:9' ? '3840x2160' : '3072x3072'))
             : (params.aspectRatio === '9:16' ? '1440x2560' : (params.aspectRatio === '16:9' ? '2560x1440' : '2048x2048')),
           n: 1,
-          watermark: false
+          watermark: false // 恢复到修正去水印后的状态
         })
       });
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(`豆包生成失败: ${errorData.error?.message || response.statusText}`);
+        throw new Error(errorData.message || response.statusText);
       }
 
       const result = await response.json();

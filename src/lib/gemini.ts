@@ -1,6 +1,6 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
-export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "doubao-pro-v1";
+export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "doubao-pro-v1" | "gpt-images-2";
 export type ChatModel = "gemini-3-flash-preview" | "gemini-3.1-pro-preview";
 export type ImageSize = "512px" | "1K" | "2K" | "4K";
 export type AspectRatio = "AUTO" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9" | "1:4" | "1:8" | "4:1" | "8:1";
@@ -105,29 +105,34 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
 }
 
 export async function generateImage(params: GenerationParams): Promise<string[]> {
-  // 豆包模型特殊处理逻辑
-  if (params.model === 'doubao-pro-v1') {
-    const doubaoApiKey = localStorage.getItem('user_doubao_api_key') || import.meta.env.VITE_DOUBAO_API_KEY || process.env.VITE_DOUBAO_API_KEY;
-    const doubaoEndpoint = localStorage.getItem('user_doubao_endpoint') || import.meta.env.VITE_DOUBAO_ENDPOINT || process.env.VITE_DOUBAO_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
-    const doubaoModelId = localStorage.getItem('user_doubao_model_id') || import.meta.env.VITE_DOUBAO_MODEL_ID || process.env.VITE_DOUBAO_MODEL_ID || 'Doubao-Seedream-5.0-lite';
-
-    if (!doubaoApiKey || !doubaoModelId) {
-      throw new Error("DOUBAO_CONFIG_REQUIRED");
+  // GPTIMAGES2 模型独立处理逻辑
+  if (params.model === 'gpt-images-2') {
+    const gptApiKey = localStorage.getItem('user_gpt_api_key') || import.meta.env.VITE_GPT_API_KEY || process.env.VITE_GPT_API_KEY;
+    const gptEndpoint = localStorage.getItem('user_gpt_endpoint') || import.meta.env.VITE_GPT_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
+    
+    if (!gptApiKey) {
+      throw new Error("GPT_CONFIG_REQUIRED");
     }
 
     try {
-      const response = await fetch(doubaoEndpoint, {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch('/api/doubao/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${doubaoApiKey}`
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          model: doubaoModelId,
+          apiKey: gptApiKey,
+          endpoint: gptEndpoint,
+          model: 'GPTIMAGES2',
           prompt: params.prompt,
-          size: params.imageSize === '4K' 
+          size: params.resolution === '4K' 
             ? (params.aspectRatio === '9:16' ? '2160x3840' : (params.aspectRatio === '16:9' ? '3840x2160' : '3072x3072'))
-            : (params.aspectRatio === '9:16' ? '1440x2560' : (params.aspectRatio === '16:9' ? '2560x1440' : '2048x2048')),
+            : (params.resolution === '2K'
+                ? (params.aspectRatio === '9:16' ? '1440x2560' : (params.aspectRatio === '16:9' ? '2560x1440' : '2048x2048'))
+                : (params.aspectRatio === '9:16' ? '720x1280' : (params.aspectRatio === '16:9' ? '1280x720' : '1024x1024'))
+              ),
           n: 1,
           watermark: false
         })
@@ -135,7 +140,48 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(`豆包生成失败: ${errorData.error?.message || response.statusText}`);
+        throw new Error(errorData.details || 'GPT IMAGES 调用失败');
+      }
+
+      const data = await response.json();
+      if (!data.images || data.images.length === 0) {
+        throw new Error('未生成图片');
+      }
+
+      return data.images.map((img: any) => img.url);
+    } catch (error) {
+      console.error('GPT IMAGES Error:', error);
+      throw error;
+    }
+  }
+
+  // 豆包模型特殊处理逻辑
+  if (params.model === 'doubao-pro-v1') {
+
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch('/api/doubao/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          apiKey: doubaoApiKey,
+          endpoint: doubaoEndpoint,
+          model: doubaoModelId,
+          prompt: params.prompt,
+          size: params.imageSize === '4K' 
+            ? (params.aspectRatio === '9:16' ? '2160x3840' : (params.aspectRatio === '16:9' ? '3840x2160' : '3072x3072'))
+            : (params.aspectRatio === '9:16' ? '1440x2560' : (params.aspectRatio === '16:9' ? '2560x1440' : '2048x2048')),
+          n: 1,
+          watermark: false // 恢复到修正去水印后的状态
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || response.statusText);
       }
 
       const result = await response.json();
