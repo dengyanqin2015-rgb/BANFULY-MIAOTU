@@ -97,26 +97,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       ) : (
         <div className="space-y-6">
           {(adminTab === 'recharge' || adminTab === 'stats') && (
-            <div className="grid grid-cols-4 gap-4 bg-white p-6 rounded-2xl border border-black/5 shadow-sm">
-                <div className="col-span-4 h-64">
+            <div className="grid grid-cols-1 gap-6 bg-white p-6 rounded-2xl border border-black/5 shadow-sm">
+                <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">
                         <LineChart data={trendData}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="day" />
-                            <YAxis />
-                            <Tooltip />
-                            <Line type="monotone" dataKey="value" stroke="#0071e3" strokeWidth={2} />
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
+                            <XAxis dataKey="day" axisLine={false} tickLine={false} fontSize={10} color="#86868b"/>
+                            <YAxis axisLine={false} tickLine={false} fontSize={10} color="#86868b"/>
+                            <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}/>
+                            <Line type="monotone" dataKey="value" stroke="#0071e3" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
                         </LineChart>
                     </ResponsiveContainer>
                 </div>
-                <select value={month} onChange={(e) => { setMonth(e.target.value); resetPage(); }} className="p-2 border rounded-lg text-sm">
-                  <option value="all">全月</option>
-                  <option value={new Date().toISOString().slice(0, 7)}>{new Date().toISOString().slice(0, 7)}</option>
-                </select>
-                <select value={userFilter} onChange={(e) => { setUserFilter(e.target.value); resetPage(); }} className="p-2 border rounded-lg text-sm">
-                    <option value="all">所有用户</option>
-                    {allUsers.map(u => <option key={u} value={u}>{u}</option>)}
-                </select>
+                <div className="flex gap-4">
+                  <select value={month} onChange={(e) => { setMonth(e.target.value); resetPage(); }} className="p-2 border rounded-lg text-sm bg-gray-50 outline-none focus:ring-1 focus:ring-blue-400">
+                    <option value="all">全月</option>
+                    <option value={new Date().toISOString().slice(0, 7)}>{new Date().toISOString().slice(0, 7)}</option>
+                  </select>
+                  <select value={userFilter} onChange={(e) => { setUserFilter(e.target.value); resetPage(); }} className="p-2 border rounded-lg text-sm bg-gray-50 outline-none focus:ring-1 focus:ring-blue-400">
+                      <option value="all">所有用户</option>
+                      {allUsers.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </div>
             </div>
           )}
 
@@ -232,9 +234,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </tbody>
                 </table>
                 <div className='p-4 border-t flex justify-end gap-2'>
-                    <button disabled={page === 1} onClick={() => setPage(p => p - 1)}>上一页</button>
-                    <span className='text-sm'>{page} / {totalPages || 1}</span>
-                    <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>下一页</button>
+                    <button 
+                        disabled={page === 1} 
+                        onClick={() => setPage(p => p - 1)}
+                        className="px-4 py-2 bg-white border border-black/10 rounded-lg text-[11px] font-bold hover:bg-black hover:text-white transition-all disabled:opacity-50"
+                    >
+                        上一页
+                    </button>
+                    <span className='text-sm flex items-center px-2'>{page} / {totalPages || 1}</span>
+                    <button 
+                        disabled={page >= totalPages} 
+                        onClick={() => setPage(p => p + 1)}
+                        className="px-4 py-2 bg-white border border-black/10 rounded-lg text-[11px] font-bold hover:bg-black hover:text-white transition-all disabled:opacity-50"
+                    >
+                        下一页
+                    </button>
                 </div>
               </div>
             )}
