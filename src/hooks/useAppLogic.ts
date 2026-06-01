@@ -7,7 +7,7 @@ import {
   SingleToolMode, ImageDeconstruction, SegmentedObject, MODEL_COSTS 
 } from '../types';
 import { 
-  decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, 
+  analyzeProduct, fusePrompts, generateEcomImage, 
   deconstructImage, segmentImage, detailAssistantStep1, 
   detailAssistantStep2, detailAssistantStep3, 
   regenerateSingleDetailStoryboard, updateDetailPromptFromFields 
@@ -79,7 +79,6 @@ export const useAppLogic = () => {
   const [cardRefImages, setCardRefImages] = useState<Record<string, string>>({});
   const [cardGeneratedImages, setCardGeneratedImages] = useState<Record<string, string>>({});
   const [cardGenStatus, setCardGenStatus] = useState<Record<string, 'idle' | 'loading' | 'done' | 'error'>>({});
-  const [activeGenCardId, setActiveGenCardId] = useState<string | null>(null);
   const [isBulkLoading, setIsBulkLoading] = useState(false);
   const [genModel, setGenModel] = useState('nanobanana2');
   const [genAspectRatio, setGenAspectRatio] = useState('1:1');

@@ -812,7 +812,7 @@ app.post("/api/doubao/generate", authenticateToken, async (req: AuthRequest, res
     } else if (isApiyiResponses || result.data) {
       // OpenAI response format mapping
       res.json({
-        images: result.data.map((item: any) => ({ url: item.url || item.b64_json }))
+        images: result.data.map((item: Record<string, unknown>) => ({ url: item.url || item.b64_json }))
       });
     } else {
       res.json(result);

@@ -189,7 +189,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <span className='text-sm text-gray-500'>每页</span>
                   </div>
                   <button 
-                    onClick={() => exportToExcel(filteredLogs as any, adminTab === 'recharge' ? '充值记录' : '生成统计')}
+                    onClick={() => exportToExcel(filteredLogs as unknown as Record<string, string | number | boolean | null>[], adminTab === 'recharge' ? '充值记录' : '生成统计')}
                     className="px-4 py-2 bg-white border border-black/10 rounded-lg text-[11px] font-bold hover:bg-black hover:text-white transition-all flex items-center gap-2"
                   >
                     <i className="fas fa-file-excel"></i> 导出 Excel
