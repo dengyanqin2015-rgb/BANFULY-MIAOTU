@@ -684,17 +684,69 @@ app.delete("/api/user/history/:id", authenticateToken, async (req: AuthRequest, 
 });
 
 app.post("/api/doubao/generate", authenticateToken, async (req: AuthRequest, res: Response) => {
-  const { prompt, model, size, n, watermark, apiKey, endpoint } = req.body;
+  const { prompt, model, size, n, apiKey: rawApiKey, endpoint: rawEndpoint } = req.body;
   
-  if (!apiKey || !model) {
+  if (!rawApiKey || !model) {
     return res.status(400).json({ message: "API Key 或 Model ID 缺失" });
   }
+
+  const apiKey = String(rawApiKey).trim().replace(/^Bearer\s+/i, '');
+  const endpoint = rawEndpoint ? String(rawEndpoint).trim() : null;
 
   try {
     let targetUrl = 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
     if (endpoint && typeof endpoint === 'string' && endpoint.startsWith('http')) {
       targetUrl = endpoint;
     }
+
+    // Auto-fix for common path naming issues in Doubao/OpenAI proxies
+    if (targetUrl.includes('ark.cn-beijing.volces.com') && !targetUrl.endsWith('/images/generations')) {
+      targetUrl = targetUrl.replace(/\/+$/, '') + '/images/generations';
+    } else if (!targetUrl.endsWith('/generations') && !targetUrl.includes('/v1/chat/')) {
+       // Only trying to fix if it looks like a base URL
+       if (targetUrl.split('/').length < 5) {
+         console.log(`[Proxy] Normalizing Doubao endpoint: ${targetUrl}`);
+       }
+    }
+    
+    const isApiyiResponses = targetUrl.toLowerCase().includes('apiyi.com') && targetUrl.toLowerCase().includes('/v1/responses');
+    
+    // Use the model ID provided by the user directly.
+    const targetModel = model;
+    
+    let body: Record<string, unknown>;
+    if (isApiyiResponses) {
+      // OpenAI Style
+      let openAiSize = '1024x1024';
+      if (size.includes('x')) {
+        const [w, h] = size.split('x').map(Number);
+        if (w > h) openAiSize = '1792x1024';
+        else if (h > w) openAiSize = '1024x1792';
+        else openAiSize = '1024x1024';
+      }
+      
+      body = {
+        model: targetModel,
+        prompt,
+        n: n || 1,
+        size: openAiSize
+      };
+    } else {
+      // Ark (Doubao) Style / Default
+      body = {
+        model: targetModel,
+        prompt,
+        size,
+        n: n || 1,
+        watermark: false
+      };
+    }
+    
+    console.log(`[Proxy] Sending request to ${targetUrl}, isApiyiResponses: ${isApiyiResponses}`);
+    console.log(`[Proxy] Body:`, JSON.stringify({ 
+      ...body, 
+      prompt: body.prompt ? (body.prompt.length > 50 ? body.prompt.substring(0, 50) + '...' : body.prompt) : undefined,
+    }));
     
     const response = await fetch(targetUrl, {
       method: 'POST',
@@ -702,13 +754,7 @@ app.post("/api/doubao/generate", authenticateToken, async (req: AuthRequest, res
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
       },
-      body: JSON.stringify({
-        model,
-        prompt,
-        size,
-        n: n || 1,
-        watermark: false // 始终关闭水印以保证画面简洁
-      })
+      body: JSON.stringify(body)
     });
 
     if (!response.ok) {
@@ -719,18 +765,62 @@ app.post("/api/doubao/generate", authenticateToken, async (req: AuthRequest, res
       } catch {
         errorData = { error: { message: errorText || response.statusText } };
       }
+      const message = errorData.error?.message || errorData.message || response.statusText;
+      let uiMessage = `API 生成失败 (${targetUrl}): ${message}`;
+      if (response.status === 404) {
+        uiMessage += "\n提示：路径可能不正确。若使用第三方转发，请尝试改为 /v1/images/generations 结尾。";
+      }
+      
+      console.error(`API Proxy Error [${targetUrl}]:`, message, errorData);
       return res.status(response.status).json({ 
-        message: `豆包生成失败: ${errorData.error?.message || response.statusText}`,
-        details: errorData
+        message: uiMessage,
+        details: errorData,
+        targetUrl
       });
     }
 
     const result = await response.json();
-    res.json(result);
+    
+    // Normalize response for Client
+    if (result.choices) {
+      // Parse chat response to find image URL (fallback for some providers)
+      let imageUrl = "";
+      const content = (result.choices?.[0]?.message?.content as string) || "";
+      
+      const mdMatch = content.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/);
+      const urlMatch = content.match(/https?:\/\/[^\s"'\)]+/);
+      imageUrl = mdMatch ? mdMatch[1] : (urlMatch ? urlMatch[0] : "");
+
+      if (!imageUrl && result.choices?.[0]?.message?.image_url) {
+        imageUrl = result.choices[0].message.image_url;
+      }
+
+      if (!imageUrl && typeof content === 'string' && content.trim().startsWith('http')) {
+        imageUrl = content.trim();
+      }
+
+      if (!imageUrl) {
+        return res.status(500).json({ 
+          message: "解析失败: 未在模型返回的内容中发现有效的图片地址",
+          details: { content }
+        });
+      }
+
+      res.json({
+        images: [{ url: imageUrl }]
+      });
+    } else if (isApiyiResponses || result.data) {
+      // OpenAI response format mapping
+      res.json({
+        images: result.data.map((item: any) => ({ url: item.url || item.b64_json }))
+      });
+    } else {
+      res.json(result);
+    }
   } catch (err: unknown) {
     const error = err as Error;
-    console.error("Doubao Proxy Error:", error);
-    res.status(500).json({ message: "豆包代理请求失败", error: error.message });
+    console.error("Proxy Error:", error);
+    res.status(500).json({ message: "代理请求失败", error: error.message });
   }
 });
 

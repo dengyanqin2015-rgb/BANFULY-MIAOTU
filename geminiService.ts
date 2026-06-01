@@ -171,9 +171,11 @@ export const fusePrompts = async (constitution: VisualConstitution, analysis: Pr
     },
     config: {
       systemInstruction: `你是一个顶尖的电商视觉架构师。
-任务：将风格与营销分镜融合。
-如果是“营销主图”模式，生成的 prompt 必须追求单图的视觉爆发力、光影张力，确保其在搜索列表页能脱颖而出。
-如果是“详情页”模式，确保画面的专业感和信息传递。
+任务：将风格与营销分镜融合。核心准则：
+1. **画质表现**：生成的 prompt 必须包含确保画面【明亮、极高清晰度、商业摄影感】的描述词。
+2. **绝对安全合规**：严禁出现任何现实品牌名称（如华为、苹果、耐克、特斯拉等）或特定公众人物名称。
+3. **消除冲突词**：严禁包含“Logo”、“标志”、“商标”、“品牌”等词汇，请使用“精美的外观细节”、“产品特有纹理”或“极简几何装饰”代替。
+4. **全中文**：生图提示词必须完全采用高质量的中文描述。
 
 输出 JSON 格式，结果存放在 results 数组中。`,
       responseMimeType: "application/json",
@@ -229,49 +231,15 @@ export const generateEcomImage = async (params: {
   const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
   const finalApiKey = envPaidKey || localPaidKey || params.apiKey;
   
-  // GPTIMAGES2 独立处理逻辑
-  if (params.model === 'gpt-images-2') {
-    const gptApiKey = typeof window !== 'undefined' ? localStorage.getItem('user_gpt_api_key') : null || process.env.VITE_GPT_API_KEY;
-    const gptEndpoint = typeof window !== 'undefined' ? localStorage.getItem('user_gpt_endpoint') : null || process.env.VITE_GPT_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
-
-    if (!gptApiKey) {
-      throw new Error("GPT IMAGES 配置不完整。请在设置中配置 GPT API Key。");
-    }
-
-    try {
-      const response = await fetch('/api/doubao/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: gptApiKey,
-          endpoint: gptEndpoint,
-          model: 'GPTIMAGES2',
-          prompt: params.prompt,
-          size: params.resolution === '4K' 
-            ? (params.aspectRatio === '9:16' ? '2160x3840' : (params.aspectRatio === '16:9' ? '3840x2160' : '3072x3072'))
-            : (params.resolution === '2K'
-                ? (params.aspectRatio === '9:16' ? '1440x2560' : (params.aspectRatio === '16:9' ? '2560x1440' : '2048x2048'))
-                : (params.aspectRatio === '9:16' ? '720x1280' : (params.aspectRatio === '16:9' ? '1280x720' : '1024x1024'))
-              ),
-          n: 1,
-          watermark: false
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.details || 'GPT IMAGES 调用失败');
-      return data.images.map((img: any) => img.url);
-    } catch (error) {
-      console.error('GPT IMAGES Error:', error);
-      throw error;
-    }
-  }
-
   // 豆包模型特殊处理逻辑
   if (params.model === 'doubao-pro-v1') {
+    const rawDoubaoApiKey = (typeof window !== 'undefined' ? localStorage.getItem('user_doubao_api_key') : null) || process.env.VITE_DOUBAO_API_KEY;
+    const doubaoApiKey = rawDoubaoApiKey?.trim();
+    const doubaoEndpoint = (typeof window !== 'undefined' ? localStorage.getItem('user_doubao_endpoint') : null) || process.env.VITE_DOUBAO_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
+    const doubaoModelId = (typeof window !== 'undefined' ? localStorage.getItem('user_doubao_model_id') : null) || 'doubao-1-5-vision-image-generations';
 
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
       const response = await fetch('/api/doubao/generate', {
         method: 'POST',
         headers: {
@@ -287,7 +255,7 @@ export const generateEcomImage = async (params: {
             ? (params.aspectRatio === '9:16' ? '2160x3840' : (params.aspectRatio === '16:9' ? '3840x2160' : '3072x3072'))
             : (params.aspectRatio === '9:16' ? '1440x2560' : (params.aspectRatio === '16:9' ? '2560x1440' : '2048x2048')),
           n: 1,
-          watermark: false // 恢复到修正去水印后的状态
+          watermark: false
         })
       });
 
@@ -297,7 +265,7 @@ export const generateEcomImage = async (params: {
       }
 
       const result = await response.json();
-      const b64 = result.data?.[0]?.b64_json || result.data?.[0]?.url;
+      const b64 = result.images?.[0]?.url || result.data?.[0]?.b64_json || result.data?.[0]?.url;
       if (!b64) throw new Error("豆包未返回图像数据");
       
       return b64.startsWith('http') ? b64 : `data:image/png;base64,${b64}`;
@@ -700,8 +668,8 @@ export const detailAssistantStep3 = async (designGuide: string, keywords: string
       任务：基于提供的【详情设计规范】作为视觉基调，为该产品设计一套具有极高价值感、美感和品牌张力的详情页分镜架构方案。
       
       **大师级设计准则：**
-      1. **精准还原与细节塑造**：在保持设计规范基调的前提下，必须精准还原产品的物理细节，严禁随意增加或删除宝贝本身的特征。通过光影勾勒材质纹理，让产品在视觉上“触手可得”。
-      2. **价值感与心动感**：不仅是展示产品，更是塑造价值。通过极致的视觉表达和品牌氛围，将产品塑造得令人心动，产生强烈的购买欲望。
+      1. **精准还原与细节塑造**：在保持设计规范基调的前提下，必须精准还原产品的物理细节，严禁随意增加或删除宝贝本身的特征。通过【明亮】的光影勾勒材质纹理，确保画面通透不暗沉，细节清晰可见。让产品在视觉上“触手可得”。
+      2. **价值感与心动感**：不仅是展示产品，更是塑造价值。通过极致的视觉表达和品牌氛围，将产品塑造得令人心动。特别注意产品的品牌 Logo 必须清晰呈现，不模糊。
       3. **排版美学与灵动表达**：拒绝死板的艺术堆砌。排版需兼顾现代设计美学与营销逻辑，在保持风格一致性的同时，适度引入视觉特效（如冷凝水雾、流体动态等）来增强冲击力。
       4. **场景化叙事**：必须展示真实且高级的应用场景，让用户在场景中感知产品卖点。
       
@@ -747,9 +715,12 @@ export const detailAssistantStep3 = async (designGuide: string, keywords: string
               },
               required: ["main", "sub", "description"]
             },
-            mood: { type: Type.STRING },
+            mood: { type: Type.STRING, description: "氛围营造（体现规范中的【色彩系统】和【光线设计】，确保画面光感通透、明快，不暗沉）" },
             visualScript: { type: Type.STRING },
-            prompt: { type: Type.STRING }
+            prompt: { 
+              type: Type.STRING, 
+              description: "用于 AI 生图的高质量提示词。要求：1.全中文描述；2.禁止包含任何品牌名；3.禁止包含‘Logo’、‘标志’、‘商标’等词，改用‘产品精美细节’。" 
+            }
           },
           required: ["id", "title", "designGoal", "composition", "elements", "copy", "mood", "visualScript", "prompt"]
         }
@@ -790,8 +761,9 @@ export const regenerateSingleDetailStoryboard = async (
       要求：
       1. 保持视觉基调与设计规范高度一致。
       2. 在构图、视觉脚本和生图提示词上进行创新，提升价值感。
-      3. 输出格式为单个 JSON 对象，包含：id, title, designGoal, composition, elements, copy (main, sub, description), mood, visualScript, prompt。
-      4. 所有描述必须使用中文。`,
+      3. **生图安全**：生图提示词 (prompt) 严禁包含现实品牌名、Logo字样或任何可能触及安全过滤的敏感词。请用中性的“精美纹理”、“工艺符号”等描述代替。
+      4. 输出格式为单个 JSON 对象，包含：id, title, designGoal, composition, elements, copy (main, sub, description), mood, visualScript, prompt。
+      5. 所有描述必须使用中文。`,
       responseMimeType: "application/json",
       maxOutputTokens: 4096,
       responseSchema: {

@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { DetailStoryboard, AuthState } from '../types';
+import { DetailStoryboard } from '../types';
 
 interface DetailAssistantProps {
   detailStep: number;

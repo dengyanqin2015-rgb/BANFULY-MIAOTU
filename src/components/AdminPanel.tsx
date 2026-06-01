@@ -1,5 +1,6 @@
 
-import React from 'react';
+import React, { useState, useMemo } from 'react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { User, RechargeLog, GenerationLog } from '../types';
 
 interface AdminPanelProps {
@@ -27,6 +28,42 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   handleResetPassword,
   exportToExcel
 }) => {
+  const [month, setMonth] = useState<string>(new Date().toISOString().slice(0, 7));
+  const [userFilter, setUserFilter] = useState<string>('all');
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [page, setPage] = useState<number>(1);
+
+  const allUsers = useMemo(() => Array.from(new Set(adminUsers.map(u => u.username))), [adminUsers]);
+  
+  const filteredLogs = useMemo(() => {
+    const logs = adminTab === 'recharge' ? rechargeLogs : (adminTab === 'stats' ? generationLogs : []);
+    return logs.filter(l => {
+      const date = new Date(l.timestamp);
+      const dateMonth = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const matchMonth = (month === 'all' || dateMonth === month);
+      const matchUser = (userFilter === 'all' || l.username === userFilter);
+      return matchMonth && matchUser;
+    }).sort((a, b) => b.timestamp - a.timestamp);
+  }, [adminTab, rechargeLogs, generationLogs, month, userFilter]);
+
+  const paginatedLogs = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredLogs.slice(start, start + pageSize);
+  }, [filteredLogs, page, pageSize]);
+
+  const trendData = useMemo(() => {
+    const data: Record<string, number> = {};
+    filteredLogs.forEach(l => {
+      const date = new Date(l.timestamp).getDate();
+      data[date] = (data[date] || 0) + (adminTab === 'recharge' ? (Math.abs((l as RechargeLog).amount)) : 1);
+    });
+    return Object.keys(data).sort((a, b) => parseInt(a) - parseInt(b)).map(d => ({ day: d, value: data[d] }));
+  }, [filteredLogs, adminTab]);
+
+  const totalPages = Math.ceil(filteredLogs.length / pageSize);
+
+  const resetPage = () => setPage(1);
+
   return (
     <div className="animate-slide-up">
       <div className="flex items-end justify-between mb-10">
@@ -58,129 +95,150 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#0071e3]"></div>
         </div>
       ) : (
-        <div className="apple-card p-0 bg-white border-black/10 shadow-xl overflow-hidden">
-          {adminTab === 'users' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-[#F5F5F7] border-b border-black/5">
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">ID</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">用户名</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">角色</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">剩余点数</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b] text-right">操作</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-black/5">
-                  {adminUsers.map(u => (
-                    <tr key={u.id} className="hover:bg-[#F5F5F7]/50 transition-colors">
-                      <td className="px-6 py-4 text-[11px] font-mono text-[#86868b]">{u.id}</td>
-                      <td className="px-6 py-4 text-[13px] font-bold text-black">{u.username}</td>
-                      <td className="px-6 py-4">
-                        <select 
-                          value={u.role} 
-                          onChange={(e) => updateRole(u.id, e.target.value as 'admin' | 'user')}
-                          className="bg-[#F5F5F7] border-none rounded-lg px-3 py-1 text-[11px] font-bold outline-none cursor-pointer"
-                        >
-                          <option value="user">普通用户</option>
-                          <option value="admin">管理员</option>
-                        </select>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
-                          <input 
-                            type="number" 
-                            className="w-24 bg-[#F5F5F7] border-none rounded-lg px-3 py-1 text-[12px] font-bold outline-none"
-                            value={u.credits}
-                            onChange={(e) => updateCredits(u.id, parseFloat(e.target.value))}
-                          />
-                          <span className="text-[10px] font-bold text-[#86868b]">Credits</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button 
-                          onClick={() => handleResetPassword(u.id, u.username)}
-                          className="text-[11px] font-bold text-[#0071e3] hover:underline"
-                        >
-                          重置密码
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <div className="space-y-6">
+          {(adminTab === 'recharge' || adminTab === 'stats') && (
+            <div className="grid grid-cols-4 gap-4 bg-white p-6 rounded-2xl border border-black/5 shadow-sm">
+                <div className="col-span-4 h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={trendData}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="day" />
+                            <YAxis />
+                            <Tooltip />
+                            <Line type="monotone" dataKey="value" stroke="#0071e3" strokeWidth={2} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
+                <select value={month} onChange={(e) => { setMonth(e.target.value); resetPage(); }} className="p-2 border rounded-lg text-sm">
+                  <option value="all">全月</option>
+                  <option value={new Date().toISOString().slice(0, 7)}>{new Date().toISOString().slice(0, 7)}</option>
+                </select>
+                <select value={userFilter} onChange={(e) => { setUserFilter(e.target.value); resetPage(); }} className="p-2 border rounded-lg text-sm">
+                    <option value="all">所有用户</option>
+                    {allUsers.map(u => <option key={u} value={u}>{u}</option>)}
+                </select>
             </div>
           )}
 
-          {adminTab === 'recharge' && (
-            <div className="overflow-x-auto">
-              <div className="p-4 bg-[#F5F5F7] border-b border-black/5 flex justify-end">
-                <button 
-                  onClick={() => exportToExcel(rechargeLogs, '充值记录')}
-                  className="px-4 py-2 bg-white border border-black/10 rounded-lg text-[11px] font-bold hover:bg-black hover:text-white transition-all flex items-center gap-2"
-                >
-                  <i className="fas fa-file-excel"></i> 导出 Excel
-                </button>
-              </div>
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-[#F5F5F7] border-b border-black/5">
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">时间</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">用户</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">变动金额</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">变动前</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">变动后</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">操作人</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-black/5">
-                  {rechargeLogs.map(l => (
-                    <tr key={l.id} className="hover:bg-[#F5F5F7]/50 transition-colors">
-                      <td className="px-6 py-4 text-[11px] font-medium text-[#86868b]">{new Date(l.timestamp).toLocaleString()}</td>
-                      <td className="px-6 py-4 text-[13px] font-bold text-black">{l.username}</td>
-                      <td className={`px-6 py-4 text-[13px] font-black ${l.amount >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {l.amount >= 0 ? `+${l.amount}` : l.amount}
-                      </td>
-                      <td className="px-6 py-4 text-[12px] font-medium text-[#86868b]">{l.previousCredits}</td>
-                      <td className="px-6 py-4 text-[12px] font-bold text-black">{l.newCredits}</td>
-                      <td className="px-6 py-4 text-[11px] font-bold text-[#0071e3]">{l.adminName}</td>
+          <div className="apple-card p-0 bg-white border-black/10 shadow-xl overflow-hidden">
+            {adminTab === 'users' && (
+              <div className="overflow-x-auto">
+                {/* ... (Existing Users Table content) */}
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#F5F5F7] border-b border-black/5">
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">ID</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">用户名</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">角色</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">剩余点数</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b] text-right">操作</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  </thead>
+                  <tbody className="divide-y divide-black/5">
+                    {adminUsers.map(u => (
+                      <tr key={u.id} className="hover:bg-[#F5F5F7]/50 transition-colors">
+                        <td className="px-6 py-4 text-[11px] font-mono text-[#86868b]">{u.id}</td>
+                        <td className="px-6 py-4 text-[13px] font-bold text-black">{u.username}</td>
+                        <td className="px-6 py-4">
+                          <select 
+                            value={u.role} 
+                            onChange={(e) => updateRole(u.id, e.target.value as 'admin' | 'user')}
+                            className="bg-[#F5F5F7] border-none rounded-lg px-3 py-1 text-[11px] font-bold outline-none cursor-pointer"
+                          >
+                            <option value="user">普通用户</option>
+                            <option value="admin">管理员</option>
+                          </select>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="number" 
+                              className="w-24 bg-[#F5F5F7] border-none rounded-lg px-3 py-1 text-[12px] font-bold outline-none"
+                              value={u.credits}
+                              onChange={(e) => updateCredits(u.id, parseFloat(e.target.value))}
+                            />
+                            <span className="text-[10px] font-bold text-[#86868b]">Credits</span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <button 
+                            onClick={() => handleResetPassword(u.id, u.username)}
+                            className="text-[11px] font-bold text-[#0071e3] hover:underline"
+                          >
+                            重置密码
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-          {adminTab === 'stats' && (
-            <div className="overflow-x-auto">
-              <div className="p-4 bg-[#F5F5F7] border-b border-black/5 flex justify-end">
-                <button 
-                  onClick={() => exportToExcel(generationLogs, '生成统计')}
-                  className="px-4 py-2 bg-white border border-black/10 rounded-lg text-[11px] font-bold hover:bg-black hover:text-white transition-all flex items-center gap-2"
-                >
-                  <i className="fas fa-file-excel"></i> 导出 Excel
-                </button>
-              </div>
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-[#F5F5F7] border-b border-black/5">
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">时间</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">用户</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">操作内容</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-black/5">
-                  {generationLogs.map(l => (
-                    <tr key={l.id} className="hover:bg-[#F5F5F7]/50 transition-colors">
-                      <td className="px-6 py-4 text-[11px] font-medium text-[#86868b]">{new Date(l.timestamp).toLocaleString()}</td>
-                      <td className="px-6 py-4 text-[13px] font-bold text-black">{l.username}</td>
-                      <td className="px-6 py-4 text-[12px] font-medium text-black">执行生图任务</td>
+            {(adminTab === 'recharge' || adminTab === 'stats') && (
+              <div className="overflow-x-auto">
+                <div className="p-4 bg-[#F5F5F7] border-b border-black/5 flex justify-between items-center">
+                  <div className='flex gap-2 items-center'>
+                    <select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); resetPage(); }} className="text-sm p-1 border rounded">
+                        <option value={20}>20</option>
+                        <option value={50}>50</option>
+                        <option value={100}>100</option>
+                    </select>
+                    <span className='text-sm text-gray-500'>每页</span>
+                  </div>
+                  <button 
+                    onClick={() => exportToExcel(filteredLogs as any, adminTab === 'recharge' ? '充值记录' : '生成统计')}
+                    className="px-4 py-2 bg-white border border-black/10 rounded-lg text-[11px] font-bold hover:bg-black hover:text-white transition-all flex items-center gap-2"
+                  >
+                    <i className="fas fa-file-excel"></i> 导出 Excel
+                  </button>
+                </div>
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#F5F5F7] border-b border-black/5">
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">时间</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">用户</th>
+                      {adminTab === 'recharge' ? (
+                          <>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">变动金额</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">变动前</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">变动后</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">操作人</th>
+                          </>
+                      ) : (
+                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-[#86868b]">操作内容</th>
+                      )}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  </thead>
+                  <tbody className="divide-y divide-black/5">
+                    {paginatedLogs.map(l => (
+                      <tr key={l.id} className="hover:bg-[#F5F5F7]/50 transition-colors">
+                        <td className="px-6 py-4 text-[11px] font-medium text-[#86868b]">{new Date(l.timestamp).toLocaleString()}</td>
+                        <td className="px-6 py-4 text-[13px] font-bold text-black">{l.username}</td>
+                        {adminTab === 'recharge' ? (
+                           <>
+                              <td className={`px-6 py-4 text-[13px] font-black ${(l as RechargeLog).amount >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                {(l as RechargeLog).amount >= 0 ? `+${(l as RechargeLog).amount}` : (l as RechargeLog).amount}
+                              </td>
+                              <td className="px-6 py-4 text-[12px] font-medium text-[#86868b]">{(l as RechargeLog).previousCredits}</td>
+                              <td className="px-6 py-4 text-[12px] font-bold text-black">{(l as RechargeLog).newCredits}</td>
+                              <td className="px-6 py-4 text-[11px] font-bold text-[#0071e3]">{(l as RechargeLog).adminName}</td>
+                           </>
+                        ) : (
+                          <td className="px-6 py-4 text-[12px] font-medium text-black">执行生图任务</td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className='p-4 border-t flex justify-end gap-2'>
+                    <button disabled={page === 1} onClick={() => setPage(p => p - 1)}>上一页</button>
+                    <span className='text-sm'>{page} / {totalPages || 1}</span>
+                    <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>下一页</button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

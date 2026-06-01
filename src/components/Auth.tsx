@@ -1,6 +1,5 @@
 
 import React from 'react';
-import { AuthState } from '../types';
 
 interface AuthProps {
   authMode: 'login' | 'register';

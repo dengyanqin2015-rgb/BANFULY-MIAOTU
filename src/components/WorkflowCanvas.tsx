@@ -154,7 +154,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               let nodeChanged = false;
 
               // Extract imageUrl
-              if (nodeData.imageUrl && !nodeData.imageUrl.startsWith('db://') && nodeData.imageUrl.startsWith('data:')) {
+              if (nodeData.imageUrl && !nodeData.imageUrl?.startsWith('db://') && nodeData.imageUrl?.startsWith('data:')) {
                 const imageId = `img-${node.id}`;
                 await ImageStorage.set(imageId, nodeData.imageUrl);
                 newNodeData.imageUrl = `db://${imageId}`;
@@ -164,7 +164,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               // Extract originalImages
               if (nodeData.originalImages) {
                 newNodeData.originalImages = await Promise.all(nodeData.originalImages.map(async (img, idx) => {
-                  if (img.data && !img.data.startsWith('db://')) {
+                  if (img.data && !img.data?.startsWith('db://')) {
                     const imageId = `orig-${node.id}-${idx}`;
                     await ImageStorage.set(imageId, img.data);
                     nodeChanged = true;
@@ -297,10 +297,14 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     
     selectedNodes.forEach(node => {
       const nodeData = node.data as ImageNodeData;
-      if (nodeData.imageUrl) {
-        const data = nodeData.imageUrl.split(',')[1];
-        const mimeType = nodeData.imageUrl.split(';')[0].split(':')[1];
-        genBarRef.current?.addImage(data, mimeType, nodeData.imageUrl, node.id);
+      if (nodeData.imageUrl && nodeData.imageUrl.startsWith('data:')) {
+        const parts = nodeData.imageUrl.split(',');
+        if (parts.length > 1) {
+          const data = parts[1];
+          const mimePart = nodeData.imageUrl.split(';')[0];
+          const mimeType = mimePart.includes(':') ? mimePart.split(':')[1] : 'image/png';
+          genBarRef.current?.addImage(data, mimeType, nodeData.imageUrl, node.id);
+        }
       }
     });
   };
@@ -310,43 +314,48 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     
     // Hydrate nodes with images from IndexedDB
     const hydratedNodes = await Promise.all((project.nodes || []).map(async (node) => {
-      if (node.type === 'noteNode') {
+      try {
+        if (node.type === 'noteNode') {
+          return attachNodeActions(node);
+        }
+
+        const nodeData = node.data as ImageNodeData;
+        const newNodeData = { ...nodeData };
+
+        // Hydrate imageUrl
+        if (nodeData.imageUrl?.startsWith('db://')) {
+          const imageId = nodeData.imageUrl.replace('db://', '');
+          const realUrl = await ImageStorage.get(imageId);
+          newNodeData.imageUrl = realUrl || undefined;
+        }
+
+        // Hydrate originalImages
+        if (nodeData.originalImages) {
+          newNodeData.originalImages = await Promise.all(nodeData.originalImages.map(async (img) => {
+            if (img.data?.startsWith('db://')) {
+              const imageId = img.data.replace('db://', '');
+              const realData = await ImageStorage.get(imageId);
+              return { ...img, data: realData || '' };
+            }
+            return img;
+          }));
+        }
+
+        // Re-derive refImages if needed
+        if (newNodeData.originalImages) {
+          newNodeData.refImages = newNodeData.originalImages.map(img => 
+            img.data ? `data:${img.mimeType};base64,${img.data}` : ''
+          ).filter(Boolean);
+        }
+
+        return attachNodeActions({
+          ...node,
+          data: newNodeData
+        });
+      } catch (err) {
+        console.error('Failed to hydrate node', node.id, err);
         return attachNodeActions(node);
       }
-
-      const nodeData = node.data as ImageNodeData;
-      const newNodeData = { ...nodeData };
-
-      // Hydrate imageUrl
-      if (nodeData.imageUrl?.startsWith('db://')) {
-        const imageId = nodeData.imageUrl.replace('db://', '');
-        const realUrl = await ImageStorage.get(imageId);
-        newNodeData.imageUrl = realUrl || undefined;
-      }
-
-      // Hydrate originalImages
-      if (nodeData.originalImages) {
-        newNodeData.originalImages = await Promise.all(nodeData.originalImages.map(async (img) => {
-          if (img.data.startsWith('db://')) {
-            const imageId = img.data.replace('db://', '');
-            const realData = await ImageStorage.get(imageId);
-            return { ...img, data: realData || '' };
-          }
-          return img;
-        }));
-      }
-
-      // Re-derive refImages if needed
-      if (newNodeData.originalImages) {
-        newNodeData.refImages = newNodeData.originalImages.map(img => 
-          img.data ? `data:${img.mimeType};base64,${img.data}` : ''
-        ).filter(Boolean);
-      }
-
-      return attachNodeActions({
-        ...node,
-        data: newNodeData
-      });
     }));
 
     setNodes(hydratedNodes);
@@ -378,7 +387,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       delete newNodeData.onSendToAssistant;
 
       // Extract imageUrl
-      if (nodeData.imageUrl && !nodeData.imageUrl.startsWith('db://')) {
+      if (nodeData.imageUrl && !nodeData.imageUrl?.startsWith('db://')) {
         const imageId = `img-${node.id}`;
         await ImageStorage.set(imageId, nodeData.imageUrl);
         newNodeData.imageUrl = `db://${imageId}`;
@@ -387,7 +396,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       // Extract originalImages data
       if (nodeData.originalImages) {
         newNodeData.originalImages = await Promise.all(nodeData.originalImages.map(async (img, idx) => {
-          if (img.data && !img.data.startsWith('db://')) {
+          if (img.data && !img.data?.startsWith('db://')) {
             const imageId = `orig-${node.id}-${idx}`;
             await ImageStorage.set(imageId, img.data);
             return { ...img, data: `db://${imageId}` };

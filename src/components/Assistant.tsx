@@ -322,14 +322,14 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
         className="fixed bottom-32 right-8 z-[60] w-16 h-16 bg-red-600 rounded-full shadow-[0_0_30px_rgba(220,38,38,0.4)] flex flex-col items-center justify-center text-white border-2 border-white/20 group"
       >
         <div className="relative flex items-center justify-center">
-          <span className="text-2xl font-black text-white leading-none">B</span>
+          <span className="text-lg font-black text-white leading-none">AI</span>
           <motion.div 
             animate={{ scale: [1, 1.2, 1] }}
             transition={{ repeat: Infinity, duration: 2 }}
             className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 rounded-full border-2 border-red-600" 
           />
         </div>
-        <span className="text-[9px] font-black mt-1 uppercase tracking-tighter">班小夫助理</span>
+        <span className="text-[9px] font-black mt-1 uppercase tracking-tighter">AI 助手</span>
       </motion.button>
 
       {/* Chat Dialog */}
@@ -381,10 +381,10 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                   <span className="text-xl font-black text-white">B</span>
                 </div>
                 <div>
-                  <h3 className="text-sm font-black text-white tracking-tight">班小夫助理 / AI ASSISTANT</h3>
+                  <h3 className="text-sm font-black text-white tracking-tight">AI 助手 / ASSISTANT</h3>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                    <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Architect Core V3.3 Online</span>
+                    <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Online</span>
                   </div>
                 </div>
               </div>
@@ -428,8 +428,8 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                     <MessageSquare size={32} />
                   </div>
                   <div>
-                    <p className="text-sm font-bold text-gray-400">你好！我是班小夫</p>
-                    <p className="text-xs text-gray-600 mt-1 leading-relaxed">我可以帮你分析图片、优化提示词，或者提供电商视觉架构的深度建议。请随时提问！</p>
+                    <p className="text-sm font-bold text-gray-400">你好！我是你的AI助手</p>
+                    <p className="text-xs text-gray-600 mt-1 leading-relaxed">我可以帮你回答问题、创作内容、分析图片或提供代码建议。请随时提问！</p>
                   </div>
                 </div>
               )}
