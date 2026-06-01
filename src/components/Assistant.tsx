@@ -499,7 +499,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                 <div className="flex items-start gap-3">
                   <div className="bg-[#222] border border-[#333] rounded-2xl rounded-tl-none p-4 flex items-center gap-3">
                     <Loader2 className="animate-spin text-red-600" size={16} />
-                    <span className="text-xs text-gray-500 font-bold uppercase tracking-widest">班小夫正在思考中...</span>
+                    <span className="text-xs text-gray-500 font-bold uppercase tracking-widest">正在思考中...</span>
                   </div>
                 </div>
               )}

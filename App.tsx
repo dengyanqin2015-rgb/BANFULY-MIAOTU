@@ -15,6 +15,7 @@ import { cn } from './src/lib/utils';
 import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory, DetailStoryboard } from './types';
 import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regenerateSinglePrompt, */ deconstructImage, segmentImage, detailAssistantStep1, detailAssistantStep2, detailAssistantStep3, regenerateSingleDetailStoryboard, updateDetailPromptFromFields } from './geminiService';
 import { WorkflowCanvas } from './src/components/WorkflowCanvas';
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 const BBOX_COLORS = [
   'border-blue-400 bg-blue-400/20',
@@ -126,11 +127,153 @@ const App: React.FC = () => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
 
-  // 统计与筛选状态
-  const [filterYear, setFilterYear] = useState<string>('');
-  const [filterMonth, setFilterMonth] = useState<string>('');
+  // 统计与筛选状态 (默认看当月)
+  const [filterYear, setFilterYear] = useState<string>(new Date().getFullYear().toString());
+  const [filterMonth, setFilterMonth] = useState<string>((new Date().getMonth() + 1).toString());
   const [filterDay, setFilterDay] = useState<string>('');
   const [filterUser, setFilterUser] = useState<string>('all');
+
+  // 管理后台分页状态
+  const [adminPage, setAdminPage] = useState<number>(1);
+  const [adminPageSize, setAdminPageSize] = useState<number>(20);
+
+  // 充值流水和生图统计走势图
+  const rechargeTrendData = React.useMemo(() => {
+    const year = filterYear ? parseInt(filterYear) : new Date().getFullYear();
+    const monthNum = filterMonth ? parseInt(filterMonth) : 0;
+
+    if (monthNum > 0) {
+      // 选定了具体月份，展示该月的每天 (1..该月最大天数)
+      const logsForChart = rechargeLogs.filter(log => {
+        const d = new Date(Number(log.timestamp));
+        const matchYear = d.getFullYear() === year;
+        const matchMonth = (d.getMonth() + 1) === monthNum;
+        const matchUser = filterUser === 'all' || log.username === filterUser;
+        return matchYear && matchMonth && matchUser;
+      });
+
+      const daysInMonth = new Date(year, monthNum, 0).getDate();
+      const dataMap: Record<number, number> = {};
+      for (let i = 1; i <= daysInMonth; i++) dataMap[i] = 0;
+
+      logsForChart.forEach(log => {
+        const day = new Date(Number(log.timestamp)).getDate();
+        if (day >= 1 && day <= daysInMonth) {
+          dataMap[day] += Math.abs(log.amount);
+        }
+      });
+
+      return Object.keys(dataMap).map(key => ({
+        name: `${key}日`,
+        value: parseFloat(dataMap[Number(key)].toFixed(2)),
+      }));
+    } else {
+      // 未选定具体月份（全部），展示该年的 12 个月
+      const logsForChart = rechargeLogs.filter(log => {
+        const d = new Date(Number(log.timestamp));
+        const matchYear = d.getFullYear() === year;
+        const matchUser = filterUser === 'all' || log.username === filterUser;
+        return matchYear && matchUser;
+      });
+
+      const dataMap: Record<number, number> = {};
+      for (let i = 1; i <= 12; i++) dataMap[i] = 0;
+
+      logsForChart.forEach(log => {
+        const monthNum = new Date(Number(log.timestamp)).getMonth() + 1;
+        dataMap[monthNum] += Math.abs(log.amount);
+      });
+
+      return Object.keys(dataMap).map(key => ({
+        name: `${key}月`,
+        value: parseFloat(dataMap[Number(key)].toFixed(2)),
+      }));
+    }
+  }, [rechargeLogs, filterYear, filterMonth, filterUser]);
+
+  const generationTrendData = React.useMemo(() => {
+    const year = filterYear ? parseInt(filterYear) : new Date().getFullYear();
+    const monthNum = filterMonth ? parseInt(filterMonth) : 0;
+
+    if (monthNum > 0) {
+      // 展示选定月份的每天
+      const logsForChart = generationLogs.filter(log => {
+        const d = new Date(Number(log.timestamp));
+        const matchYear = d.getFullYear() === year;
+        const matchMonth = (d.getMonth() + 1) === monthNum;
+        const matchUser = filterUser === 'all' || log.userId === filterUser;
+        return matchYear && matchMonth && matchUser;
+      });
+
+      const daysInMonth = new Date(year, monthNum, 0).getDate();
+      const dataMap: Record<number, number> = {};
+      for (let i = 1; i <= daysInMonth; i++) dataMap[i] = 0;
+
+      logsForChart.forEach(log => {
+        const day = new Date(Number(log.timestamp)).getDate();
+        if (day >= 1 && day <= daysInMonth) {
+          dataMap[day] += 1;
+        }
+      });
+
+      return Object.keys(dataMap).map(key => ({
+        name: `${key}日`,
+        value: dataMap[Number(key)],
+      }));
+    } else {
+      // 展示全年的 12 个月
+      const logsForChart = generationLogs.filter(log => {
+        const d = new Date(Number(log.timestamp));
+        const matchYear = d.getFullYear() === year;
+        const matchUser = filterUser === 'all' || log.userId === filterUser;
+        return matchYear && matchUser;
+      });
+
+      const dataMap: Record<number, number> = {};
+      for (let i = 1; i <= 12; i++) dataMap[i] = 0;
+
+      logsForChart.forEach(log => {
+        const monthNum = new Date(Number(log.timestamp)).getMonth() + 1;
+        dataMap[monthNum] += 1;
+      });
+
+      return Object.keys(dataMap).map(key => ({
+        name: `${key}月`,
+        value: dataMap[Number(key)],
+      }));
+    }
+  }, [generationLogs, filterYear, filterMonth, filterUser]);
+
+  // 缓存筛选和分页后的列表
+  const filteredRechargeLogs = React.useMemo(() => {
+    return rechargeLogs.filter(log => {
+      const date = new Date(Number(log.timestamp));
+      return (filterUser === 'all' || log.username === filterUser) &&
+             (!filterYear || date.getFullYear().toString() === filterYear) &&
+             (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
+             (!filterDay || date.getDate().toString() === filterDay);
+    });
+  }, [rechargeLogs, filterUser, filterYear, filterMonth, filterDay]);
+
+  const paginatedRechargeLogs = React.useMemo(() => {
+    const startIndex = (adminPage - 1) * adminPageSize;
+    return filteredRechargeLogs.slice(startIndex, startIndex + adminPageSize);
+  }, [filteredRechargeLogs, adminPage, adminPageSize]);
+
+  const filteredGenerationLogs = React.useMemo(() => {
+    return generationLogs.filter(log => {
+      const date = new Date(Number(log.timestamp));
+      return (filterUser === 'all' || log.userId === filterUser) &&
+             (!filterYear || date.getFullYear().toString() === filterYear) &&
+             (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
+             (!filterDay || date.getDate().toString() === filterDay);
+    });
+  }, [generationLogs, filterUser, filterYear, filterMonth, filterDay]);
+
+  const paginatedGenerationLogs = React.useMemo(() => {
+    const startIndex = (adminPage - 1) * adminPageSize;
+    return filteredGenerationLogs.slice(startIndex, startIndex + adminPageSize);
+  }, [filteredGenerationLogs, adminPage, adminPageSize]);
 
   const exportToExcel = (data: Record<string, string | number | boolean | null>[], fileName: string) => {
     const ws = XLSX.utils.json_to_sheet(data);
@@ -2909,13 +3052,29 @@ ${p.prompt}
                   用户管理
                 </button>
                 <button 
-                  onClick={() => { setAdminTab('recharge'); fetchRechargeLogs(); setFilterUser('all'); setFilterYear(''); setFilterMonth(''); setFilterDay(''); }}
+                  onClick={() => { 
+                    setAdminTab('recharge'); 
+                    fetchRechargeLogs(); 
+                    setFilterUser('all'); 
+                    setFilterYear(new Date().getFullYear().toString()); 
+                    setFilterMonth((new Date().getMonth() + 1).toString()); 
+                    setFilterDay(''); 
+                    setAdminPage(1); 
+                  }}
                   className={`px-6 py-2 rounded-lg text-[12px] font-black transition-all ${adminTab === 'recharge' ? 'bg-white shadow-md text-black' : 'text-[#86868b] hover:text-black'}`}
                 >
                   充值流水
                 </button>
                 <button 
-                  onClick={() => { setAdminTab('stats'); fetchGenerationLogs(); setFilterUser('all'); setFilterYear(''); setFilterMonth(''); setFilterDay(''); }}
+                  onClick={() => { 
+                    setAdminTab('stats'); 
+                    fetchGenerationLogs(); 
+                    setFilterUser('all'); 
+                    setFilterYear(new Date().getFullYear().toString()); 
+                    setFilterMonth((new Date().getMonth() + 1).toString()); 
+                    setFilterDay(''); 
+                    setAdminPage(1); 
+                  }}
                   className={`px-6 py-2 rounded-lg text-[12px] font-black transition-all ${adminTab === 'stats' ? 'bg-white shadow-md text-black' : 'text-[#86868b] hover:text-black'}`}
                 >
                   生图统计
@@ -2993,32 +3152,65 @@ ${p.prompt}
                 )}
 
                 {adminTab === 'recharge' && (
-                  <div className="space-y-6">
+                  <div className="space-y-6 animate-fade-in">
+                    {/* Trend Chart */}
+                    <div className="bg-[#F5F5F7]/40 rounded-3xl border border-black/5 p-6 shadow-sm">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h3 className="text-base font-black text-black">充值额度趋势走势图</h3>
+                          <p className="text-[11px] text-[#86868b] mt-0.5">
+                            {filterMonth ? `${filterYear}年${filterMonth}月` : `${filterYear}年全部月份`} • 
+                            {filterUser === 'all' ? ' 所有人' : ` 用户: ${filterUser}`}
+                          </p>
+                        </div>
+                        <span className="text-[10px] font-black uppercase tracking-wider text-[#0071e3] bg-[#0071e3]/5 px-2.5 py-1 rounded-full">
+                          单位: 点
+                        </span>
+                      </div>
+                      <div className="h-48 w-full mt-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={rechargeTrendData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="rechargeGrad" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#10B981" stopOpacity={0.2}/>
+                                <stop offset="95%" stopColor="#10B981" stopOpacity={0.01}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E5EA" />
+                            <XAxis dataKey="name" tickLine={false} axisLine={false} fontSize={9} stroke="#86868b" />
+                            <YAxis tickLine={false} axisLine={false} fontSize={9} stroke="#86868b" />
+                            <Tooltip contentStyle={{ background: '#fff', borderRadius: '12px', border: '1px solid rgba(0,0,0,0.05)', fontSize: '11px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }} />
+                            <Area type="monotone" dataKey="value" name="变动点数" stroke="#10B981" strokeWidth={2.5} fillOpacity={1} fill="url(#rechargeGrad)" />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
                     <div className="flex flex-wrap items-center gap-4 bg-[#F5F5F7] p-6 rounded-2xl border border-black/5">
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">用户</span>
-                        <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterUser} onChange={(e) => { setFilterUser(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="all">所有人</option>
                           {adminUsers.map(u => <option key={u.id} value={u.username}>{u.username}</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">年份</span>
-                        <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterYear} onChange={(e) => { setFilterYear(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {[2024, 2025, 2026].map(y => <option key={y} value={y}>{y}年</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">月份</span>
-                        <select value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterMonth} onChange={(e) => { setFilterMonth(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {Array.from({length: 12}, (_, i) => i + 1).map(m => <option key={m} value={m}>{m}月</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">日期</span>
-                        <select value={filterDay} onChange={(e) => setFilterDay(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterDay} onChange={(e) => { setFilterDay(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {Array.from({length: 31}, (_, i) => i + 1).map(d => <option key={d} value={d}>{d}日</option>)}
                         </select>
@@ -3027,25 +3219,12 @@ ${p.prompt}
                         <div className="text-right">
                           <span className="text-[10px] font-black opacity-40 block uppercase">筛选后总计</span>
                           <span className="text-2xl font-black text-[#0071e3]">
-                            {rechargeLogs.filter(log => {
-                              const date = new Date(Number(log.timestamp));
-                              return (filterUser === 'all' || log.username === filterUser) &&
-                                     (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                     (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                     (!filterDay || date.getDate().toString() === filterDay);
-                            }).length}
+                            {filteredRechargeLogs.length}
                           </span>
                         </div>
                         <button 
                           onClick={() => {
-                            const filtered = rechargeLogs.filter(log => {
-                              const date = new Date(Number(log.timestamp));
-                              return (filterUser === 'all' || log.username === filterUser) &&
-                                     (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                     (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                     (!filterDay || date.getDate().toString() === filterDay);
-                            });
-                            exportToExcel(filtered.map(l => ({ 
+                            exportToExcel(filteredRechargeLogs.map(l => ({ 
                               '时间': new Date(Number(l.timestamp)).toLocaleString(), 
                               '用户': l.username, 
                               '变动额度': l.amount, 
@@ -3072,21 +3251,9 @@ ${p.prompt}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-black/5">
-                          {rechargeLogs.filter(log => {
-                            const date = new Date(Number(log.timestamp));
-                            return (filterUser === 'all' || log.username === filterUser) &&
-                                   (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                   (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                   (!filterDay || date.getDate().toString() === filterDay);
-                          }).length === 0 ? (
+                          {paginatedRechargeLogs.length === 0 ? (
                             <tr><td colSpan={5} className="px-8 py-10 text-center text-[#86868b] font-bold">暂无符合条件的充值记录</td></tr>
-                          ) : rechargeLogs.filter(log => {
-                            const date = new Date(Number(log.timestamp));
-                            return (filterUser === 'all' || log.username === filterUser) &&
-                                   (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                   (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                   (!filterDay || date.getDate().toString() === filterDay);
-                          }).map(log => (
+                          ) : paginatedRechargeLogs.map(log => (
                             <tr key={log.id} className="hover:bg-[#F5F5F7]/30 transition-all">
                               <td className="px-8 py-6 text-[12px] text-[#86868b] font-medium">
                                 {new Date(Number(log.timestamp)).toLocaleString()}
@@ -3104,36 +3271,105 @@ ${p.prompt}
                         </tbody>
                       </table>
                     </div>
+
+                    {/* Pagination Controls */}
+                    <div className="flex items-center justify-between px-8 py-4 bg-[#F5F5F7]/30 border-t border-black/5 text-xs">
+                      <div className="flex items-center gap-4 text-[#86868b] font-bold">
+                        <span>显示 {(adminPage - 1) * adminPageSize + 1} - {Math.min(adminPage * adminPageSize, filteredRechargeLogs.length)} 条，共 {filteredRechargeLogs.length} 条</span>
+                        <div className="flex items-center gap-1.5 ml-4">
+                          <span>每页</span>
+                          <select 
+                            value={adminPageSize} 
+                            onChange={(e) => { setAdminPageSize(Number(e.target.value)); setAdminPage(1); }}
+                            className="bg-white border border-black/10 rounded px-2 py-1 text-xs font-bold outline-none cursor-pointer"
+                          >
+                            <option value="20">20 条</option>
+                            <option value="50">50 条</option>
+                            <option value="100">100 条</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          disabled={adminPage === 1}
+                          onClick={() => setAdminPage(p => Math.max(1, p - 1))}
+                          className="px-3.5 py-1.5 bg-white border border-black/10 rounded-lg font-black text-[#86868b] hover:text-black hover:bg-[#F5F5F7] disabled:opacity-30 disabled:pointer-events-none transition-all"
+                        >
+                          上一页
+                        </button>
+                        <span className="text-[#86868b] font-bold px-1">{adminPage} / {Math.ceil(filteredRechargeLogs.length / adminPageSize) || 1} 页</span>
+                        <button
+                          disabled={adminPage >= Math.ceil(filteredRechargeLogs.length / adminPageSize)}
+                          onClick={() => setAdminPage(p => p + 1)}
+                          className="px-3.5 py-1.5 bg-white border border-black/10 rounded-lg font-black text-[#86868b] hover:text-black hover:bg-[#F5F5F7] disabled:opacity-30 disabled:pointer-events-none transition-all"
+                        >
+                          下一页
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
 
                 {adminTab === 'stats' && (
-                  <div className="space-y-6">
+                  <div className="space-y-6 animate-fade-in">
+                    {/* Trend Chart */}
+                    <div className="bg-[#F5F5F7]/40 rounded-3xl border border-black/5 p-6 shadow-sm">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h3 className="text-base font-black text-black">生图渲染频次趋势走势图</h3>
+                          <p className="text-[11px] text-[#86868b] mt-0.5">
+                            {filterMonth ? `${filterYear}年${filterMonth}月` : `${filterYear}年全部月份`} • 
+                            {filterUser === 'all' ? ' 所有人' : ` 用户ID: ${filterUser}`}
+                          </p>
+                        </div>
+                        <span className="text-[10px] font-black uppercase tracking-wider text-[#0071e3] bg-[#0071e3]/5 px-2.5 py-1 rounded-full">
+                          单位: 次
+                        </span>
+                      </div>
+                      <div className="h-48 w-full mt-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={generationTrendData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="statsGrad" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#0071e3" stopOpacity={0.2}/>
+                                <stop offset="95%" stopColor="#0071e3" stopOpacity={0.01}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E5EA" />
+                            <XAxis dataKey="name" tickLine={false} axisLine={false} fontSize={9} stroke="#86868b" />
+                            <YAxis tickLine={false} axisLine={false} fontSize={9} stroke="#86868b" />
+                            <Tooltip contentStyle={{ background: '#fff', borderRadius: '12px', border: '1px solid rgba(0,0,0,0.05)', fontSize: '11px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }} />
+                            <Area type="monotone" dataKey="value" name="生成次数" stroke="#0071e3" strokeWidth={2.5} fillOpacity={1} fill="url(#statsGrad)" />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
                     <div className="flex flex-wrap items-center gap-4 bg-[#F5F5F7] p-6 rounded-2xl border border-black/5">
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">用户</span>
-                        <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterUser} onChange={(e) => { setFilterUser(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="all">所有人</option>
                           {adminUsers.map(u => <option key={u.id} value={u.id}>{u.username}</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">年份</span>
-                        <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterYear} onChange={(e) => { setFilterYear(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {[2024, 2025, 2026].map(y => <option key={y} value={y}>{y}年</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">月份</span>
-                        <select value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterMonth} onChange={(e) => { setFilterMonth(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {Array.from({length: 12}, (_, i) => i + 1).map(m => <option key={m} value={m}>{m}月</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">日期</span>
-                        <select value={filterDay} onChange={(e) => setFilterDay(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterDay} onChange={(e) => { setFilterDay(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {Array.from({length: 31}, (_, i) => i + 1).map(d => <option key={d} value={d}>{d}日</option>)}
                         </select>
@@ -3142,25 +3378,12 @@ ${p.prompt}
                         <div className="text-right">
                           <span className="text-[10px] font-black opacity-40 block uppercase">筛选后总计</span>
                           <span className="text-2xl font-black text-[#0071e3]">
-                            {generationLogs.filter(log => {
-                              const date = new Date(Number(log.timestamp));
-                              return (filterUser === 'all' || log.userId === filterUser) &&
-                                     (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                     (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                     (!filterDay || date.getDate().toString() === filterDay);
-                            }).length}
+                            {filteredGenerationLogs.length}
                           </span>
                         </div>
                         <button 
                           onClick={() => {
-                            const filtered = generationLogs.filter(log => {
-                              const date = new Date(Number(log.timestamp));
-                              return (filterUser === 'all' || log.userId === filterUser) &&
-                                     (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                     (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                     (!filterDay || date.getDate().toString() === filterDay);
-                            });
-                            exportToExcel(filtered.map(l => ({ '时间': new Date(Number(l.timestamp)).toLocaleString(), '用户': l.username, '操作': '生图渲染' })), `全平台生图统计_${new Date().getTime()}`);
+                            exportToExcel(filteredGenerationLogs.map(l => ({ '时间': new Date(Number(l.timestamp)).toLocaleString(), '用户': l.username, '操作': '生图渲染' })), `全平台生图统计_${new Date().getTime()}`);
                           }}
                           className="bg-black text-white px-6 py-2 rounded-xl text-[12px] font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                         >
@@ -3179,21 +3402,9 @@ ${p.prompt}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-black/5">
-                          {generationLogs.filter(log => {
-                            const date = new Date(Number(log.timestamp));
-                            return (filterUser === 'all' || log.userId === filterUser) &&
-                                   (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                   (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                   (!filterDay || date.getDate().toString() === filterDay);
-                          }).length === 0 ? (
+                          {paginatedGenerationLogs.length === 0 ? (
                             <tr><td colSpan={3} className="px-8 py-10 text-center text-[#86868b] font-bold">暂无符合条件的统计记录</td></tr>
-                          ) : generationLogs.filter(log => {
-                            const date = new Date(Number(log.timestamp));
-                            return (filterUser === 'all' || log.userId === filterUser) &&
-                                   (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                   (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                   (!filterDay || date.getDate().toString() === filterDay);
-                          }).map(log => (
+                          ) : paginatedGenerationLogs.map(log => (
                             <tr key={log.id} className="hover:bg-[#F5F5F7]/30 transition-all">
                               <td className="px-8 py-6 text-[12px] text-[#86868b] font-medium">
                                 {new Date(Number(log.timestamp)).toLocaleString()}
@@ -3208,6 +3419,42 @@ ${p.prompt}
                           ))}
                         </tbody>
                       </table>
+                    </div>
+
+                    {/* Pagination Controls */}
+                    <div className="flex items-center justify-between px-8 py-4 bg-[#F5F5F7]/30 border-t border-black/5 text-xs">
+                      <div className="flex items-center gap-4 text-[#86868b] font-bold">
+                        <span>显示 {(adminPage - 1) * adminPageSize + 1} - {Math.min(adminPage * adminPageSize, filteredGenerationLogs.length)} 条，共 {filteredGenerationLogs.length} 条</span>
+                        <div className="flex items-center gap-1.5 ml-4">
+                          <span>每页</span>
+                          <select 
+                            value={adminPageSize} 
+                            onChange={(e) => { setAdminPageSize(Number(e.target.value)); setAdminPage(1); }}
+                            className="bg-white border border-black/10 rounded px-2 py-1 text-xs font-bold outline-none cursor-pointer"
+                          >
+                            <option value="20">20 条</option>
+                            <option value="50">50 条</option>
+                            <option value="100">100 条</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          disabled={adminPage === 1}
+                          onClick={() => setAdminPage(p => Math.max(1, p - 1))}
+                          className="px-3.5 py-1.5 bg-white border border-black/10 rounded-lg font-black text-[#86868b] hover:text-black hover:bg-[#F5F5F7] disabled:opacity-30 disabled:pointer-events-none transition-all"
+                        >
+                          上一页
+                        </button>
+                        <span className="text-[#86868b] font-bold px-1">{adminPage} / {Math.ceil(filteredGenerationLogs.length / adminPageSize) || 1} 页</span>
+                        <button
+                          disabled={adminPage >= Math.ceil(filteredGenerationLogs.length / adminPageSize)}
+                          onClick={() => setAdminPage(p => p + 1)}
+                          className="px-3.5 py-1.5 bg-white border border-black/10 rounded-lg font-black text-[#86868b] hover:text-black hover:bg-[#F5F5F7] disabled:opacity-30 disabled:pointer-events-none transition-all"
+                        >
+                          下一页
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
