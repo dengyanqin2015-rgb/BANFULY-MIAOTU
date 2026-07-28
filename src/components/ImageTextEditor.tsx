@@ -37,6 +37,79 @@ const closestAspect = (width: number, height: number, model: ImageModel) => {
   return ratios.reduce((best, item) => Math.abs(Math.log(target / item.value)) < Math.abs(Math.log(target / best.value)) ? item : best, ratios[0]);
 };
 
+const compositeChangedPixels = (
+  outputContext: CanvasRenderingContext2D,
+  source: HTMLImageElement,
+  edited: HTMLImageElement,
+  padded: Box,
+  selectedRegions: Array<{ x: number; y: number; width: number; height: number }>,
+) => {
+  const width = Math.max(1, Math.round(padded.width)); const height = Math.max(1, Math.round(padded.height));
+  const originalCanvas = document.createElement('canvas'); originalCanvas.width = width; originalCanvas.height = height;
+  const editedCanvas = document.createElement('canvas'); editedCanvas.width = width; editedCanvas.height = height;
+  const originalContext = originalCanvas.getContext('2d', { willReadFrequently: true });
+  const editedContext = editedCanvas.getContext('2d', { willReadFrequently: true });
+  if (!originalContext || !editedContext) throw new Error('无法对齐 AI 改字结果');
+  originalContext.drawImage(source, padded.x, padded.y, padded.width, padded.height, 0, 0, width, height);
+  editedContext.drawImage(edited, 0, 0, width, height);
+  const original = originalContext.getImageData(0, 0, width, height);
+  const generated = editedContext.getImageData(0, 0, width, height);
+  const mask = new Float32Array(width * height);
+  const luminance = (data: Uint8ClampedArray, x: number, y: number) => {
+    const safeX = Math.max(0, Math.min(width - 1, x)); const safeY = Math.max(0, Math.min(height - 1, y));
+    const offset = (safeY * width + safeX) * 4;
+    return data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114;
+  };
+
+  selectedRegions.forEach(selected => {
+    const left = Math.max(0, Math.floor(selected.x - padded.x));
+    const top = Math.max(0, Math.floor(selected.y - padded.y));
+    const right = Math.min(width, Math.ceil(selected.x + selected.width - padded.x));
+    const bottom = Math.min(height, Math.ceil(selected.y + selected.height - padded.y));
+    for (let y = top; y < bottom; y += 1) for (let x = left; x < right; x += 1) {
+      const pixel = y * width + x; const offset = pixel * 4;
+      const difference = Math.max(
+        Math.abs(original.data[offset] - generated.data[offset]),
+        Math.abs(original.data[offset + 1] - generated.data[offset + 1]),
+        Math.abs(original.data[offset + 2] - generated.data[offset + 2]),
+      );
+      const originalEdge = Math.max(
+        Math.abs(luminance(original.data, x - 1, y) - luminance(original.data, x + 1, y)),
+        Math.abs(luminance(original.data, x, y - 1) - luminance(original.data, x, y + 1)),
+      );
+      const generatedEdge = Math.max(
+        Math.abs(luminance(generated.data, x - 1, y) - luminance(generated.data, x + 1, y)),
+        Math.abs(luminance(generated.data, x, y - 1) - luminance(generated.data, x, y + 1)),
+      );
+      const edge = Math.max(originalEdge, generatedEdge);
+      const changeAlpha = difference >= 58 ? 1 : difference >= 16 && edge >= 7 ? Math.min(1, (difference - 16) / 32) : 0;
+      const edgeDistance = Math.min(x - left, right - 1 - x, y - top, bottom - 1 - y);
+      const boundaryAlpha = Math.min(1, Math.max(0, edgeDistance / 4));
+      mask[pixel] = Math.max(mask[pixel], changeAlpha * boundaryAlpha);
+    }
+  });
+
+  // Slightly expand detected letter strokes so anti-aliased edges and the
+  // removed original glyphs blend cleanly, without accepting a whole patch.
+  const expanded = new Float32Array(mask);
+  for (let y = 1; y < height - 1; y += 1) for (let x = 1; x < width - 1; x += 1) {
+    const pixel = y * width + x;
+    if (mask[pixel] <= 0) continue;
+    for (let dy = -1; dy <= 1; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
+      const target = (y + dy) * width + x + dx;
+      expanded[target] = Math.max(expanded[target], mask[pixel] * (dx === 0 && dy === 0 ? 1 : 0.72));
+    }
+  }
+  for (let pixel = 0; pixel < expanded.length; pixel += 1) {
+    const alpha = expanded[pixel]; if (alpha <= 0) continue;
+    const offset = pixel * 4;
+    for (let channel = 0; channel < 3; channel += 1) generated.data[offset + channel] = Math.round(original.data[offset + channel] * (1 - alpha) + generated.data[offset + channel] * alpha);
+    generated.data[offset + 3] = 255;
+  }
+  editedContext.putImageData(generated, 0, 0);
+  outputContext.drawImage(editedCanvas, padded.x, padded.y, padded.width, padded.height);
+};
+
 export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onClose, onConfirm }) => {
   const [currentImage, setCurrentImage] = useState(imageUrl);
   const [regions, setRegions] = useState<EditRegion[]>([]);
@@ -158,20 +231,21 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     const output = document.createElement('canvas'); output.width = source.naturalWidth; output.height = source.naturalHeight;
     const outputContext = output.getContext('2d'); if (!outputContext) throw new Error('无法合成文字修改结果');
     outputContext.drawImage(source, 0, 0);
-    // Never trust the model to preserve pixels outside the requested areas.
-    // Composite back only the exact user-selected rectangles, so changes made
-    // by the provider elsewhere in the generated crop are discarded locally.
-    selectedRegions.forEach(selected => {
-      const sourceX = (selected.x - padded.x) / padded.width * edited.naturalWidth;
-      const sourceY = (selected.y - padded.y) / padded.height * edited.naturalHeight;
-      const sourceWidth = selected.width / padded.width * edited.naturalWidth;
-      const sourceHeight = selected.height / padded.height * edited.naturalHeight;
-      outputContext.drawImage(
-        edited,
-        sourceX, sourceY, sourceWidth, sourceHeight,
-        selected.x, selected.y, selected.width, selected.height,
-      );
-    });
+    if (model === 'gpt-image-2') {
+      // GPT Image may repaint the whole rectangular edit crop even when a
+      // multi-region mask is supplied. Keep only actual glyph-level changes.
+      compositeChangedPixels(outputContext, source, edited, padded, selectedRegions);
+    } else {
+      // Gemini preserves local image coherence better. Keep its exact selected
+      // areas, while still discarding every pixel outside the user's boxes.
+      selectedRegions.forEach(selected => {
+        const sourceX = (selected.x - padded.x) / padded.width * edited.naturalWidth;
+        const sourceY = (selected.y - padded.y) / padded.height * edited.naturalHeight;
+        const sourceWidth = selected.width / padded.width * edited.naturalWidth;
+        const sourceHeight = selected.height / padded.height * edited.naturalHeight;
+        outputContext.drawImage(edited, sourceX, sourceY, sourceWidth, sourceHeight, selected.x, selected.y, selected.width, selected.height);
+      });
+    }
     return output.toDataURL('image/png');
   };
 
