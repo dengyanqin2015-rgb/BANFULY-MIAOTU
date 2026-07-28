@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 declare global {
   interface Window {
     aistudio: {
-      openSelectKey: () => void;
+      openSelectKey: () => Promise<void>;
       hasSelectedApiKey: () => Promise<boolean>;
     };
   }
@@ -12,9 +12,11 @@ declare global {
 
 import * as XLSX from 'xlsx';
 import { cn } from './src/lib/utils';
-import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory, DetailStoryboard } from './types';
+import { AppStep, VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, User, AuthState, RechargeLog, GenerationLog, SingleToolMode, ImageDeconstruction, ImageHistory, DetailStoryboard, SegmentedObject } from './types';
 import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regenerateSinglePrompt, */ deconstructImage, segmentImage, detailAssistantStep1, detailAssistantStep2, detailAssistantStep3, regenerateSingleDetailStoryboard, updateDetailPromptFromFields } from './geminiService';
 import { WorkflowCanvas } from './src/components/WorkflowCanvas';
+import { ImageAnalysisTemplateManager } from './src/components/ImageAnalysisTemplateManager';
+import { RequestLogPanel } from './src/components/RequestLogPanel';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 const BBOX_COLORS = [
@@ -83,19 +85,13 @@ const App: React.FC = () => {
   const [model, setModel] = useState('gemini-3-flash-preview');
   const [loading, setLoading] = useState(false);
   const [userApiKey, setUserApiKey] = useState<string>(() => {
-    return localStorage.getItem('user_gemini_api_key') || process.env.GEMINI_API_KEY || '';
+    return localStorage.getItem('user_gemini_api_key') || '';
   });
   const [paidImageApiKey, setPaidImageApiKey] = useState<string>(() => {
     return localStorage.getItem('user_paid_image_api_key') || '';
   });
-  const [doubaoApiKey, setDoubaoApiKey] = useState<string>(() => {
-    return localStorage.getItem('user_doubao_api_key') || '';
-  });
-  const [doubaoModelId, setDoubaoModelId] = useState<string>(() => {
-    return localStorage.getItem('user_doubao_model_id') || '';
-  });
-  const [doubaoEndpoint, setDoubaoEndpoint] = useState<string>(() => {
-    return localStorage.getItem('user_doubao_endpoint') || '';
+  const [openAiApiKey, setOpenAiApiKey] = useState<string>(() => {
+    return localStorage.getItem('user_openai_api_key') || '';
   });
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
 
@@ -110,7 +106,7 @@ const App: React.FC = () => {
   const [adminUsers, setAdminUsers] = useState<User[]>([]);
   const [rechargeLogs, setRechargeLogs] = useState<RechargeLog[]>([]);
   const [generationLogs, setGenerationLogs] = useState<GenerationLog[]>([]);
-  const [adminTab, setAdminTab] = useState<'users' | 'recharge' | 'stats'>('users');
+  const [adminTab, setAdminTab] = useState<'users' | 'recharge' | 'stats' | 'analysisTemplates' | 'requestLogs'>('users');
   const [adminLoading, setAdminLoading] = useState(false);
 
   // 个人信息管理状态
@@ -454,12 +450,13 @@ const App: React.FC = () => {
         '4K': { cost: 0.24, rmb: 1.7 }
       }
     },
-    'doubao-pro-v1': {
-      name: 'Doubao-Seedream-5.0-lite',
-      label: 'BYTEDANCE',
+    'gpt-image-2': {
+      name: 'GPT IMAGE 2',
+      label: 'OPENAI · OFFICIAL',
       resolutions: {
-        '2K': { cost: 0.067, rmb: 0.3 },
-        '4K': { cost: 0.067, rmb: 0.3 }
+        '1K': { cost: 0, rmb: 1.0 },
+        '2K': { cost: 0, rmb: 1.0 },
+        '4K': { cost: 0, rmb: 1.0 }
       }
     }
   };
@@ -1622,7 +1619,7 @@ ${p.prompt}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#F5F5F7] text-[#0071e3] border border-[#0071e3]/20 hover:bg-[#0071e3]/5 transition-all shadow-sm"
           >
             <i className="fas fa-key"></i>
-            {(userApiKey || paidImageApiKey || doubaoApiKey) ? '已配置 Key' : '配置 API Key'}
+            {(userApiKey || paidImageApiKey || openAiApiKey) ? '已配置 Key' : '配置 API Key'}
           </button>
           <select 
             value={model} 
@@ -3041,7 +3038,7 @@ ${p.prompt}
               <div>
                 <div className="section-label mb-3 text-[#0071e3]">Admin Dashboard</div>
                 <h1 className="text-4xl font-black tracking-tighter text-black">
-                  {adminTab === 'users' ? '账户与生图点数管理' : adminTab === 'recharge' ? '充值流水记录' : '生图统计记录'}
+                  {adminTab === 'users' ? '账户与生图点数管理' : adminTab === 'recharge' ? '充值流水记录' : adminTab === 'stats' ? '生图统计记录' : adminTab === 'requestLogs' ? '全站请求与回传日志' : '图片解析模板管理'}
                 </h1>
               </div>
               <div className="flex gap-2 bg-[#F5F5F7] p-1 rounded-xl border border-black/5 shadow-inner">
@@ -3078,6 +3075,18 @@ ${p.prompt}
                   className={`px-6 py-2 rounded-lg text-[12px] font-black transition-all ${adminTab === 'stats' ? 'bg-white shadow-md text-black' : 'text-[#86868b] hover:text-black'}`}
                 >
                   生图统计
+                </button>
+                <button
+                  onClick={() => setAdminTab('analysisTemplates')}
+                  className={`px-6 py-2 rounded-lg text-[12px] font-black transition-all ${adminTab === 'analysisTemplates' ? 'bg-white shadow-md text-black' : 'text-[#86868b] hover:text-black'}`}
+                >
+                  解析模板
+                </button>
+                <button
+                  onClick={() => setAdminTab('requestLogs')}
+                  className={`px-6 py-2 rounded-lg text-[12px] font-black transition-all ${adminTab === 'requestLogs' ? 'bg-white shadow-md text-black' : 'text-[#86868b] hover:text-black'}`}
+                >
+                  请求日志
                 </button>
               </div>
             </div>
@@ -3458,6 +3467,12 @@ ${p.prompt}
                     </div>
                   </div>
                 )}
+                {adminTab === 'analysisTemplates' && (
+                  <div className="p-8">
+                    <ImageAnalysisTemplateManager />
+                  </div>
+                )}
+                {adminTab === 'requestLogs' && <RequestLogPanel />}
               </div>
               {adminLoading && (
                 <div className="p-10 flex items-center justify-center">
@@ -3468,13 +3483,13 @@ ${p.prompt}
           </div>
         )}
 
-        {step === AppStep.WORKFLOW && (
+        <div className={step === AppStep.WORKFLOW ? "contents" : "hidden"} aria-hidden={step !== AppStep.WORKFLOW}>
           <WorkflowCanvas 
             userApiKey={userApiKey} 
             user={auth.user}
             onDeductCredit={deductCredit}
           />
-        )}
+        </div>
 
         {step === AppStep.FULL_PLAN && (
           <div className="space-y-20 animate-slide-up pb-20">
@@ -3781,8 +3796,6 @@ ${p.prompt}
 
                     <div 
                       className="aspect-[4/3] rounded-[24px] overflow-hidden bg-[#F5F5F7] mb-8 border border-black/10 relative group/img shadow-inner cursor-zoom-in"
-                      onMouseEnter={() => cardGeneratedImages[p.id] && setHoveredPreviewImage({ url: cardGeneratedImages[p.id], title: p.title })}
-                      onMouseLeave={() => setHoveredPreviewImage(null)}
                       onClick={() => cardGeneratedImages[p.id] && setZoomedImageUrl(cardGeneratedImages[p.id])}
                     >
                       {cardGeneratedImages[p.id] ? (
@@ -4142,54 +4155,50 @@ ${p.prompt}
                   </p>
                 </div>
 
-                {/* 豆包 Key 配置 */}
+                {/* OpenAI GPT Image 2 配置 */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between px-1">
                     <label className="text-[11px] font-black text-[#86868b] uppercase tracking-widest flex items-center gap-2">
-                      <i className="fas fa-rocket text-red-500"></i>
-                      豆包生图 (Doubao Key)
+                      <i className="fas fa-wand-magic-sparkles text-emerald-500"></i>
+                      GPT Image 2（OpenAI 官方）
                     </label>
-                    <span className="text-[10px] font-bold text-red-500/60 bg-red-500/10 px-2 py-0.5 rounded-full">字节跳动自研模型</span>
+                    <span className="text-[10px] font-bold text-emerald-500/70 bg-emerald-500/10 px-2 py-0.5 rounded-full">第三方异步生图线路</span>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <input 
                       type="password"
-                      value={doubaoApiKey}
+                      value={openAiApiKey}
                       onChange={(e) => {
                         const val = e.target.value;
-                        setDoubaoApiKey(val);
-                        localStorage.setItem('user_doubao_api_key', val);
+                        setOpenAiApiKey(val);
+                        localStorage.setItem('user_openai_api_key', val);
                       }}
-                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-red-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
-                      placeholder="API Key..."
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-emerald-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="OpenAI API Key（sk-...）"
                     />
                     <input 
                       type="text"
-                      value={doubaoModelId}
+                      value="gpt-image-2"
                       onChange={(e) => {
-                        const val = e.target.value;
-                        setDoubaoModelId(val);
-                        localStorage.setItem('user_doubao_model_id', val);
+                        void e;
                       }}
-                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-red-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
-                      placeholder="接入点 ID (Model ID)..."
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-emerald-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="模型 ID..."
                     />
                   </div>
                   <div className="relative group">
                     <input 
                       type="text"
-                      value={doubaoEndpoint}
+                      value="https://api.openai.com"
                       onChange={(e) => {
-                        const val = e.target.value;
-                        setDoubaoEndpoint(val);
-                        localStorage.setItem('user_doubao_endpoint', val);
+                        void e;
                       }}
-                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-red-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
-                      placeholder="API Endpoint (可选，默认使用 Ark V3)..."
+                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-5 py-4 text-white text-sm focus:border-emerald-500/50 outline-none transition-all font-mono placeholder:text-[#3a3a3c]"
+                      placeholder="Base URL..."
                     />
                   </div>
                   <p className="text-[10px] text-[#86868b] leading-relaxed px-1">
-                    用于：豆包专业生图。请前往火山引擎 Ark 平台获取 API Key 和接入点 ID。
+                    Gemini 继续负责识图、分析、策划和提示词；此线路只负责最终生图。默认异步轮询，任务成功后自动回填现有工作流。
                   </p>
                 </div>
               </div>

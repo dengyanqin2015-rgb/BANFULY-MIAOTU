@@ -162,8 +162,7 @@ export const NoteNode = ({ data, selected }: NodeProps<Node<NoteNodeData>>) => {
         )}
         style={{ 
           borderColor: selected ? color : '#333',
-          boxShadow: selected ? `0 0 30px ${color}40` : 'none',
-          ringColor: color
+          boxShadow: selected ? `0 0 30px ${color}40` : 'none'
         }}
       >
         <div className="p-6 flex flex-col gap-4">

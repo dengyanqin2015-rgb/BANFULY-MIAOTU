@@ -1,9 +1,9 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
-export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "doubao-pro-v1";
+export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "gpt-image-2";
 export type ChatModel = "gemini-3-flash-preview" | "gemini-3.1-pro-preview";
 export type ImageSize = "512px" | "1K" | "2K" | "4K";
-export type AspectRatio = "AUTO" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9" | "1:4" | "1:8" | "4:1" | "8:1";
+export type AspectRatio = "AUTO" | "1:1" | "3:4" | "4:3" | "4:5" | "5:4" | "9:16" | "16:9" | "21:9" | "2:5" | "5:2" | "3:2" | "2:3" | "1:4" | "1:8" | "4:1" | "8:1";
 
 export interface GenerationParams {
   prompt: string;
@@ -11,7 +11,9 @@ export interface GenerationParams {
   imageSize: ImageSize;
   model: ImageModel;
   images?: { data: string; mimeType: string }[];
+  mask?: { data: string; mimeType: string };
   apiKey?: string;
+  quality?: "low" | "medium" | "high";
 }
 
 export interface ChatParams {
@@ -20,6 +22,41 @@ export interface ChatParams {
   mode: 'normal' | 'deep';
   history?: { role: 'user' | 'model'; parts: { text: string }[] }[];
   apiKey?: string;
+}
+
+export interface ImageAnalysisTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  prompt: string;
+  isDefault: boolean;
+}
+
+export async function analyzeImageForPrompt(
+  imageUrl: string,
+  template: ImageAnalysisTemplate,
+  apiKey?: string
+): Promise<string> {
+  const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error("当前图片尚未转换为可解析格式，请重新上传后再试");
+  const key = apiKey || localStorage.getItem('user_gemini_api_key');
+  if (!key) throw new Error("请先配置 Gemini API Key");
+  const ai = new GoogleGenAI({ apiKey: key });
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: {
+      parts: [
+        { inlineData: { mimeType: match[1], data: match[2] } },
+        { text: template.prompt }
+      ]
+    },
+    config: {
+      systemInstruction: "你是专业的视觉复刻提示词工程师。只输出一段可以直接用于文生图的中文提示词，不要输出标题、分析过程、Markdown或解释。必须忠实描述可见画面，不猜测不可见信息。"
+    }
+  });
+  const text = response.text?.trim();
+  if (!text) throw new Error("图片解析没有返回关键词");
+  return text;
 }
 
 // Extend Window interface for AI Studio specific functions
@@ -47,7 +84,7 @@ export async function openApiKeyDialog() {
 
 export async function chatWithAssistant(params: ChatParams): Promise<string> {
   // 聊天和识图始终优先使用默认的免费 Key (环境变量中的 GEMINI_API_KEY)
-  const apiKey = params.apiKey || process.env.API_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = params.apiKey || localStorage.getItem('user_gemini_api_key');
   const ai = new GoogleGenAI({ apiKey: apiKey as string });
   
   const modelName = params.mode === 'deep' ? 'gemini-3.1-pro-preview' : 'gemini-3-flash-preview';
@@ -65,13 +102,15 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
   }
 
   const config: { systemInstruction: string; thinkingConfig?: { thinkingLevel: ThinkingLevel } } = {
-    systemInstruction: `你是一个全能的AI助手，能够进行各种任务，包括文本生成、创意写作、图像理解、代码创作等。
+    systemInstruction: `你是 BANFULY 的中文电商视觉策略助手，核心任务是分析市场商品、竞品、消费者痛点、购买动机，并产出可落地的主图策划、详情页策划和高质量生图提示词。
 
-你的回复应当遵循以下准则：
-1. **语言适配**：根据用户输入语言进行回复。
-2. **风格**：友好、专业、高效。
-3. **格式清晰**：尽可能利用Markdown语法（标题、列表、加粗等）使回答结构清晰、易于阅读。
-4. **回答精炼**：直接回应用户需求，不要添加不必要的符号或冗余标记。`,
+必须遵守：
+1. 默认全程使用简体中文；除用户明确要求外，不输出英文生图提示词。
+2. 先区分“输入材料中的事实”和“你的策略推断”，禁止把推断冒充真实调研结论。
+3. 策划必须围绕商品核心卖点、目标人群、使用场景、视觉层级、构图、光影、色彩、材质和文案区域。
+4. 每一段可直接用于生图的提示词必须完整独立，并放在单独的 \`\`\`prompt 代码块中；一个代码块只放一套完整中文提示词，不添加解释或标题。
+5. 生图提示词应准确包含主体、外观结构、动作或摆放、环境、构图、镜头、光影、色彩、材质、清晰度、文字区域及禁止元素。
+6. 普通交流保持简洁；市场分析、主图和详情策划使用清晰的小标题与可执行结论。`,
   };
 
   if (params.mode === 'deep') {
@@ -79,16 +118,19 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
   }
 
   try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: [
-        ...(params.history || []),
-        { role: 'user', parts }
-      ],
-      config: config,
+    const request = (model: string) => ai.models.generateContent({
+      model,
+      contents: [...(params.history || []), { role: 'user', parts }],
+      config,
     });
-
-    return response.text || "抱歉，我无法生成回复。";
+    try {
+      const response = await request(modelName);
+      return response.text || "抱歉，我无法生成回复。";
+    } catch (deepError) {
+      if (params.mode !== 'deep') throw deepError;
+      const fallback = await request('gemini-3-flash-preview');
+      return `> 深度模型当前不可用，已自动使用 Flash 高思考模式完成本次任务。\n\n${fallback.text || "抱歉，我无法生成回复。"}`;
+    }
   } catch (err: unknown) {
     const error = err as Error;
     console.error("Assistant chat failed:", error);
@@ -100,9 +142,39 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
 }
 
 export async function generateImage(params: GenerationParams): Promise<string[]> {
+  if (params.model === 'gpt-image-2') {
+    const apiKey = localStorage.getItem('user_openai_api_key');
+    const savedQuality = localStorage.getItem('user_openai_image_quality');
+    const quality = params.quality || (savedQuality === 'medium' || savedQuality === 'high' ? savedQuality : 'low');
+    const sizeTable: Record<string, Record<string, string>> = {
+      '512px': { '1:1': '1024x1024', '3:4': '1024x1360', '4:3': '1360x1024', '9:16': '1024x1824', '16:9': '1824x1024', '2:5': '1024x2560', '5:2': '2560x1024', '3:2': '1536x1024', '2:3': '1024x1536', 'AUTO': 'auto' },
+      '1K': { '1:1': '1024x1024', '3:4': '1024x1360', '4:3': '1360x1024', '9:16': '1024x1824', '16:9': '1824x1024', '2:5': '1024x2560', '5:2': '2560x1024', '3:2': '1536x1024', '2:3': '1024x1536', 'AUTO': 'auto' },
+      '2K': { '1:1': '2048x2048', '3:4': '1536x2048', '4:3': '2048x1536', '9:16': '1152x2048', '16:9': '2048x1152', '2:5': '1280x3200', '5:2': '3200x1280', '3:2': '2048x1360', '2:3': '1360x2048', 'AUTO': 'auto' },
+      '4K': { '1:1': '2880x2880', '3:4': '2480x3312', '4:3': '3312x2480', '9:16': '2160x3840', '16:9': '3840x2160', '2:5': '1536x3840', '5:2': '3840x1536', '3:2': '3520x2352', '2:3': '2352x3520', 'AUTO': 'auto' }
+    };
+    if (['1:4', '1:8', '4:1', '8:1'].includes(params.aspectRatio)) {
+      throw new Error('GPT Image 2 官方接口最大支持 3:1 比例，请改用 9:16、16:9 或其他模型');
+    }
+    const size = sizeTable[params.imageSize]?.[params.aspectRatio] || '1024x1024';
+    const token = localStorage.getItem('auth_token');
+    const response = await fetch('/api/ai/openai/images', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({ apiKey, prompt: params.prompt, size, quality, images: params.images || [], mask: params.mask })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || response.statusText);
+    const image = result.images?.[0]?.url;
+    if (!image) throw new Error("OpenAI 未返回图片数据");
+    return [image.startsWith('http') || image.startsWith('data:') ? image : `data:image/png;base64,${image}`];
+  }
+
   // 豆包模型特殊处理逻辑
-  if (params.model === 'doubao-pro-v1') {
-    const doubaoApiKey = localStorage.getItem('user_doubao_api_key') || import.meta.env.VITE_DOUBAO_API_KEY || process.env.VITE_DOUBAO_API_KEY;
+  if ((params.model as string) === 'doubao-pro-v1') {
+    const doubaoApiKey = localStorage.getItem('user_doubao_api_key');
     const doubaoEndpoint = localStorage.getItem('user_doubao_endpoint') || import.meta.env.VITE_DOUBAO_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
     const doubaoModelId = localStorage.getItem('user_doubao_model_id') || 'doubao-1-5-vision-image-generations';
 
@@ -149,9 +221,8 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
   // 2. 其次检查用户在浏览器本地存储中设置的付费 Key (user_paid_image_api_key)
   // 3. 然后使用用户在 UI 中手动传入的 Key (params.apiKey)
   // 4. 最后回退到系统默认的免费 Key
-  const envPaidKey = import.meta.env.VITE_PAID_IMAGE_API_KEY || process.env.VITE_PAID_IMAGE_API_KEY;
   const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
-  const apiKey = envPaidKey || localPaidKey || params.apiKey || process.env.API_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = localPaidKey || params.apiKey || localStorage.getItem('user_gemini_api_key');
   
   const ai = new GoogleGenAI({ apiKey: apiKey as string });
   

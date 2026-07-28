@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, Part } from "@google/genai";
-import { VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, ImageDeconstruction, SegmentedObject } from "./types";
+import { VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, ImageDeconstruction, SegmentedObject, DetailStoryboard } from "./types";
 
 const parseB64 = (b64: string) => {
   const matches = b64.match(/^data:([^;]+);base64,(.+)$/);
@@ -10,7 +10,7 @@ const parseB64 = (b64: string) => {
 const getAiClient = (apiKey?: string) => {
   // 优先使用传入的 apiKey，其次检查 localStorage 中的免费 Key，最后检查环境变量
   const localKey = typeof window !== 'undefined' ? localStorage.getItem('user_gemini_api_key') : null;
-  const key = apiKey || localKey || process.env.GEMINI_API_KEY;
+  const key = apiKey || localKey;
   if (!key) throw new Error("未配置 API Key。请点击右上角'配置 API Key'按钮进行设置。");
   return new GoogleGenAI({ apiKey: key });
 };
@@ -227,15 +227,54 @@ export const generateEcomImage = async (params: {
   // 2. 其次检查用户在浏览器本地存储中设置的付费 Key (user_paid_image_api_key)
   // 3. 然后使用传入的 apiKey
   // 4. 最后回退到系统默认的免费 Key
-  const envPaidKey = process.env.VITE_PAID_IMAGE_API_KEY;
   const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
-  const finalApiKey = envPaidKey || localPaidKey || params.apiKey;
+  const finalApiKey = localPaidKey || params.apiKey;
+
+  if (params.model === 'gpt-image-2') {
+    const apiKey = typeof window !== 'undefined' ? localStorage.getItem('user_openai_api_key') : null;
+    const savedQuality = typeof window !== 'undefined' ? localStorage.getItem('user_openai_image_quality') : null;
+    const quality = savedQuality === 'medium' || savedQuality === 'high' ? savedQuality : 'low';
+    const sizeTable: Record<string, Record<string, string>> = {
+      '512px': { '1:1': '1024x1024', '3:4': '1024x1360', '4:3': '1360x1024', '9:16': '1024x1824', '16:9': '1824x1024', '2:5': '1024x2560', '5:2': '2560x1024', '3:2': '1536x1024', '2:3': '1024x1536', 'AUTO': 'auto' },
+      '1K': { '1:1': '1024x1024', '3:4': '1024x1360', '4:3': '1360x1024', '9:16': '1024x1824', '16:9': '1824x1024', '2:5': '1024x2560', '5:2': '2560x1024', '3:2': '1536x1024', '2:3': '1024x1536', 'AUTO': 'auto' },
+      '2K': { '1:1': '2048x2048', '3:4': '1536x2048', '4:3': '2048x1536', '9:16': '1152x2048', '16:9': '2048x1152', '2:5': '1280x3200', '5:2': '3200x1280', '3:2': '2048x1360', '2:3': '1360x2048', 'AUTO': 'auto' },
+      '4K': { '1:1': '2880x2880', '3:4': '2480x3312', '4:3': '3312x2480', '9:16': '2160x3840', '16:9': '3840x2160', '2:5': '1536x3840', '5:2': '3840x1536', '3:2': '3520x2352', '2:3': '2352x3520', 'AUTO': 'auto' }
+    };
+    if (['1:4', '1:8', '4:1', '8:1'].includes(params.aspectRatio)) {
+      throw new Error('GPT Image 2 官方接口最大支持 3:1 比例，请改用 9:16、16:9 或其他模型');
+    }
+    const size = sizeTable[params.imageSize || '1K']?.[params.aspectRatio] || '1024x1024';
+    const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+    const referenceImages = [
+      params.refImageB64,
+      params.productImageB64,
+      ...(params.productImagesB64 || [])
+    ].filter((value): value is string => Boolean(value)).map(value => {
+      const match = value.match(/^data:([^;]+);base64,(.+)$/);
+      return match ? { mimeType: match[1], data: match[2] } : { mimeType: 'image/png', data: value };
+    });
+    const response = await fetch('/api/ai/openai/images', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({ apiKey, prompt: params.prompt, size, quality, images: referenceImages })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || response.statusText);
+    const image = result.images?.[0]?.url;
+    if (!image) throw new Error("OpenAI 未返回图片数据");
+    return image.startsWith('http') || image.startsWith('data:')
+      ? image
+      : `data:image/png;base64,${image}`;
+  }
   
   // 豆包模型特殊处理逻辑
   if (params.model === 'doubao-pro-v1') {
-    const rawDoubaoApiKey = (typeof window !== 'undefined' ? localStorage.getItem('user_doubao_api_key') : null) || process.env.VITE_DOUBAO_API_KEY;
+    const rawDoubaoApiKey = typeof window !== 'undefined' ? localStorage.getItem('user_doubao_api_key') : null;
     const doubaoApiKey = rawDoubaoApiKey?.trim();
-    const doubaoEndpoint = (typeof window !== 'undefined' ? localStorage.getItem('user_doubao_endpoint') : null) || process.env.VITE_DOUBAO_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
+    const doubaoEndpoint = (typeof window !== 'undefined' ? localStorage.getItem('user_doubao_endpoint') : null) || 'https://ark.cn-beijing.volces.com/api/v3/images/generations';
     const doubaoModelId = (typeof window !== 'undefined' ? localStorage.getItem('user_doubao_model_id') : null) || 'doubao-1-5-vision-image-generations';
 
     try {
@@ -325,7 +364,7 @@ export const generateEcomImage = async (params: {
   }
 
   try {
-    console.log(`[generateEcomImage] Calling ${actualModel} with prompt:`, params.prompt);
+    console.log(`[generateEcomImage] Calling ${actualModel}`);
     console.log(`[generateEcomImage] Image parts count: ${parts.length - 1}`);
     
     // For Imagen models, use generateImages
@@ -335,7 +374,7 @@ export const generateEcomImage = async (params: {
         prompt: params.prompt,
         config: {
           numberOfImages: 1,
-          aspectRatio: params.aspectRatio as '1:1' | '3:4' | '4:3' | '9:16' | '16:9' || '1:1',
+          aspectRatio: params.aspectRatio as '1:1' | '3:4' | '4:3' | '9:16' | '16:9' | '2:5' | '5:2' | '3:2' | '2:3' || '1:1',
         }
       });
       const b64 = response.generatedImages?.[0]?.image?.imageBytes;
@@ -348,17 +387,8 @@ export const generateEcomImage = async (params: {
       config: {
         imageConfig,
         maxOutputTokens: 2048,
-        safetySettings: [
-          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
-        ]
       }
     });
-
-    console.log("[generateEcomImage] Response received:", JSON.stringify(response, null, 2));
 
     const candidate = response.candidates?.[0];
     if (candidate?.finishReason === 'MAX_TOKENS') {
@@ -422,7 +452,7 @@ export const regenerateSinglePrompt = async (constitution: VisualConstitution, s
     }
   });
 
-  return response.text || storyboard.prompt; // Fallback to old prompt
+  return response.text || storyboard.visual_description;
 };
 
 export const refinePrompt = async (concept: string, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<string> => {

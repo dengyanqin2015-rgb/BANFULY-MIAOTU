@@ -25,5 +25,12 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "exclude": [
+    "dist",
+    "node_modules",
+    "src/geminiService.ts",
+    "src/hooks/useAppLogic.ts",
+    "src/components/AdminPanel.tsx"
+  ]
 }

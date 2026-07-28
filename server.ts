@@ -7,11 +7,169 @@ import fs from "fs";
 import path from "path";
 import cors from "cors";
 import pg from "pg";
+import { spawn, type ChildProcess } from "child_process";
 
 const app = express();
-const JWT_SECRET = process.env.JWT_SECRET || "banfuly-secret-key-12345";
+const OCR_SERVICE_URL = process.env.OCR_SERVICE_URL || "http://127.0.0.1:8787";
+let ocrProcess: ChildProcess | null = null;
+const startOcrService = () => {
+  if (process.env.DISABLE_LOCAL_OCR === "true" || process.env.OCR_SERVICE_URL) return;
+  const python = path.join(process.cwd(), ".venv-ocr", "Scripts", "python.exe");
+  const script = path.join(process.cwd(), "ocr_server.py");
+  if (!fs.existsSync(python) || !fs.existsSync(script)) {
+    console.warn("[OCR] Server model is not installed; browser OCR fallback remains available.");
+    return;
+  }
+  ocrProcess = spawn(python, [script], {
+    cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+    env: { ...process.env, PADDLE_PDX_MODEL_SOURCE: "BOS", FLAGS_use_mkldnn: "0" },
+  });
+  ocrProcess.stdout?.on("data", data => console.log(String(data).trim()));
+  ocrProcess.stderr?.on("data", data => console.warn(String(data).trim()));
+  ocrProcess.on("exit", code => { console.warn(`[OCR] Service stopped (${code ?? "unknown"})`); ocrProcess = null; });
+};
+startOcrService();
+process.on("exit", () => ocrProcess?.kill());
+app.use('/ocr-data', express.static(path.join(process.cwd(), 'node_modules', '@tesseract.js-data', 'chi_sim', '4.0.0_best_int')));
+app.use('/ocr-data', express.static(path.join(process.cwd(), 'node_modules', '@tesseract.js-data', 'eng', '4.0.0_best_int')));
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? "" : "banfuly-local-dev-secret-change-me");
+if (!JWT_SECRET) {
+  throw new Error("Production requires JWT_SECRET");
+}
+const getInitialAdminPassword = () => {
+  const password = process.env.ADMIN_INITIAL_PASSWORD || (process.env.NODE_ENV === "production" ? "" : "admin123");
+  if (!password) throw new Error("Production requires ADMIN_INITIAL_PASSWORD when creating the first admin");
+  return password;
+};
 const DB_FILE = path.resolve(process.env.DB_PATH || "data/db.json");
+const IMAGE_ANALYSIS_TEMPLATES_FILE = path.resolve(process.env.IMAGE_ANALYSIS_TEMPLATES_PATH || "data/image-analysis-templates.json");
+const REQUEST_LOG_FILE = path.resolve(process.env.REQUEST_LOG_PATH || "data/request-logs.jsonl");
 const DATABASE_URL = process.env.DATABASE_URL;
+
+interface RequestLogEntry {
+  id: string;
+  timestamp: string;
+  method: string;
+  path: string;
+  statusCode: number;
+  durationMs: number;
+  user?: { id?: string; username?: string; role?: string };
+  ip?: string;
+  requestHeaders: Record<string, unknown>;
+  requestBody?: unknown;
+  responseBody?: unknown;
+}
+
+const sensitiveKeyPattern = /password|passcode|secret|token|authorization|cookie|api[-_]?key/i;
+const sanitizeLogValue = (value: unknown, key = "", depth = 0): unknown => {
+  if (sensitiveKeyPattern.test(key)) return "[REDACTED]";
+  if (depth > 6) return "[MAX_DEPTH]";
+  if (typeof value === "string") {
+    if (/^data:[^;]+;base64,/i.test(value)) {
+      const commaIndex = value.indexOf(",");
+      return `[BASE64_IMAGE ${Math.max(0, value.length - commaIndex - 1)} chars]`;
+    }
+    if ((key === "data" || key === "b64_json" || key === "imageBytes") && value.length > 1000) {
+      return `[BASE64_DATA ${value.length} chars]`;
+    }
+    if (value.length > 4000) return `${value.slice(0, 4000)}…[TRUNCATED ${value.length} chars]`;
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 30).map(item => sanitizeLogValue(item, key, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, 80)
+        .map(([childKey, childValue]) => [childKey, sanitizeLogValue(childValue, childKey, depth + 1)])
+    );
+  }
+  return value;
+};
+
+const appendRequestLog = (entry: RequestLogEntry) => {
+  try {
+    fs.mkdirSync(path.dirname(REQUEST_LOG_FILE), { recursive: true });
+    if (fs.existsSync(REQUEST_LOG_FILE) && fs.statSync(REQUEST_LOG_FILE).size > 25 * 1024 * 1024) {
+      fs.copyFileSync(REQUEST_LOG_FILE, `${REQUEST_LOG_FILE}.1`);
+      fs.writeFileSync(REQUEST_LOG_FILE, "", "utf8");
+    }
+    fs.appendFileSync(REQUEST_LOG_FILE, `${JSON.stringify(entry)}\n`, "utf8");
+  } catch (error) {
+    console.error("Request log write failed:", (error as Error).message);
+  }
+};
+
+const readRequestLogs = (limit: number): RequestLogEntry[] => {
+  try {
+    if (!fs.existsSync(REQUEST_LOG_FILE)) return [];
+    const content = fs.readFileSync(REQUEST_LOG_FILE, "utf8");
+    const logs: RequestLogEntry[] = [];
+    content
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-Math.min(Math.max(limit, 1), 2000))
+      .reverse()
+      .forEach(line => {
+        try {
+          logs.push(JSON.parse(line) as RequestLogEntry);
+        } catch (error) {
+          console.warn("Skipping malformed request log line:", (error as Error).message);
+        }
+      });
+    return logs;
+  } catch (error) {
+    console.error("Request log read failed:", (error as Error).message);
+    return [];
+  }
+};
+
+interface ImageAnalysisTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  prompt: string;
+  isDefault: boolean;
+}
+
+const defaultImageAnalysisTemplates: ImageAnalysisTemplate[] = [
+  {
+    id: "visual-replica",
+    name: "高还原复刻",
+    description: "完整提取主体、构图、光影、材质、镜头和文字布局",
+    isDefault: true,
+    prompt: "请把这张图片转换成一段可直接用于文生图的高还原中文提示词。依次准确描述：核心主体及外观特征、主体数量与相对位置、动作姿态、环境背景、构图与留白、拍摄视角和镜头、景深、光源方向与光质、阴影、主辅色及占比、材质纹理、画面风格、清晰度与细节、画面中可见文字及其位置。不要写分析过程，不要使用品牌猜测，不要遗漏影响复刻的视觉信息。"
+  },
+  {
+    id: "ecommerce-product",
+    name: "电商产品图",
+    description: "侧重产品外观、卖点展示、背景与商业光影",
+    isDefault: false,
+    prompt: "请生成一段用于复刻此电商图片的中文文生图提示词。重点描述产品准确外形、材质、颜色、比例、摆放角度、卖点细节、背景场景、道具、商业布光、阴影、构图留白、广告质感、文字区域与版式。只写最终提示词，不虚构品牌或不可见参数。"
+  },
+  {
+    id: "character-scene",
+    name: "人物与场景",
+    description: "侧重人物造型、姿态、镜头、氛围和叙事瞬间",
+    isDefault: false,
+    prompt: "请生成一段用于复刻此人物或角色场景的中文文生图提示词。准确描述人物数量、外观服饰、表情、动作姿态、人物关系、环境、道具、构图、视角、焦段感、景深、光影、色调、材质与整体艺术风格。只输出最终提示词；人物表达应自然、完整、适合大众观看。"
+  }
+];
+
+const readImageAnalysisTemplates = (): ImageAnalysisTemplate[] => {
+  try {
+    if (!fs.existsSync(IMAGE_ANALYSIS_TEMPLATES_FILE)) {
+      fs.mkdirSync(path.dirname(IMAGE_ANALYSIS_TEMPLATES_FILE), { recursive: true });
+      fs.writeFileSync(IMAGE_ANALYSIS_TEMPLATES_FILE, JSON.stringify(defaultImageAnalysisTemplates, null, 2), "utf8");
+      return defaultImageAnalysisTemplates;
+    }
+    const parsed = JSON.parse(fs.readFileSync(IMAGE_ANALYSIS_TEMPLATES_FILE, "utf8"));
+    return Array.isArray(parsed) && parsed.length ? parsed : defaultImageAnalysisTemplates;
+  } catch {
+    return defaultImageAnalysisTemplates;
+  }
+};
 
 console.log("Database configuration:");
 console.log("- File path:", DB_FILE);
@@ -144,7 +302,7 @@ class DatabaseService {
           console.log("Creating default admin user in Postgres...");
           await this.pool.query(
             "INSERT INTO users (id, username, password, role, credits) VALUES ($1, $2, $3, $4, $5)",
-            ["admin-1", "admin", bcrypt.hashSync("admin123", 10), "admin", 9999]
+            ["admin-1", "admin", bcrypt.hashSync(getInitialAdminPassword(), 10), "admin", 9999]
           );
         }
         console.log("PostgreSQL initialized.");
@@ -173,7 +331,7 @@ class DatabaseService {
           {
             id: "admin-1",
             username: "admin",
-            password: bcrypt.hashSync("admin123", 10),
+            password: bcrypt.hashSync(getInitialAdminPassword(), 10),
             role: "admin",
             credits: 9999
           }
@@ -199,7 +357,7 @@ class DatabaseService {
           this.fileData!.users.push({
             id: "admin-1",
             username: "admin",
-            password: bcrypt.hashSync("admin123", 10),
+            password: bcrypt.hashSync(getInitialAdminPassword(), 10),
             role: "admin",
             credits: 9999
           });
@@ -212,7 +370,7 @@ class DatabaseService {
             {
               id: "admin-1",
               username: "admin",
-              password: bcrypt.hashSync("admin123", 10),
+              password: bcrypt.hashSync(getInitialAdminPassword(), 10),
               role: "admin",
               credits: 9999
             }
@@ -424,7 +582,58 @@ const db = new DatabaseService();
 
 app.use(express.json({ limit: '20mb' }));
 app.use(cookieParser());
-app.use(cors());
+const allowedOrigins = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map(origin => origin.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin: process.env.NODE_ENV === "production" ? allowedOrigins : true,
+  credentials: true
+}));
+app.use((req: AuthRequest, res: Response, next: NextFunction) => {
+  if (!req.originalUrl.startsWith("/api/")) return next();
+  // Never log the log-reader itself. Its response contains previous entries,
+  // which would recursively duplicate the entire log file on every refresh.
+  if (req.originalUrl.startsWith("/api/admin/request-logs")) return next();
+
+  const startedAt = Date.now();
+  const requestId = `req-${startedAt}-${Math.random().toString(36).slice(2, 9)}`;
+  let capturedResponse: unknown;
+  const originalJson = res.json.bind(res);
+  res.setHeader("x-banfuly-request-id", requestId);
+  res.json = ((body: unknown) => {
+    capturedResponse = sanitizeLogValue(body);
+    return originalJson(body);
+  }) as Response["json"];
+
+  res.on("finish", () => {
+    appendRequestLog({
+      id: requestId,
+      timestamp: new Date(startedAt).toISOString(),
+      method: req.method,
+      path: req.originalUrl,
+      statusCode: res.statusCode,
+      durationMs: Date.now() - startedAt,
+      user: req.user ? {
+        id: req.user.id,
+        username: req.user.username,
+        role: req.user.role
+      } : undefined,
+      ip: req.ip,
+      requestHeaders: sanitizeLogValue({
+        "content-type": req.get("content-type"),
+        "user-agent": req.get("user-agent"),
+        origin: req.get("origin"),
+        referer: req.get("referer"),
+        authorization: req.get("authorization"),
+        cookie: req.get("cookie")
+      }) as Record<string, unknown>,
+      requestBody: sanitizeLogValue(req.body),
+      responseBody: capturedResponse
+    });
+  });
+  next();
+});
 
 // --- Database Initialization Middleware ---
 // Ensure DB is initialized before handling requests
@@ -475,6 +684,45 @@ const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
   if (!req.user || req.user.role !== "admin") return res.status(403).json({ message: "权限不足" });
   next();
 };
+
+app.get("/api/admin/request-logs", authenticateToken, isAdmin, (req: AuthRequest, res: Response) => {
+  const limit = Number(req.query.limit || 500);
+  const status = String(req.query.status || "").trim();
+  const pathQuery = String(req.query.path || "").trim().toLowerCase();
+  const search = String(req.query.search || "").trim().toLowerCase();
+  let logs = readRequestLogs(Number.isFinite(limit) ? limit : 500);
+  if (status === "success") logs = logs.filter(log => log.statusCode >= 200 && log.statusCode < 400);
+  if (status === "error") logs = logs.filter(log => log.statusCode >= 400);
+  if (pathQuery) logs = logs.filter(log => log.path.toLowerCase().includes(pathQuery));
+  if (search) logs = logs.filter(log => JSON.stringify(log).toLowerCase().includes(search));
+  res.json({ logs, logFile: REQUEST_LOG_FILE, redacted: true });
+});
+
+app.get("/api/image-analysis-templates", authenticateToken, (_req: AuthRequest, res: Response) => {
+  res.json(readImageAnalysisTemplates());
+});
+
+app.put("/api/admin/image-analysis-templates", authenticateToken, isAdmin, (req: AuthRequest, res: Response) => {
+  const templates = req.body?.templates;
+  if (!Array.isArray(templates) || templates.length < 1 || templates.length > 30) {
+    return res.status(400).json({ message: "解析模板数量必须为 1–30 个" });
+  }
+  const normalized: ImageAnalysisTemplate[] = templates.map((item: any, index: number) => ({
+    id: String(item.id || `template-${Date.now()}-${index}`).slice(0, 100),
+    name: String(item.name || "").trim().slice(0, 50),
+    description: String(item.description || "").trim().slice(0, 200),
+    prompt: String(item.prompt || "").trim().slice(0, 10000),
+    isDefault: Boolean(item.isDefault)
+  }));
+  if (normalized.some(item => !item.name || !item.prompt)) {
+    return res.status(400).json({ message: "每个模板都必须填写名称和解析脚本" });
+  }
+  const defaultIndex = normalized.findIndex(item => item.isDefault);
+  normalized.forEach((item, index) => { item.isDefault = index === (defaultIndex >= 0 ? defaultIndex : 0); });
+  fs.mkdirSync(path.dirname(IMAGE_ANALYSIS_TEMPLATES_FILE), { recursive: true });
+  fs.writeFileSync(IMAGE_ANALYSIS_TEMPLATES_FILE, JSON.stringify(normalized, null, 2), "utf8");
+  res.json(normalized);
+});
 
 // --- API Routes (REGISTERED FIRST) ---
 
@@ -550,7 +798,10 @@ app.post("/api/user/deduct-credit", authenticateToken, async (req: AuthRequest, 
   const user = await db.findUserById(req.user?.id || "");
   if (!user) return res.status(404).json({ message: "用户不存在" });
   
-  const amount = req.body.amount || 1;
+  const amount = Number(req.body.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1000) {
+    return res.status(400).json({ message: "Invalid credit amount" });
+  }
   const roundedAmount = Math.round(amount * 10) / 10;
   if (user.credits < roundedAmount) return res.status(400).json({ message: "点数不足" });
   
@@ -573,7 +824,7 @@ app.get("/api/admin/users", authenticateToken, isAdmin, async (req: AuthRequest,
 
 app.post("/api/admin/users/:id/credits", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
   const { credits } = req.body;
-  const { id } = req.params;
+  const id = String(req.params.id);
   const user = await db.findUserById(id);
   if (!user) return res.status(404).json({ message: "用户不存在" });
   
@@ -609,7 +860,7 @@ app.get("/api/admin/generation-logs", authenticateToken, isAdmin, async (req: Au
 
 app.post("/api/admin/users/:id/role", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
   const { role } = req.body;
-  const { id } = req.params;
+  const id = String(req.params.id);
   const user = await db.findUserById(id);
   if (!user) return res.status(404).json({ message: "用户不存在" });
   
@@ -618,7 +869,7 @@ app.post("/api/admin/users/:id/role", authenticateToken, isAdmin, async (req: Au
 });
 
 app.post("/api/admin/users/:id/reset-password", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
+  const id = String(req.params.id);
   const user = await db.findUserById(id);
   if (!user) return res.status(404).json({ message: "用户不存在" });
   
@@ -678,12 +929,445 @@ app.get("/api/admin/history", authenticateToken, isAdmin, async (req: AuthReques
 });
 
 app.delete("/api/user/history/:id", authenticateToken, async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
+  const id = String(req.params.id);
   await db.deleteImageHistory(id, req.user?.id || "", req.user?.role === 'admin');
   res.json({ message: "已删除" });
 });
 
+const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+const extractLinkAiImage = (payload: any): string | undefined => {
+  const item =
+    payload?.data?.[0] ??
+    payload?.images?.[0] ??
+    payload?.result?.data?.[0] ??
+    payload?.result?.images?.[0] ??
+    payload?.output?.[0];
+  return item?.url || item?.b64_json || payload?.result?.url || payload?.url;
+};
+
+interface PromptSafetyChange {
+  before: string;
+  after: string;
+  reason: string;
+}
+
+interface PromptSafetyCompilation {
+  risk_level: "low" | "medium" | "high";
+  risk_reason: string[];
+  original_prompt: string;
+  optimized_prompt: string;
+  changes: PromptSafetyChange[];
+  blocked: boolean;
+}
+
+const compileGptImagePrompt = (originalPrompt: string): PromptSafetyCompilation => {
+  let optimized = originalPrompt.trim();
+  const reasons: string[] = [];
+  const changes: PromptSafetyChange[] = [];
+  let riskLevel: PromptSafetyCompilation["risk_level"] = "low";
+  let blocked = false;
+
+  const hasMinor = /(儿童|孩子|小孩|幼童|少年|少女|未成年|小学生|中学生|校服|child|kid|minor|teen(?:ager)?)/i.test(optimized);
+  const hasSexualizedContent = /(性感|色情|情色|性暗示|挑逗|诱惑姿势|私密部位|裸(?:体|露)|全裸|半裸|透视|丁字裤|sex(?:ual)?|erotic|nude|naked|seductive|lingerie|bikini)/i.test(optimized);
+  if (hasMinor && hasSexualizedContent) {
+    reasons.push("检测到未成年人语义与性化、裸露或成人服饰语义组合");
+    riskLevel = "high";
+    blocked = true;
+  }
+
+  const replace = (pattern: RegExp, after: string, reason: string) => {
+    const match = optimized.match(pattern);
+    if (!match) return;
+    const before = match[0];
+    optimized = optimized.replace(pattern, after);
+    changes.push({ before, after, reason });
+  };
+
+  if (!blocked) {
+    const isSwimwearOrLingerie = /(比基尼|泳装|泳衣|内衣|lingerie|bikini|swimwear)/i.test(optimized);
+    const hasAdultMarker = /(成年|成人|年满18|adult|over 18)/i.test(optimized);
+    if (isSwimwearOrLingerie) {
+      riskLevel = "medium";
+      reasons.push("成人泳装或内衣商品展示需要明确成年身份和商业展示语境");
+      replace(/比基尼美女/g, "成年女性时尚模特展示两件式泳装", "明确成年身份，并把模糊人物描述改为商品展示语境");
+      replace(/美女穿比基尼/g, "成年女性时尚模特穿着两件式泳装", "保持泳装主题，减少性化歧义");
+      replace(/比基尼/g, "两件式泳装", "使用中性的商品品类名称，保持服装款式目标不变");
+      replace(/性感美女/g, "成年女性时尚模特", "去除模糊性化措辞，明确成年身份并保留女性模特主体");
+      replace(/性感帅哥/g, "成年男性时尚模特", "去除模糊性化措辞，明确成年身份并保留男性模特主体");
+      replace(/色情|情色|挑逗(?:性)?|诱惑姿势/g, "自然自信的时尚展示姿态", "改为非露骨的商业时尚表达");
+      replace(/(?:突出|强调|聚焦)(?:胸部|臀部|私密部位|敏感部位)/g, "突出服装版型、面料和剪裁细节", "将镜头重点恢复到商品展示");
+      if (!hasAdultMarker && !/(成年女性|成年男性|成年模特)/.test(optimized)) {
+        const before = optimized;
+        optimized = `成年时尚模特，${optimized}`;
+        changes.push({ before, after: optimized, reason: "补充成年身份，避免年龄歧义" });
+      }
+      optimized += "\n商业电商泳装目录摄影，成年模特自然站立，采用平视全身构图，双臂自然放松，服装面料完整不透，镜头以商品版型、面料、剪裁和穿着效果为重点；不使用挑逗姿势，不使用胸部或臀部特写，不聚焦身体敏感部位。";
+      changes.push({
+        before: "",
+        after: "商业电商服饰展示与非露骨镜头限定",
+        reason: "明确合法商品展示目的，同时保持泳装或内衣主题不变"
+      });
+    }
+
+    if (/(全裸|明确裸露私密部位|性行为|性交|口交|自慰|explicit sex|sexual act)/i.test(optimized)) {
+      reasons.push("核心需求包含无法通过最小修正安全保留的明确裸露或性行为");
+      riskLevel = "high";
+      blocked = true;
+    }
+
+    if (/(血肉模糊|肢解|断肢|内脏|喷血|极度血腥|gore|dismember)/i.test(optimized)) {
+      riskLevel = "medium";
+      reasons.push("包含写实血腥或极端暴力细节");
+      replace(/血肉模糊|肢解|断肢|内脏|喷血|极度血腥|gore|dismember/gi, "非血腥的电影化冲突效果", "保留动作或战争氛围，降低真实残酷细节");
+    }
+
+    const privacyPatterns: Array<[RegExp, string]> = [
+      [/\b1[3-9]\d{9}\b/g, "[已隐藏电话号码]"],
+      [/\b\d{15,18}[0-9Xx]\b/g, "[已隐藏身份证信息]"],
+      [/\b(?:\d[ -]*?){13,19}\b/g, "[已隐藏银行卡信息]"]
+    ];
+    for (const [pattern, replacement] of privacyPatterns) {
+      if (pattern.test(optimized)) {
+        pattern.lastIndex = 0;
+        const before = optimized;
+        optimized = optimized.replace(pattern, replacement);
+        changes.push({ before, after: optimized, reason: "移除可识别的敏感个人信息" });
+        reasons.push("包含敏感个人信息");
+        riskLevel = "medium";
+      }
+    }
+
+    const hasRealPerson = /(总统|总理|国家领导人|政治人物|明星|名人|真实人物|真人|president|prime minister|celebrity)/i.test(optimized);
+    const hasDeceptiveEvent = /(死亡|被捕|犯罪|丑闻|战争现场|新闻现场|真实新闻|突发新闻|dead|arrested|scandal|breaking news)/i.test(optimized);
+    if (hasRealPerson && hasDeceptiveEvent) {
+      riskLevel = "medium";
+      reasons.push("真实人物与可能误导公众的虚假事件组合");
+      optimized += "\n明确呈现为虚构电影概念设计或艺术化场景，不作为真实新闻、历史证据或现实事件记录。";
+      changes.push({ before: "", after: "虚构概念设计与非新闻限定", reason: "降低真实人物虚假事件的误导风险" });
+    }
+  }
+
+  return {
+    risk_level: riskLevel,
+    risk_reason: reasons,
+    original_prompt: originalPrompt,
+    optimized_prompt: optimized,
+    changes,
+    blocked
+  };
+};
+
+app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { prompt, size, quality: rawQuality, images = [], mask: rawMask, apiKey: rawApiKey } = req.body;
+  const diagnosticId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const apiKey = String(rawApiKey || process.env.OPENAI_API_KEY || "").trim().replace(/^Bearer\s+/i, "");
+  const quality = rawQuality === "medium" || rawQuality === "high" ? rawQuality : "low";
+  const outputFormat = quality === "high" ? "png" : "jpeg";
+  const outputCompression = quality === "low" ? "85" : "92";
+  console.log("[ImageDiagnostic]", JSON.stringify({
+    diagnosticId,
+    event: "request_started",
+    provider: "openai",
+    model: "gpt-image-2",
+    size: String(size || "auto"),
+    quality,
+    outputFormat,
+    referenceImageCount: Array.isArray(images) ? images.length : -1,
+    hasApiKey: Boolean(apiKey)
+  }));
+
+  if (!apiKey) return res.status(400).json({ message: "请先配置 OpenAI 官方 API Key" });
+  if (!prompt || typeof prompt !== "string" || prompt.length > 20000) {
+    return res.status(400).json({ message: "提示词为空或过长" });
+  }
+  if (!Array.isArray(images) || images.length > 10) {
+    return res.status(400).json({ message: "参考图格式不正确或数量超过 10 张" });
+  }
+  const safetyCompilation = compileGptImagePrompt(prompt);
+  console.log("[ImageDiagnostic]", JSON.stringify({
+    diagnosticId,
+    event: "prompt_safety_compiled",
+    riskLevel: safetyCompilation.risk_level,
+    riskReasons: safetyCompilation.risk_reason,
+    changeCount: safetyCompilation.changes.length,
+    blocked: safetyCompilation.blocked
+  }));
+  if (safetyCompilation.blocked) {
+    return res.status(400).json({
+      code: "PROMPT_SAFETY_BLOCKED",
+      message: "该需求包含无法在保持原目标的前提下安全修正的内容，请移除未成年人性化、明确性行为或露骨裸露描述后重试。",
+      promptSafety: safetyCompilation,
+      diagnosticId
+    });
+  }
+
+  const requestedSize = String(size || "auto");
+  const sizeMatch = requestedSize.match(/^(\d+)x(\d+)$/);
+  if (requestedSize !== "auto") {
+    if (!sizeMatch) return res.status(400).json({ message: "图片尺寸格式无效" });
+    const width = Number(sizeMatch[1]);
+    const height = Number(sizeMatch[2]);
+    const pixels = width * height;
+    const ratio = Math.max(width, height) / Math.min(width, height);
+    if (width > 3840 || height > 3840 || width % 16 !== 0 || height % 16 !== 0 || ratio > 3 || pixels < 655360 || pixels > 8294400) {
+      return res.status(400).json({ message: "尺寸不符合 GPT Image 2 官方限制：边长不超过 3840、必须为 16 的倍数、比例不超过 3:1，且总像素在官方范围内" });
+    }
+  }
+  const targetSize = requestedSize;
+  const headers = { "Authorization": `Bearer ${apiKey}` };
+  const promptGuidance = [
+    "请准确理解并执行用户意图；如果指令较简短或存在未说明的视觉细节，请采用合理、保守且专业的商业视觉默认值补全，不要反问。",
+    images.length > 0
+      ? "输入图片均为视觉参考。优先保持参考图中的主体身份、产品外观、颜色、比例和关键结构，只修改用户明确要求变化的部分。"
+      : "在不改变用户指定主体、构图、风格、文字和产品信息的前提下完成画面。",
+    "画面应适合全年龄大众观看，角色造型完整得体、姿态自然，场景积极友好；不要自行添加无关人物、品牌、文字或可能引起误解的元素。",
+    "除用户明确要求保留或生成的品牌标识与文字外，画面中不要添加任何额外水印、签名、平台角标、作者署名、二维码、应用图标或装饰性伪文字；保持成品画面干净。"
+  ].join("\n");
+  // Only send the compiled prompt to the provider. Including the untouched
+  // original prompt here would reintroduce the exact wording the compiler
+  // removed and could cause an otherwise-corrected request to be blocked.
+  const enhancedPrompt = `执行指令：\n${safetyCompilation.optimized_prompt}\n\n生成规范：\n${promptGuidance}`;
+  const retryPrompt = safetyCompilation.risk_reason.some(reason => reason.includes("泳装") || reason.includes("内衣"))
+    ? `执行指令：\n${safetyCompilation.optimized_prompt}\n\n安全重绘要求：\n保持用户要求的泳装商品主题与款式不变。改用专业服装目录画面：仅呈现明确成年的时尚模特，平视全身构图，自然站立，双臂放松，表情自然；泳装面料完整不透，画面重点是服装版型、颜色、材质和穿着效果。避免低角度、身体局部特写、夸张曲线、挑逗姿态和任何性暗示。背景简洁明亮，整体适合大众电商平台展示。`
+    : `${enhancedPrompt}\n请重新构思一个同样满足用户要求、表达更清晰稳妥的版本，保持主体和目标不变。`;
+
+  const preparedImages: { mimeType: string; bytes: Uint8Array; extension: string; index: number }[] = [];
+  for (const [index, image] of images.entries()) {
+    const mimeType = String(image?.mimeType || "image/png");
+    const rawData = String(image?.data || "").replace(/^data:[^;]+;base64,/, "");
+    if (!rawData) return res.status(400).json({ message: `第 ${index + 1} 张参考图没有图片数据` });
+    const buffer = Buffer.from(rawData, "base64");
+    if (buffer.length === 0 || buffer.length > 50 * 1024 * 1024) {
+      return res.status(400).json({ message: `第 ${index + 1} 张参考图无效或超过 50MB` });
+    }
+    const extension = mimeType.includes("jpeg") ? "jpg" : mimeType.includes("webp") ? "webp" : "png";
+    preparedImages.push({ mimeType, bytes: new Uint8Array(buffer), extension, index });
+  }
+  let preparedMask: { mimeType: string; bytes: Uint8Array; extension: string } | null = null;
+  if (rawMask?.data) {
+    const mimeType = String(rawMask.mimeType || "image/png");
+    const rawData = String(rawMask.data).replace(/^data:[^;]+;base64,/, "");
+    const buffer = Buffer.from(rawData, "base64");
+    if (buffer.length === 0 || buffer.length > 50 * 1024 * 1024) return res.status(400).json({ message: "编辑遮罩无效或超过 50MB" });
+    preparedMask = { mimeType, bytes: new Uint8Array(buffer), extension: mimeType.includes("webp") ? "webp" : "png" };
+  }
+
+  try {
+    const requestOpenAiImage = async (requestPrompt: string) => {
+      if (preparedImages.length > 0) {
+        const form = new FormData();
+        form.append("model", "gpt-image-2");
+        form.append("prompt", requestPrompt);
+        form.append("size", targetSize);
+        form.append("quality", quality);
+        form.append("moderation", "low");
+        form.append("output_format", outputFormat);
+        if (outputFormat !== "png") form.append("output_compression", outputCompression);
+        for (const image of preparedImages) {
+          form.append(
+            "image[]",
+            new Blob([image.bytes], { type: image.mimeType }),
+            `reference-${image.index + 1}.${image.extension}`
+          );
+        }
+        if (preparedMask) form.append("mask", new Blob([preparedMask.bytes], { type: preparedMask.mimeType }), `mask.${preparedMask.extension}`);
+        return fetch("https://api.openai.com/v1/images/edits", {
+          method: "POST",
+          headers,
+          body: form
+        });
+      }
+
+      return fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-image-2",
+          prompt: requestPrompt,
+          size: targetSize,
+          quality,
+          moderation: "low",
+          output_format: outputFormat,
+          ...(outputFormat !== "png" ? { output_compression: Number(outputCompression) } : {}),
+          n: 1
+        })
+      });
+    };
+
+    let attempt = 1;
+    let openAiResponse = await requestOpenAiImage(enhancedPrompt);
+    let payload: any = await openAiResponse.json().catch(() => ({}));
+    let moderationDetails = payload?.error?.moderation_details || null;
+
+    const logProviderResponse = () => console.log("[ImageDiagnostic]", JSON.stringify({
+        diagnosticId,
+        event: "provider_response",
+        attempt,
+        endpoint: images.length > 0 ? "images/edits" : "images/generations",
+        status: openAiResponse.status,
+        ok: openAiResponse.ok,
+        errorType: payload?.error?.type || null,
+        errorCode: payload?.error?.code || null,
+        providerRequestId: openAiResponse.headers.get("x-request-id"),
+        moderationStage: moderationDetails?.moderation_stage || null,
+        moderationCategories: moderationDetails?.categories || null
+      }));
+    logProviderResponse();
+
+    if (
+      !openAiResponse.ok &&
+      payload?.error?.code === "moderation_blocked" &&
+      moderationDetails?.moderation_stage === "output"
+    ) {
+      attempt = 2;
+      console.log("[ImageDiagnostic]", JSON.stringify({
+        diagnosticId,
+        event: "safety_retry_started",
+        attempt
+      }));
+      openAiResponse = await requestOpenAiImage(retryPrompt);
+      payload = await openAiResponse.json().catch(() => ({}));
+      moderationDetails = payload?.error?.moderation_details || null;
+      logProviderResponse();
+    }
+
+    if (!openAiResponse.ok) {
+      if (payload?.error?.code === "moderation_blocked") {
+        const stage = moderationDetails?.moderation_stage;
+        const message = stage === "input"
+          ? "OpenAI 安全审核未通过：提示词或参考图可能包含敏感内容，请调整后重试。"
+          : stage === "output"
+            ? "本次生成结果未通过 OpenAI 安全审核，请稍微调整提示词后重新生成。"
+            : "本次请求未通过 OpenAI 安全审核，请调整提示词或参考图后重试。";
+        return res.status(400).json({
+          code: "MODERATION_BLOCKED",
+          message,
+          diagnosticId,
+          moderationStage: stage || "unknown",
+          moderationCategories: moderationDetails?.categories || []
+        });
+      }
+      const message = payload?.error?.message || payload?.message || openAiResponse.statusText;
+      return res.status(openAiResponse.status).json({
+        message: `OpenAI 生图失败：${message}`,
+        diagnosticId
+      });
+    }
+
+    const base64 = payload?.data?.[0]?.b64_json;
+    if (!base64) return res.status(502).json({ message: "OpenAI 请求成功，但没有返回图片数据" });
+    const mimeType = outputFormat === "png" ? "image/png" : "image/jpeg";
+    return res.json({
+      images: [{ url: `data:${mimeType};base64,${base64}` }],
+      promptSafety: safetyCompilation
+    });
+  } catch (err: unknown) {
+    const error = err as Error & { cause?: { message?: string; code?: string } };
+    console.error("[ImageDiagnostic]", JSON.stringify({
+      diagnosticId,
+      event: "network_error",
+      message: error.message,
+      cause: error.cause?.message || null,
+      code: error.cause?.code || null
+    }));
+    return res.status(502).json({ message: "无法连接 OpenAI 官方图像服务", error: error.message });
+  }
+});
+
+app.post("/api/ocr/server", authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const response = await fetch(`${OCR_SERVICE_URL}/ocr`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: req.body?.image }),
+      signal: AbortSignal.timeout(90000),
+    });
+    const payload = await response.json();
+    if (!response.ok) return res.status(502).json(payload);
+    res.json(payload);
+  } catch (error) {
+    res.status(503).json({ error: "PP-OCRv5 Server unavailable", detail: (error as Error).message });
+  }
+});
+
+app.post("/api/ai/linkai/generate", authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { prompt, size, apiKey: rawApiKey, baseUrl: rawBaseUrl, model: rawModel } = req.body;
+  const apiKey = String(rawApiKey || process.env.LINKAI_API_KEY || "").trim().replace(/^Bearer\s+/i, "");
+  const model = String(rawModel || process.env.LINKAI_MODEL_ID || "gpt-image-2").trim();
+  const baseUrl = String(rawBaseUrl || process.env.LINKAI_BASE_URL || "https://api.linkai.shop").trim().replace(/\/+$/, "");
+
+  if (!apiKey) return res.status(400).json({ message: "请先配置 LinkAI API Key" });
+  if (!prompt || typeof prompt !== "string" || prompt.length > 20000) {
+    return res.status(400).json({ message: "提示词为空或过长" });
+  }
+  if (model !== "gpt-image-2") {
+    return res.status(400).json({ message: "当前仅允许 gpt-image-2 模型" });
+  }
+
+  let parsedBaseUrl: URL;
+  try {
+    parsedBaseUrl = new URL(baseUrl);
+  } catch {
+    return res.status(400).json({ message: "LinkAI 地址格式无效" });
+  }
+  if (parsedBaseUrl.protocol !== "https:" || parsedBaseUrl.hostname !== "api.linkai.shop") {
+    return res.status(400).json({ message: "当前仅允许 https://api.linkai.shop" });
+  }
+
+  const headers = {
+    "Authorization": `Bearer ${apiKey}`,
+    "Content-Type": "application/json"
+  };
+
+  try {
+    const submitResponse = await fetch(`${baseUrl}/v1/images/generations/async`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model, prompt, size: size || "1024x1024" })
+    });
+    const submitPayload: any = await submitResponse.json().catch(() => ({}));
+    if (!submitResponse.ok) {
+      const message = submitPayload?.error?.message || submitPayload?.message || submitResponse.statusText;
+      return res.status(submitResponse.status).json({ message: `LinkAI 创建任务失败：${message}` });
+    }
+
+    const taskId = submitPayload?.task_id;
+    if (!taskId) return res.status(502).json({ message: "LinkAI 未返回 task_id" });
+
+    const deadline = Date.now() + 300000;
+    while (Date.now() < deadline) {
+      await sleep(3000);
+      const taskResponse = await fetch(`${baseUrl}/v1/images/tasks/${encodeURIComponent(taskId)}`, { headers });
+      const taskPayload: any = await taskResponse.json().catch(() => ({}));
+      if (!taskResponse.ok) {
+        const message = taskPayload?.error?.message || taskPayload?.message || taskResponse.statusText;
+        return res.status(taskResponse.status).json({ message: `LinkAI 查询任务失败：${message}` });
+      }
+
+      const status = String(taskPayload?.status || "").toLowerCase();
+      if (status === "failed") {
+        const message = taskPayload?.error?.message || taskPayload?.message || "生成任务失败";
+        return res.status(502).json({ message: `LinkAI 生成失败：${message}` });
+      }
+      if (status === "completed" || status === "succeeded" || status === "success") {
+        const image = extractLinkAiImage(taskPayload);
+        if (!image) return res.status(502).json({ message: "LinkAI 任务已完成，但未找到图片数据" });
+        return res.json({ images: [{ url: image }] });
+      }
+    }
+
+    return res.status(504).json({ message: "LinkAI 生成超时，请稍后重试" });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("LinkAI request failed:", error.message);
+    return res.status(502).json({ message: "LinkAI 服务请求失败", error: error.message });
+  }
+});
+
 app.post("/api/doubao/generate", authenticateToken, async (req: AuthRequest, res: Response) => {
+  return res.status(410).json({ message: "This provider has been removed" });
+  /*
   const { prompt, model, size, n, apiKey: rawApiKey, endpoint: rawEndpoint } = req.body;
   
   if (!rawApiKey || !model) {
@@ -822,6 +1506,7 @@ app.post("/api/doubao/generate", authenticateToken, async (req: AuthRequest, res
     console.error("Proxy Error:", error);
     res.status(500).json({ message: "代理请求失败", error: error.message });
   }
+  */
 });
 
 app.post("/api/user/history/bulk-delete", authenticateToken, async (req: AuthRequest, res: Response) => {
@@ -850,6 +1535,8 @@ async function startServer() {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
+      configLoader: "runner",
+      cacheDir: ".vite-runtime-cache",
     });
     app.use(vite.middlewares);
   } else {

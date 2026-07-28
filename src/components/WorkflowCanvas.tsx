@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   ReactFlow,
   Controls,
+  ControlButton,
   Background,
   useNodesState,
   useEdgesState,
@@ -21,9 +22,9 @@ import { ImageNode, ImageNodeData } from './ImageNode';
 import { NoteNode, NoteNodeData } from './NoteNode';
 import { GenerationBar, GenerationBarRef } from './GenerationBar';
 import { Assistant, AssistantRef } from './Assistant';
-import { generateImage, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
+import { generateImage, analyzeImageForPrompt, type ImageAnalysisTemplate, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
 import { ImageStorage } from '../lib/storage';
-import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard } from 'lucide-react';
+import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard, LocateFixed } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
@@ -89,13 +90,22 @@ const MODEL_COSTS: Record<ImageModel, ModelCost> = {
       '4K': { cost: 0.24, rmb: 1.7 }
     }
   },
-  'doubao-pro-v1': {
-    name: 'Doubao-Seedream-5.0-lite',
-    label: 'BYTEDANCE',
+  'gpt-image-2': {
+    name: 'GPT IMAGE 2',
+    label: 'LINKAI · HIGH FIDELITY',
     resolutions: {
-      '2K': { cost: 0.067, rmb: 0.3 },
-      '4K': { cost: 0.067, rmb: 0.3 }
+      '1K': { cost: 0, rmb: 1.0 }
     }
+  }
+};
+
+MODEL_COSTS['gpt-image-2'] = {
+  name: 'GPT IMAGE 2',
+  label: 'OPENAI OFFICIAL',
+  resolutions: {
+    '1K': { cost: 0, rmb: 1.0 },
+    '2K': { cost: 0, rmb: 1.0 },
+    '4K': { cost: 0, rmb: 1.0 }
   }
 };
 
@@ -128,6 +138,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const assistantRef = useRef<AssistantRef>(null);
   const rfInstance = useRef<ReactFlowInstance | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const layoutCursorRef = useRef<{ nextX: number; nextY: number; rowStartX: number; column: number } | null>(null);
+  const fitViewClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const nodesRef = useRef<Node[]>([]);
   useEffect(() => {
@@ -361,6 +373,17 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setNodes(hydratedNodes);
     setEdges(project.edges || []);
     setLastNodeId(project.lastNodeId || null);
+    const savedLastNode =
+      hydratedNodes.find(node => node.id === project.lastNodeId) ||
+      [...hydratedNodes].reverse().find(node => (node.data as ImageNodeData).type === "generated");
+    layoutCursorRef.current = savedLastNode
+      ? {
+          nextX: savedLastNode.position.x + 400,
+          nextY: savedLastNode.position.y,
+          rowStartX: savedLastNode.position.x,
+          column: 1,
+        }
+      : null;
     setShowProjectMenu(false);
   };
 
@@ -384,6 +407,9 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       delete newNodeData.onDelete;
       delete newNodeData.onRegenerate;
       delete newNodeData.onAdjust;
+      delete newNodeData.onAnalyze;
+      delete newNodeData.onCrop;
+      delete newNodeData.onTextEdit;
       delete newNodeData.onSendToAssistant;
 
       // Extract imageUrl
@@ -547,6 +573,66 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
   }, []);
 
+  const advanceLayoutCursor = useCallback((position: { x: number; y: number }) => {
+    const cursor = layoutCursorRef.current;
+    const rowStartX = cursor?.rowStartX ?? position.x;
+    const nextColumn = (cursor?.column ?? 0) + 1;
+    layoutCursorRef.current = nextColumn >= 8
+      ? { nextX: rowStartX, nextY: position.y + 450, rowStartX, column: 0 }
+      : { nextX: position.x + 400, nextY: position.y, rowStartX, column: nextColumn };
+  }, []);
+
+  const handleNodeDragStop: NodeMouseHandler = useCallback((_event, node) => {
+    const nodeData = node.data as ImageNodeData;
+    if (nodeData.type !== "generated") return;
+    setLastNodeId(node.id);
+    layoutCursorRef.current = {
+      nextX: node.position.x + 400,
+      nextY: node.position.y,
+      rowStartX: node.position.x,
+      column: 1,
+    };
+  }, []);
+
+  const fitAllNodes = useCallback(() => {
+    rfInstance.current?.fitView({ padding: 0.16, duration: 450 });
+  }, []);
+
+  const focusLatestNode = useCallback(() => {
+    const currentNodes = nodesRef.current;
+    const latest =
+      currentNodes.find(node => node.id === lastNodeId) ||
+      [...currentNodes].reverse().find(node => (node.data as ImageNodeData).type === "generated");
+    if (!latest) {
+      fitAllNodes();
+      return;
+    }
+    rfInstance.current?.fitView({
+      nodes: [latest],
+      padding: 0.35,
+      maxZoom: 1,
+      duration: 450,
+    });
+  }, [fitAllNodes, lastNodeId]);
+
+  const handleOverviewClick = useCallback(() => {
+    if (fitViewClickTimerRef.current) clearTimeout(fitViewClickTimerRef.current);
+    fitViewClickTimerRef.current = setTimeout(() => {
+      fitAllNodes();
+      fitViewClickTimerRef.current = null;
+    }, 220);
+  }, [fitAllNodes]);
+
+  const handleOverviewDoubleClick = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (fitViewClickTimerRef.current) {
+      clearTimeout(fitViewClickTimerRef.current);
+      fitViewClickTimerRef.current = null;
+    }
+    focusLatestNode();
+  }, [focusLatestNode]);
+
   const findSafePosition = (x: number, y: number, currentNodes: Node[]) => {
     const finalX = x;
     let finalY = y;
@@ -565,6 +651,24 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
     return { x: finalX, y: finalY };
   };
+
+  const findSafePositionToRight = useCallback((x: number, y: number, currentNodes: Node[]) => {
+    let finalX = x;
+    const finalY = y;
+    let attempts = 0;
+
+    while (attempts < 30) {
+      const collision = currentNodes.some(node =>
+        Math.abs(node.position.x - finalX) < 350 &&
+        Math.abs(node.position.y - finalY) < 400
+      );
+      if (!collision) break;
+      finalX += 400;
+      attempts++;
+    }
+
+    return { x: finalX, y: finalY };
+  }, []);
 
   const attachNodeActions = useCallback((node: Node): Node => {
     if (node.type === 'noteNode') {
@@ -589,7 +693,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     const nodeData = node.data as ImageNodeData;
     
     // Recovery logic for legacy nodes
-    const originalImages = nodeData.originalImages || nodeData.refImages?.map(img => {
+    const originalImages: NonNullable<ImageNodeData['originalImages']> | undefined = nodeData.originalImages || nodeData.refImages?.map(img => {
       const match = img.match(/^data:([^;]+);base64,(.+)$/);
       return {
         data: match ? match[2] : '',
@@ -616,15 +720,15 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             node.id
           );
         } : undefined,
-        onAdjust: nodeData.type === 'generated' ? () => {
+        onAdjust: nodeData.type === 'generated' ? (mode: 'reference' | 'text' = 'reference') => {
           console.log(`[Workflow] Adjusting node ${node.id}`);
           if (genBarRef.current) {
             genBarRef.current.setParams(
-              nodeData.prompt, 
+              mode === 'text' && nodeData.analysisPrompt ? nodeData.analysisPrompt : nodeData.prompt,
               nodeData.aspectRatio || '1:1', 
               nodeData.imageSize || '1K', 
               nodeData.model || 'gemini-3.1-flash-image-preview', 
-              originalImages?.map(img => ({ 
+              mode === 'text' ? [] : originalImages?.map(img => ({
                 data: img.data, 
                 mimeType: img.mimeType, 
                 preview: `data:${img.mimeType};base64,${img.data}`,
@@ -632,6 +736,115 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               }))
             );
           }
+        } : undefined,
+        onAnalyze: nodeData.imageUrl ? async () => {
+          setNodes(nds => nds.map(n => n.id === node.id ? {
+            ...n,
+            data: { ...n.data, isAnalyzing: true, analysisError: undefined }
+          } : n));
+          try {
+            const token = localStorage.getItem('auth_token');
+            const response = await fetch('/api/image-analysis-templates', {
+              headers: token ? { Authorization: `Bearer ${token}` } : {}
+            });
+            const templates = await response.json() as ImageAnalysisTemplate[];
+            if (!response.ok) throw new Error((templates as unknown as { message?: string }).message || '无法读取解析模板');
+            const template = templates.find(item => item.isDefault) || templates[0];
+            if (!template) throw new Error('后台尚未配置图片解析模板');
+            const analysisPrompt = await analyzeImageForPrompt(nodeData.imageUrl!, template, userApiKey);
+            setNodes(nds => nds.map(n => n.id === node.id ? attachNodeActions({
+              ...n,
+              data: {
+                ...n.data,
+                analysisPrompt,
+                analysisTemplateName: template.name,
+                isAnalyzing: false,
+                analysisError: undefined
+              }
+            }) : n));
+          } catch (error) {
+            setNodes(nds => nds.map(n => n.id === node.id ? {
+              ...n,
+              data: { ...n.data, isAnalyzing: false, analysisError: (error as Error).message }
+            } : n));
+          }
+        } : undefined,
+        onCrop: nodeData.imageUrl ? (croppedImages: string[]) => {
+          const createdAt = Date.now();
+          setNodes(current => {
+            const columns = Math.min(8, Math.max(1, croppedImages.length));
+            const groupStartX = node.position.x + 400;
+            let groupStartY = node.position.y;
+            let attempts = 0;
+            while (attempts < 40) {
+              const groupCollides = croppedImages.some((_, index) => {
+                const x = groupStartX + (index % columns) * 400;
+                const y = groupStartY + Math.floor(index / columns) * 400;
+                return current.some(existing =>
+                  Math.abs(existing.position.x - x) < 350 &&
+                  Math.abs(existing.position.y - y) < 360
+                );
+              });
+              if (!groupCollides) break;
+              groupStartY += 420;
+              attempts++;
+            }
+            const created = croppedImages.map((imageUrl, index) => {
+              const column = index % columns;
+              const row = Math.floor(index / columns);
+              const position = {
+                x: groupStartX + column * 400,
+                y: groupStartY + row * 400
+              };
+              const croppedNode = attachNodeActions({
+                id: `crop-${createdAt}-${index}`,
+                type: 'imageNode',
+                position,
+                data: {
+                  prompt: `裁剪自：${nodeData.prompt || '原始图片'}（切片 ${index + 1}/${croppedImages.length}）`,
+                  imageUrl,
+                  type: 'source',
+                  sourceNodeId: node.id,
+                  resolution: '裁剪切片'
+                }
+              });
+              return croppedNode;
+            });
+            return [...current, ...created];
+          });
+          setEdges(current => [
+            ...current,
+            ...croppedImages.map((_, index) => ({
+              id: `edge-crop-${createdAt}-${index}`,
+              source: node.id,
+              target: `crop-${createdAt}-${index}`
+            }))
+          ]);
+        } : undefined,
+        onTextEdit: nodeData.imageUrl ? (editedImageUrl: string) => {
+          const createdAt = Date.now();
+          const editedNodeId = `text-edit-${createdAt}`;
+          setNodes(current => {
+            const position = findSafePositionToRight(node.position.x + 400, node.position.y, current);
+            const editedNode = attachNodeActions({
+              id: editedNodeId,
+              type: 'imageNode',
+              position,
+              data: {
+                prompt: `文字编辑自：${nodeData.prompt || '原始图片'}`,
+                imageUrl: editedImageUrl,
+                type: 'source',
+                sourceNodeId: node.id,
+                resolution: nodeData.resolution || '文字编辑图片'
+              }
+            });
+            return [...current, editedNode];
+          });
+          setEdges(current => [...current, {
+            id: `edge-text-edit-${createdAt}`,
+            source: node.id,
+            target: editedNodeId
+          }]);
         } : undefined,
         onSendToAssistant: nodeData.imageUrl ? () => {
           if (assistantRef.current) {
@@ -645,7 +858,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         } : undefined
       }
     };
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, userApiKey, findSafePositionToRight]);
 
   const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -883,31 +1096,59 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       };
     });
 
-    // Calculate position for the new node
-    let posX = 100;
-    let posY = 100;
+    // Reference-based generations form a horizontal chain to the right of their sources.
+    // Generations without references continue on the predictable 8-column grid.
+    let posX = layoutCursorRef.current?.nextX ?? 100;
+    let posY = layoutCursorRef.current?.nextY ?? 100;
+    const sourceNodesInCanvas = currentNodes.filter(node => existingSourceIds.includes(node.id));
+    const allSources = [...sourceNodesInCanvas, ...newSourceNodes];
+    const hasReferences = allSources.length > 0;
 
-    if (existingSourceIds.length > 0 || newSourceNodes.length > 0) {
-      // Position to the right of sources
-      const sourceNodesInCanvas = currentNodes.filter(n => existingSourceIds.includes(n.id));
-      const allSources = [...sourceNodesInCanvas, ...newSourceNodes];
-      
-      if (allSources.length > 0) {
-        posX = Math.max(...allSources.map(n => n.position.x)) + 400;
-        posY = allSources.reduce((acc, n) => acc + n.position.y, 0) / allSources.length;
+    if (hasReferences) {
+      const rightmostSource = allSources.reduce((rightmost, node) =>
+        node.position.x > rightmost.position.x ? node : rightmost
+      );
+      posX = rightmostSource.position.x + 400;
+      posY = rightmostSource.position.y;
+      const referenceSafePos = findSafePositionToRight(
+        posX,
+        posY,
+        [...currentNodes, ...newSourceNodes]
+      );
+      posX = referenceSafePos.x;
+      posY = referenceSafePos.y;
+    } else if (!layoutCursorRef.current && currentNodes.length > 0) {
+      const lastGenerated =
+        currentNodes.find(node => node.id === lastNodeId) ||
+        [...currentNodes].reverse().find(node => (node.data as ImageNodeData).type === "generated");
+      if (lastGenerated) {
+        posX = lastGenerated.position.x + 400;
+        posY = lastGenerated.position.y;
+        layoutCursorRef.current = {
+          nextX: posX,
+          nextY: posY,
+          rowStartX: lastGenerated.position.x,
+          column: 1,
+        };
       }
-    } else if (currentNodes.length > 0) {
-      // If no sources, place it below the last node
-      const lastNode = currentNodes[currentNodes.length - 1];
-      posX = lastNode.position.x;
-      posY = lastNode.position.y + 450;
     }
 
-    const safePos = findSafePosition(posX, posY, [...currentNodes, ...newSourceNodes]);
-    posX = safePos.x;
-    posY = safePos.y;
+    if (!hasReferences) {
+      const safePos = findSafePosition(posX, posY, [...currentNodes, ...newSourceNodes]);
+      posX = safePos.x;
+      posY = safePos.y;
+    }
+    if (hasReferences) {
+      layoutCursorRef.current = {
+        nextX: posX,
+        nextY: posY,
+        rowStartX: posX,
+        column: 0,
+      };
+    }
+    advanceLayoutCursor({ x: posX, y: posY });
 
-    const newNode: Node<ImageNodeData> = attachNodeActions({
+    const newNode = attachNodeActions({
       id: newNodeId,
       type: 'imageNode',
       position: { x: posX, y: posY },
@@ -930,7 +1171,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           return `${base} x ${base}`;
         })(),
       },
-    });
+    }) as Node<ImageNodeData>;
 
     setNodes((nds) => [...nds, ...newSourceNodes, newNode]);
 
@@ -1010,7 +1251,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         })
       );
     }
-  }, [user, userApiKey, onDeductCredit, findSafePosition, attachNodeActions]);
+  }, [user, userApiKey, onDeductCredit, findSafePosition, findSafePositionToRight, attachNodeActions, advanceLayoutCursor, lastNodeId]);
 
   const handleGenerateRef = useRef(handleGenerate);
   useEffect(() => {
@@ -1022,17 +1263,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setHasApiKey(true);
   };
 
-  // Hydrate nodes with actions when project changes or handleGenerate is ready
-  useEffect(() => {
-    if (!currentProjectId || !handleGenerateRef.current) return;
-    
-    setNodes(nds => nds.map(node => {
-      // If actions are already attached and onSendToAssistant is correctly set, skip
-      if (node.data.onDelete && (node.data.imageUrl ? !!node.data.onSendToAssistant : true)) return node;
-      return attachNodeActions(node);
-    }));
-  }, [currentProjectId, attachNodeActions]);
-
   return (
     <div className="w-full h-full bg-[#1a1a1a] relative overflow-hidden">
       <ReactFlow
@@ -1042,7 +1272,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeDoubleClick={handleNodeDoubleClick}
-        onInit={(instance) => { rfInstance.current = instance; }}
+        onNodeDragStop={handleNodeDragStop}
+        onInit={(instance) => { rfInstance.current = instance as unknown as ReactFlowInstance; }}
         onPaneContextMenu={onPaneContextMenu}
         nodeTypes={nodeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
@@ -1056,7 +1287,16 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         style={{ width: '100%', height: '100%' }}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.5} color="#333" />
-        <Controls />
+        <Controls showFitView={false}>
+          <ControlButton
+            onClick={handleOverviewClick}
+            onDoubleClick={handleOverviewDoubleClick}
+            title="单击查看全局，双击定位最新图片"
+            aria-label="单击查看全局，双击定位最新图片"
+          >
+            <LocateFixed size={14} />
+          </ControlButton>
+        </Controls>
 
         <AnimatePresence>
           {selectedNodes.length > 1 && (

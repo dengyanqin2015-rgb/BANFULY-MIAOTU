@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
 import { motion, AnimatePresence, useDragControls, PanInfo } from 'motion/react';
-import { MessageSquare, X, Send, Image as ImageIcon, Loader2, Copy, Check, Sparkles, BrainCircuit } from 'lucide-react';
+import { MessageSquare, X, Send, Loader2, Copy, Check, Sparkles, BrainCircuit, FileText } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import * as XLSX from 'xlsx';
 import { cn } from '../lib/utils';
 import { chatWithAssistant } from '../lib/gemini';
 import { User } from '../types';
@@ -21,6 +22,7 @@ interface Message {
   role: 'user' | 'model';
   content: string;
   images?: string[];
+  files?: { name: string; mimeType: string; preview?: string }[];
   timestamp: number;
 }
 
@@ -36,7 +38,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [mode, setMode] = useState<'normal' | 'deep'>('normal');
-  const [pendingImages, setPendingImages] = useState<{ data: string; mimeType: string; preview: string }[]>([]);
+  const [pendingImages, setPendingImages] = useState<{ data: string; mimeType: string; preview: string; name?: string }[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 450, height: 650 });
   const [position, setPosition] = useState({ x: window.innerWidth - 500, y: 100 });
@@ -71,7 +73,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     }
   }));
 
-  const handleSendWithParams = async (text: string, images: { data: string; mimeType: string; preview: string }[]) => {
+  const handleSendWithParams = async (text: string, images: { data: string; mimeType: string; preview: string; name?: string }[]) => {
     if (isLoading) return;
 
     // Calculate cost
@@ -92,7 +94,8 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     const userMessage: Message = {
       role: 'user',
       content: text,
-      images: images.map(img => img.preview),
+      images: images.filter(img => img.mimeType.startsWith('image/')).map(img => img.preview),
+      files: images.map(img => ({ name: img.name || '图片', mimeType: img.mimeType, preview: img.mimeType.startsWith('image/') ? img.preview : undefined })),
       timestamp: Date.now()
     };
 
@@ -174,7 +177,8 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     const userMessage: Message = {
       role: 'user',
       content: input,
-      images: pendingImages.map(img => img.preview),
+      images: pendingImages.filter(img => img.mimeType.startsWith('image/')).map(img => img.preview),
+      files: pendingImages.map(img => ({ name: img.name || '附件', mimeType: img.mimeType, preview: img.mimeType.startsWith('image/') ? img.preview : undefined })),
       timestamp: Date.now()
     };
 
@@ -227,21 +231,71 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     if (!files) return;
 
     Array.from(files).forEach(file => {
+      if (file.size > 50 * 1024 * 1024) {
+        setMessages(prev => [...prev, { role: 'model', content: `文件“${file.name}”超过 50MB，未加入分析。`, timestamp: Date.now() }]);
+        return;
+      }
       const reader = new FileReader();
       reader.onloadend = () => {
-        const base64String = (reader.result as string).split(',')[1];
-        const preview = reader.result as string;
-        setPendingImages(prev => [...prev, { data: base64String, mimeType: file.type, preview }]);
+        try {
+          if (/\.xlsx?$/i.test(file.name)) {
+            const workbook = XLSX.read(reader.result as ArrayBuffer, { type: 'array' });
+            const text = workbook.SheetNames.map(name => `工作表：${name}\n${XLSX.utils.sheet_to_csv(workbook.Sheets[name])}`).join('\n\n');
+            const bytes = new TextEncoder().encode(text);
+            let binary = '';
+            for (let index = 0; index < bytes.length; index += 0x8000) {
+              binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+            }
+            setPendingImages(prev => [...prev, { data: btoa(binary), mimeType: 'text/csv', preview: '', name: file.name }]);
+            return;
+          }
+          const dataUrl = reader.result as string;
+          setPendingImages(prev => [...prev, {
+            data: dataUrl.split(',')[1],
+            mimeType: file.type || 'text/plain',
+            preview: file.type.startsWith('image/') ? dataUrl : '',
+            name: file.name
+          }]);
+        } catch (error) {
+          setMessages(prev => [...prev, { role: 'model', content: `无法解析文件“${file.name}”：${(error as Error).message}`, timestamp: Date.now() }]);
+        }
       };
-      reader.readAsDataURL(file);
+      if (/\.xlsx?$/i.test(file.name)) reader.readAsArrayBuffer(file);
+      else reader.readAsDataURL(file);
     });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleCopy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
+  const handleCopy = async (text: string, id: string, event?: React.MouseEvent) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+    const value = text.trim();
+    if (!value) return;
+    try {
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        throw new Error('Clipboard API unavailable');
+      }
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (!copied) {
+        setMessages(prev => [...prev, { role: 'model', content: '复制失败，请选中提示词后按 Ctrl+C。', timestamp: Date.now() }]);
+        return;
+      }
+    }
     setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+    setTimeout(() => setCopiedId(current => current === id ? null : current), 2000);
   };
 
   const handleResize = (e: React.MouseEvent, direction: string) => {
@@ -449,6 +503,15 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                         ))}
                       </div>
                     )}
+                    {msg.files && msg.files.some(file => !file.preview) && (
+                      <div className="mb-3 flex flex-wrap gap-2">
+                        {msg.files.filter(file => !file.preview).map((file, fileIndex) => (
+                          <div key={fileIndex} className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-[10px] text-gray-300">
+                            <FileText size={13} />{file.name}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div className="markdown-body prose prose-invert prose-sm max-w-none">
                       <ReactMarkdown
                         components={{
@@ -456,15 +519,18 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                             const codeString = String(children).replace(/\n$/, '');
                             
                             if (!inline) {
+                              const isPrompt = className?.includes('language-prompt');
                               return (
                                 <div className="relative group/code my-4">
-                                  <div className="absolute right-2 top-2 opacity-0 group-hover/code:opacity-100 transition-opacity z-10">
+                                  {isPrompt && <div className="border-b border-blue-400/20 bg-blue-500/10 px-3 py-2 text-[10px] font-bold text-blue-300">完整中文生图提示词</div>}
+                                  <div className={cn("absolute right-2 top-2 z-10", isPrompt ? "opacity-100" : "opacity-0 group-hover/code:opacity-100 transition-opacity")}>
                                     <button
-                                      onClick={() => handleCopy(codeString, `code-${idx}`)}
+                                      type="button"
+                                      onClick={(event) => handleCopy(codeString, `code-${idx}-${codeString.slice(0, 12)}`, event)}
                                       className="p-1.5 bg-black/50 hover:bg-black/80 rounded-lg text-white transition-all border border-white/10"
-                                      title="复制内容"
+                                      title={isPrompt ? "复制完整提示词" : "复制内容"}
                                     >
-                                      {copiedId === `code-${idx}` ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+                                      {copiedId === `code-${idx}-${codeString.slice(0, 12)}` ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
                                     </button>
                                   </div>
                                   <code className={cn(className, "block bg-black/40 p-4 rounded-xl border border-white/5 whitespace-pre-wrap break-words")} {...props}>
@@ -484,7 +550,8 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                   {msg.role === 'model' && (
                     <div className="flex items-center gap-2 mt-2">
                       <button
-                        onClick={() => handleCopy(msg.content, `msg-${idx}`)}
+                        type="button"
+                        onClick={(event) => handleCopy(msg.content, `msg-${idx}`, event)}
                         className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500 hover:text-white transition-colors px-2 py-1 hover:bg-[#333] rounded-lg"
                       >
                         {copiedId === `msg-${idx}` ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
@@ -516,8 +583,8 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                     className="flex flex-wrap gap-2 mb-3 overflow-x-auto pb-2"
                   >
                     {pendingImages.map((img, i) => (
-                      <div key={i} className="relative group w-16 h-16 rounded-xl overflow-hidden border border-[#333]">
-                        <img src={img.preview} className="w-full h-full object-cover" alt="pending" />
+                      <div key={i} className="relative group flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-[#333] bg-[#222]">
+                        {img.preview ? <img src={img.preview} className="w-full h-full object-cover" alt="pending" /> : <div className="flex flex-col items-center gap-1 p-1 text-center"><FileText size={18} className="text-blue-400" /><span className="line-clamp-2 text-[8px] text-gray-400">{img.name}</span></div>}
                         <button 
                           onClick={() => setPendingImages(prev => prev.filter((_, idx) => idx !== i))}
                           className="absolute top-1 right-1 p-1 bg-black/60 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
@@ -535,7 +602,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                   type="file"
                   ref={fileInputRef}
                   onChange={handleFileChange}
-                  accept="image/*"
+                  accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.xml,.xlsx,.xls"
                   multiple
                   className="hidden"
                 />
@@ -543,7 +610,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                   onClick={() => fileInputRef.current?.click()}
                   className="p-3 hover:bg-[#333] rounded-xl text-gray-400 hover:text-white transition-colors"
                 >
-                  <ImageIcon size={20} />
+                  <FileText size={20} />
                 </button>
                 
                 <textarea

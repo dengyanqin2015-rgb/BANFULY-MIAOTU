@@ -15,7 +15,8 @@ interface GenerationBarProps {
   onOpenApiKey: () => void;
 }
 
-const ASPECT_RATIOS: AspectRatio[] = ["AUTO", "1:1", "16:9", "9:16", "4:3", "3:4"];
+const GOOGLE_ASPECT_RATIOS: AspectRatio[] = ["AUTO", "1:1", "16:9", "9:16", "21:9", "4:3", "3:4", "5:4", "4:5", "3:2", "2:3", "4:1", "1:4", "8:1", "1:8"];
+const GPT_ASPECT_RATIOS: AspectRatio[] = ["AUTO", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:2", "2:5"];
 
 interface ModelCost {
   name: string;
@@ -52,13 +53,22 @@ const MODEL_COSTS: Record<ImageModel, ModelCost> = {
       '4K': { cost: 0.24, rmb: 1.7 }
     }
   },
-  'doubao-pro-v1': {
-    name: 'Doubao-Seedream-5.0-lite',
-    label: 'BYTEDANCE',
+  'gpt-image-2': {
+    name: 'GPT IMAGE 2',
+    label: 'LINKAI · HIGH FIDELITY',
     resolutions: {
-      '2K': { cost: 0.067, rmb: 0.3 },
-      '4K': { cost: 0.067, rmb: 0.3 }
+      '1K': { cost: 0, rmb: 1.0 }
     }
+  }
+};
+
+MODEL_COSTS['gpt-image-2'] = {
+  name: 'GPT IMAGE 2',
+  label: 'OPENAI OFFICIAL',
+  resolutions: {
+    '1K': { cost: 0, rmb: 1.0 },
+    '2K': { cost: 0, rmb: 1.0 },
+    '4K': { cost: 0, rmb: 1.0 }
   }
 };
 
@@ -69,11 +79,70 @@ const IMAGE_SIZES: { id: ImageSize; label: string }[] = [
   { id: "4K", label: "4K" },
 ];
 
-const MODELS: { id: ImageModel | string; name: string; version: string; desc: string }[] = [
+type GptImageQuality = "low" | "medium" | "high";
+const USD_TO_CNY = 6.78;
+
+const GOOGLE_INPUT_USD_PER_MILLION: Partial<Record<ImageModel, number>> = {
+  "gemini-2.5-flash-image": 0.3,
+  "gemini-3.1-flash-image-preview": 0.5,
+  "gemini-3-pro-image-preview": 2,
+};
+
+const estimateGoogleImagePrice = (
+  modelId: ImageModel,
+  size: ImageSize,
+  promptValue: string,
+  referenceImageCount: number
+) => {
+  const lookupId = size === "512px" ? "0.5K" : size;
+  const modelCfg = MODEL_COSTS[modelId];
+  const outputUsd = modelCfg?.resolutions[lookupId]?.cost
+    ?? Object.values(modelCfg?.resolutions ?? {})[0]?.cost
+    ?? 0;
+  const inputRate = GOOGLE_INPUT_USD_PER_MILLION[modelId] ?? 0;
+  // Google does not return a pre-request exact bill. Use the current prompt plus
+  // the documented 560-token image-input baseline to produce a transparent estimate.
+  const promptTokens = Math.max(1, Math.ceil(promptValue.length / 2));
+  const referenceImageTokens = referenceImageCount * 560;
+  const inputUsd = (promptTokens + referenceImageTokens) * inputRate / 1_000_000;
+  return { usd: outputUsd + inputUsd, cny: (outputUsd + inputUsd) * USD_TO_CNY };
+};
+
+const GPT_QUALITY_OPTIONS: { id: GptImageQuality; label: string; description: string }[] = [
+  { id: "low", label: "快速", description: "预览草图 · 最快" },
+  { id: "medium", label: "标准", description: "质量速度均衡" },
+  { id: "high", label: "精细", description: "最终成品 · 较慢" },
+];
+
+const GPT_SIZE_TABLE: Record<ImageSize, Record<string, string>> = {
+  "512px": { "1:1": "1024x1024", "3:4": "1024x1360", "4:3": "1360x1024", "9:16": "1024x1824", "16:9": "1824x1024", "2:5": "1024x2560", "5:2": "2560x1024", "3:2": "1536x1024", "2:3": "1024x1536", "AUTO": "1024x1024" },
+  "1K": { "1:1": "1024x1024", "3:4": "1024x1360", "4:3": "1360x1024", "9:16": "1024x1824", "16:9": "1824x1024", "2:5": "1024x2560", "5:2": "2560x1024", "3:2": "1536x1024", "2:3": "1024x1536", "AUTO": "1024x1024" },
+  "2K": { "1:1": "2048x2048", "3:4": "1536x2048", "4:3": "2048x1536", "9:16": "1152x2048", "16:9": "2048x1152", "2:5": "1280x3200", "5:2": "3200x1280", "3:2": "2048x1360", "2:3": "1360x2048", "AUTO": "2048x2048" },
+  "4K": { "1:1": "2880x2880", "3:4": "2480x3312", "4:3": "3312x2480", "9:16": "2160x3840", "16:9": "3840x2160", "2:5": "1536x3840", "5:2": "3840x1536", "3:2": "3520x2352", "2:3": "2352x3520", "AUTO": "2880x2880" },
+};
+
+const estimateGptImagePrice = (
+  size: ImageSize,
+  ratio: AspectRatio,
+  quality: GptImageQuality
+) => {
+  const dimensions = GPT_SIZE_TABLE[size]?.[ratio] || GPT_SIZE_TABLE[size]["1:1"];
+  const [width, height] = dimensions.split("x").map(Number);
+  const longEdge = Math.max(width, height);
+  const shortEdge = Math.min(width, height);
+  const qualityAxis = quality === "low" ? 16 : quality === "medium" ? 48 : 96;
+  const shortAxis = Math.max(1, Math.floor(qualityAxis * shortEdge / longEdge));
+  const areaMultiplier = (2_000_000 + width * height) / 4_000_000;
+  const outputTokens = Math.ceil(qualityAxis * shortAxis * areaMultiplier);
+  const usd = outputTokens * 30 / 1_000_000;
+  return { usd, cny: usd * USD_TO_CNY };
+};
+
+const MODELS: { id: ImageModel; name: string; version: string; desc: string }[] = [
   { id: "gemini-2.5-flash-image", name: "FLASH", version: "2.5", desc: "BALANCED" },
   { id: "gemini-3.1-flash-image-preview", name: "FLASH", version: "3.1", desc: "HIGH FIDELITY" },
   { id: "gemini-3-pro-image-preview", name: "PRO", version: "3.0", desc: "CINEMA GRADE" },
-  { id: "doubao-pro-v1", name: "DOUBAO", version: "5.0", desc: "BYTEDANCE" },
+  { id: "gpt-image-2", name: "GPT IMAGE", version: "2", desc: "LINKAI" },
 ];
 
 export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({ onGenerate, hasApiKey, onOpenApiKey }, ref) => {
@@ -81,8 +150,13 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
   const [imageSize, setImageSize] = useState<ImageSize>("1K");
   const [model, setModel] = useState<ImageModel>("gemini-3.1-flash-image-preview");
+  const [gptQuality, setGptQuality] = useState<GptImageQuality>(() => {
+    const saved = localStorage.getItem("user_openai_image_quality");
+    return saved === "medium" || saved === "high" ? saved : "low";
+  });
   const [showOptions, setShowOptions] = useState(false);
   const [images, setImages] = useState<{ data: string; mimeType: string; preview: string; width?: number; height?: number; sourceNodeId?: string }[]>([]);
+  const availableAspectRatios = model === "gpt-image-2" ? GPT_ASPECT_RATIOS : GOOGLE_ASPECT_RATIOS;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -103,6 +177,16 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       }
     }
   }, [model]);
+
+  useEffect(() => {
+    if (!availableAspectRatios.includes(aspectRatio)) {
+      setAspectRatio("1:1");
+    }
+  }, [model, aspectRatio]);
+
+  useEffect(() => {
+    localStorage.setItem("user_openai_image_quality", gptQuality);
+  }, [gptQuality]);
 
   useImperativeHandle(ref, () => ({
     addImage: (data, mimeType, preview, sourceNodeId) => {
@@ -178,9 +262,21 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       { ratio: 4/3, value: "4:3" },
       { ratio: 9/16, value: "9:16" },
       { ratio: 16/9, value: "16:9" },
+      { ratio: 21/9, value: "21:9" },
+      { ratio: 4/5, value: "4:5" },
+      { ratio: 5/4, value: "5:4" },
+      { ratio: 1/4, value: "1:4" },
+      { ratio: 4/1, value: "4:1" },
+      { ratio: 1/8, value: "1:8" },
+      { ratio: 8/1, value: "8:1" },
+      { ratio: 2/5, value: "2:5" },
+      { ratio: 5/2, value: "5:2" },
+      { ratio: 3/2, value: "3:2" },
+      { ratio: 2/3, value: "2:3" },
     ];
     
-    return targets.reduce((prev, curr) => 
+    const compatibleTargets = targets.filter(target => availableAspectRatios.includes(target.value));
+    return compatibleTargets.reduce((prev, curr) =>
       Math.abs(curr.ratio - ratio) < Math.abs(prev.ratio - ratio) ? curr : prev
     ).value;
   };
@@ -193,6 +289,17 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       { ratio: 4/3, value: "4:3" },
       { ratio: 9/16, value: "9:16" },
       { ratio: 16/9, value: "16:9" },
+      { ratio: 21/9, value: "21:9" },
+      { ratio: 4/5, value: "4:5" },
+      { ratio: 5/4, value: "5:4" },
+      { ratio: 1/4, value: "1:4" },
+      { ratio: 4/1, value: "4:1" },
+      { ratio: 1/8, value: "1:8" },
+      { ratio: 8/1, value: "8:1" },
+      { ratio: 2/5, value: "2:5" },
+      { ratio: 5/2, value: "5:2" },
+      { ratio: 3/2, value: "3:2" },
+      { ratio: 2/3, value: "2:3" },
     ];
     
     return targets.reduce((prev, curr) => 
@@ -224,8 +331,8 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
         finalAspectRatio = getClosestAspectRatio(w / h);
       } else {
         // 2. Check for explicit ratio in prompt (e.g., "16:9", "4:3")
-        const ratioMatch = prompt.match(/(1:1|16:9|9:16|4:3|3:4)/);
-        if (ratioMatch) {
+        const ratioMatch = prompt.match(/(1:1|21:9|16:9|9:16|4:3|3:4|4:5|5:4|2:5|5:2|3:2|2:3|1:4|4:1|1:8|8:1)/);
+        if (ratioMatch && availableAspectRatios.includes(ratioMatch[1] as AspectRatio)) {
           finalAspectRatio = ratioMatch[1] as AspectRatio;
         } else {
           // 3. Check for image references in prompt (e.g., "Image 1", "图1")
@@ -267,24 +374,16 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   };
 
   const calculatePrice = (mId: ImageModel, sId: ImageSize) => {
-    const modelCfg = MODEL_COSTS[mId];
-    if (!modelCfg) return "¥0.00";
-    
-    // Map 512px to 0.5K for pricing lookup
-    const lookupId = sId === "512px" ? "0.5K" : sId;
-    
-    const price = modelCfg.resolutions[lookupId]?.rmb;
-    if (price !== undefined) return `¥${price.toFixed(2)}`;
-    
-    // Fallback if resolution not defined for this model
-    const availableRes = Object.values(modelCfg.resolutions);
-    if (availableRes.length > 0) return `¥${availableRes[0].rmb.toFixed(2)}`;
-    
-    return "¥0.00";
+    if (mId === "gpt-image-2") {
+      const estimated = estimateGptImagePrice(sId, aspectRatio, gptQuality);
+      return `¥${estimated.cny.toFixed(2)}`;
+    }
+    const estimated = estimateGoogleImagePrice(mId, sId, prompt, images.length);
+    return `¥${estimated.cny.toFixed(2)}`;
   };
 
   return (
-    <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-3xl px-4 z-50">
+    <div className="absolute bottom-5 left-1/2 -translate-x-1/2 w-full max-w-[660px] px-3 z-50">
       <AnimatePresence>
         {images.length > 0 && (
           <motion.div
@@ -309,7 +408,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
         )}
       </AnimatePresence>
       
-      <div className="bg-[#1a1a1a]/90 backdrop-blur-xl border border-[#333] rounded-2xl p-2 shadow-2xl">
+      <div className="bg-[#1a1a1a]/94 backdrop-blur-xl border border-[#333] rounded-xl p-1.5 shadow-2xl">
         <form onSubmit={handleSubmit} className="flex flex-col">
           <div className="flex items-center gap-2">
             <input
@@ -398,27 +497,27 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: 'auto', opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
-                className="overflow-hidden"
+            className="overflow-hidden"
               >
-                <div className="pt-4 pb-2 border-t border-[#333] mt-2 space-y-6">
+                <div className="pt-2 pb-0.5 border-t border-[#333] mt-1.5 space-y-2.5 max-h-[44vh] overflow-y-auto overscroll-contain pr-1">
                   {/* Engine Selection */}
                   <div>
-                    <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-3 px-1">渲染引擎 / ENGINE</div>
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">渲染引擎 / ENGINE</div>
+                    <div className="grid grid-cols-4 gap-1.5">
                       {MODELS.map((m) => (
                         <button
                           key={m.id}
                           type="button"
                           onClick={() => setModel(m.id)}
                           className={cn(
-                            "flex flex-col items-start p-4 rounded-2xl transition-all text-left relative overflow-hidden",
+                            "flex flex-col items-start px-2.5 py-1.5 rounded-lg transition-all text-left relative overflow-hidden min-h-[56px]",
                             model === m.id 
-                              ? "bg-white text-black shadow-[0_10px_30px_rgba(255,255,255,0.1)] scale-[1.02]" 
+                              ? "bg-white text-black shadow-[0_6px_18px_rgba(255,255,255,0.08)] ring-1 ring-white/70"
                               : "bg-[#222] text-gray-400 hover:bg-[#2a2a2a]"
                           )}
                         >
-                          <div className="text-sm font-black tracking-tight">{m.name} {m.version}</div>
-                          <div className="text-[9px] font-bold opacity-60 mb-3 uppercase tracking-wider">{m.desc}</div>
+                          <div className="text-xs font-black tracking-tight leading-tight">{m.name} {m.version}</div>
+                          <div className="text-[7px] font-bold opacity-60 mb-1 uppercase tracking-wider">{m.desc}</div>
                           <div className={cn(
                             "text-[10px] font-bold",
                             model === m.id ? "text-red-600" : "text-red-500"
@@ -428,10 +527,41 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                     </div>
                   </div>
 
+                  {model === "gpt-image-2" && (
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="text-[9px] font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap px-1">
+                        GPT 精细度
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5 flex-1">
+                        {GPT_QUALITY_OPTIONS.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => setGptQuality(option.id)}
+                            className={cn(
+                              "flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg transition-all text-left min-h-[34px]",
+                              gptQuality === option.id
+                                ? "bg-white text-black ring-1 ring-white/70"
+                                : "bg-[#222] text-gray-400 hover:bg-[#2a2a2a]"
+                            )}
+                        >
+                          <span className="text-[11px] font-black whitespace-nowrap">{option.label}</span>
+                          <span className={cn(
+                            "text-[8px] font-black whitespace-nowrap",
+                            gptQuality === option.id ? "text-red-600" : "text-red-500"
+                          )}>
+                            ¥{estimateGptImagePrice(imageSize, aspectRatio, option.id).cny.toFixed(2)}
+                          </span>
+                        </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Resolution Selection */}
                   <div>
-                    <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-3 px-1">渲染精度 / RESOLUTION</div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">渲染精度 / RESOLUTION</div>
+                    <div className="flex flex-wrap gap-1.5">
                       {IMAGE_SIZES.filter(size => {
                         const lookupId = size.id === "512px" ? "0.5K" : size.id;
                         return !!MODEL_COSTS[model].resolutions[lookupId];
@@ -441,14 +571,14 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                           type="button"
                           onClick={() => setImageSize(size.id)}
                           className={cn(
-                            "flex items-baseline gap-1.5 px-5 py-3 rounded-2xl transition-all",
+                            "flex items-baseline gap-1 px-3 py-1.5 rounded-lg transition-all",
                             imageSize === size.id 
-                              ? "bg-white text-black scale-105" 
+                              ? "bg-white text-black ring-1 ring-white/70"
                               : "bg-[#222] text-gray-400 hover:bg-[#2a2a2a]"
                           )}
                         >
-                          <span className="text-sm font-black">{size.label}</span>
-                          <span className="text-[9px] font-bold opacity-60">{calculatePrice(model, size.id)}</span>
+                          <span className="text-xs font-black">{size.label}</span>
+                          <span className="text-[8px] font-bold opacity-60">{calculatePrice(model, size.id)}</span>
                         </button>
                       ))}
                     </div>
@@ -456,17 +586,17 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
 
                   {/* Aspect Ratio Selection */}
                   <div>
-                    <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-3 px-1">构图比例 / ASPECT RATIO</div>
-                    <div className="flex flex-wrap gap-2">
-                      {ASPECT_RATIOS.map((ratio) => (
+                    <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">构图比例 / ASPECT RATIO</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {availableAspectRatios.map((ratio) => (
                         <button
                           key={ratio}
                           type="button"
                           onClick={() => setAspectRatio(ratio)}
                           className={cn(
-                            "px-6 py-3 rounded-2xl text-sm font-black transition-all",
+                            "px-3 py-1.5 rounded-lg text-xs font-black transition-all",
                             aspectRatio === ratio 
-                              ? "bg-white text-black scale-105" 
+                              ? "bg-white text-black ring-1 ring-white/70"
                               : "bg-[#222] text-gray-400 hover:bg-[#2a2a2a]"
                           )}
                         >

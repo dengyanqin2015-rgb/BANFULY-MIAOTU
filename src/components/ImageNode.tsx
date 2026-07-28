@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position, NodeProps, type Node } from '@xyflow/react';
-import { Download, Trash2, Loader2, Search, RefreshCw, Settings2, FileImage, X, Copy, Check, Sparkles } from 'lucide-react';
+import { Download, Trash2, Loader2, Search, RefreshCw, Settings2, FileImage, X, Copy, Check, Sparkles, Scissors, Type } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
+import { ImageSliceEditor } from './ImageSliceEditor';
+import { ImageTextEditor } from './ImageTextEditor';
 
 export interface ImageNodeData extends Record<string, unknown> {
   imageUrl?: string;
@@ -13,7 +15,10 @@ export interface ImageNodeData extends Record<string, unknown> {
   error?: string;
   onDelete?: () => void;
   onRegenerate?: () => void;
-  onAdjust?: () => void;
+  onAdjust?: (mode?: 'reference' | 'text') => void;
+  onAnalyze?: () => void;
+  onCrop?: (images: string[]) => void;
+  onTextEdit?: (imageUrl: string) => void;
   onSendToAssistant?: () => void;
   refImages?: string[]; // Base64 or URLs of reference images used
   originalImages?: { data: string; mimeType: string; sourceNodeId?: string }[];
@@ -24,6 +29,10 @@ export interface ImageNodeData extends Record<string, unknown> {
   aspectRatio?: AspectRatio;
   imageSize?: ImageSize;
   model?: ImageModel;
+  analysisPrompt?: string;
+  analysisTemplateName?: string;
+  isAnalyzing?: boolean;
+  analysisError?: string;
 }
 
 export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>) => {
@@ -32,6 +41,10 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [isHoveringPrompt, setIsHoveringPrompt] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [analysisCopied, setAnalysisCopied] = useState(false);
+  const [showAdjustChoice, setShowAdjustChoice] = useState(false);
+  const [showSliceEditor, setShowSliceEditor] = useState(false);
+  const [showTextEditor, setShowTextEditor] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const handleCopy = (e: React.MouseEvent) => {
@@ -39,6 +52,14 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
     navigator.clipboard.writeText(data.prompt);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const copyAnalysis = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!data.analysisPrompt) return;
+    navigator.clipboard.writeText(data.analysisPrompt);
+    setAnalysisCopied(true);
+    setTimeout(() => setAnalysisCopied(false), 2000);
   };
 
   useEffect(() => {
@@ -235,6 +256,32 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
               )}
             </AnimatePresence>
           </div>
+          <div className="mt-1.5 rounded-lg border border-[#303030] bg-[#141414] p-2">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="text-[9px] font-bold text-blue-400">
+                复刻关键词{data.analysisTemplateName ? ` · ${data.analysisTemplateName}` : ''}
+              </span>
+              <div className="flex items-center gap-1">
+                {data.analysisPrompt && (
+                  <button onClick={copyAnalysis} className="p-1 text-gray-500 hover:text-white" title="复制复刻关键词">
+                    {analysisCopied ? <Check size={11} className="text-green-500" /> : <Copy size={11} />}
+                  </button>
+                )}
+                <button
+                  onClick={(e) => { e.stopPropagation(); data.onAnalyze?.(); }}
+                  disabled={data.isAnalyzing || !data.imageUrl}
+                  className="nodrag rounded-md bg-blue-600/15 px-2 py-1 text-[9px] font-bold text-blue-400 hover:bg-blue-600/25 disabled:opacity-50"
+                >
+                  {data.isAnalyzing ? '解析中…' : data.analysisPrompt ? '重新解析' : '一键解析'}
+                </button>
+              </div>
+            </div>
+            {data.analysisPrompt ? (
+              <div className="line-clamp-3 break-words text-[10px] leading-relaxed text-gray-400">{data.analysisPrompt}</div>
+            ) : (
+              <div className="text-[9px] text-gray-600">{data.analysisError || '解析图片后生成可直接复刻画面的文生图关键词'}</div>
+            )}
+          </div>
         </div>
       )}
 
@@ -299,7 +346,11 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
               <span>重新生成</span>
             </button>
             <button 
-              onClick={() => { data.onAdjust?.(); setShowMenu(false); }}
+              onClick={() => {
+                setShowMenu(false);
+                if (data.analysisPrompt) setShowAdjustChoice(true);
+                else data.onAdjust?.('reference');
+              }}
               className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition-colors"
             >
               <Settings2 size={16} className="text-blue-400" />
@@ -311,6 +362,22 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
             >
               <Sparkles size={16} className="text-yellow-400" />
               <span>一键发送助理分析</span>
+            </button>
+            <button
+              onClick={() => { setShowMenu(false); setShowSliceEditor(true); }}
+              disabled={!data.imageUrl}
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition-colors disabled:opacity-40"
+            >
+              <Scissors size={16} className="text-emerald-400" />
+              <span>一键裁剪</span>
+            </button>
+            <button
+              onClick={() => { setShowMenu(false); setShowTextEditor(true); }}
+              disabled={!data.imageUrl}
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition-colors disabled:opacity-40"
+            >
+              <Type size={16} className="text-cyan-400" />
+              <span>编辑图片文字</span>
             </button>
             <div className="h-px bg-[#333] my-1.5 mx-2" />
             <div className="px-4 py-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-widest">导出图片 / EXPORT</div>
@@ -338,6 +405,50 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
             </button>
           </motion.div>
         </AnimatePresence>,
+        document.body
+      )}
+
+      {showSliceEditor && data.imageUrl && createPortal(
+        <ImageSliceEditor
+          imageUrl={data.imageUrl}
+          onClose={() => setShowSliceEditor(false)}
+          onConfirm={(images) => {
+            data.onCrop?.(images);
+            setShowSliceEditor(false);
+          }}
+        />,
+        document.body
+      )}
+
+      {showTextEditor && data.imageUrl && createPortal(
+        <ImageTextEditor
+          imageUrl={data.imageUrl}
+          onClose={() => setShowTextEditor(false)}
+          onConfirm={(imageUrl) => {
+            data.onTextEdit?.(imageUrl);
+            setShowTextEditor(false);
+          }}
+        />,
+        document.body
+      )}
+
+      {showAdjustChoice && createPortal(
+        <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/70 p-4" onClick={() => setShowAdjustChoice(false)}>
+          <div className="w-full max-w-md rounded-2xl border border-[#333] bg-[#191919] p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-bold text-white">选择调整生成方式</h3>
+            <p className="mt-1 text-xs text-gray-500">两种方式不会混用，避免参考关系和新关键词相互干扰。</p>
+            <div className="mt-4 grid gap-3">
+              <button onClick={() => { data.onAdjust?.('reference'); setShowAdjustChoice(false); }} className="rounded-xl border border-[#333] p-4 text-left hover:border-blue-500">
+                <div className="text-sm font-bold text-white">沿用原参考图和原关键词</div>
+                <div className="mt-1 text-xs text-gray-500">适合继续微调当前图片，保留之前的引用关系。</div>
+              </button>
+              <button onClick={() => { data.onAdjust?.('text'); setShowAdjustChoice(false); }} className="rounded-xl border border-[#333] p-4 text-left hover:border-red-500">
+                <div className="text-sm font-bold text-white">采用新关键词文生图</div>
+                <div className="mt-1 text-xs text-gray-500">不带参考图，直接使用解析出的复刻关键词重新创作。</div>
+              </button>
+            </div>
+          </div>
+        </div>,
         document.body
       )}
     </div>

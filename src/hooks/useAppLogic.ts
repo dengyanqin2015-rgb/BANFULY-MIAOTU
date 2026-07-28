@@ -23,11 +23,11 @@ export const useAppLogic = () => {
   const [paidImageApiKey, setPaidImageApiKey] = useState<string>(() => {
     return localStorage.getItem('user_paid_image_api_key') || '';
   });
-  const [doubaoApiKey, setDoubaoApiKey] = useState<string>(() => {
-    return localStorage.getItem('user_doubao_api_key') || '';
+  const [linkAiApiKey, setLinkAiApiKey] = useState<string>(() => {
+    return localStorage.getItem('user_linkai_api_key') || '';
   });
-  const [doubaoModelId, setDoubaoModelId] = useState<string>(() => {
-    return localStorage.getItem('user_doubao_model_id') || '';
+  const [linkAiModelId, setLinkAiModelId] = useState<string>(() => {
+    return localStorage.getItem('user_linkai_model_id') || 'gpt-image-2';
   });
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
 
@@ -783,8 +783,8 @@ export const useAppLogic = () => {
     loading,
     userApiKey, setUserApiKey,
     paidImageApiKey, setPaidImageApiKey,
-    doubaoApiKey, setDoubaoApiKey,
-    doubaoModelId, setDoubaoModelId,
+    linkAiApiKey, setLinkAiApiKey,
+    linkAiModelId, setLinkAiModelId,
     showApiKeyModal, setShowApiKeyModal,
     auth, authMode, setAuthMode, username, setUsername, password, setPassword, authError, handleLogin, handleRegister, handleLogout,
     adminUsers, rechargeLogs, generationLogs, adminTab, setAdminTab, adminLoading, updateCredits, updateRole, handleResetPassword, fetchRechargeLogs, fetchGenerationLogs, exportToExcel,

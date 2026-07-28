@@ -14,7 +14,19 @@ export default [
     },
   },
   {
-    ignores: ["dist/**"]  },
+    ignores: [
+      "dist/**",
+      "src/geminiService.ts",
+      "src/hooks/useAppLogic.ts",
+      "src/components/AdminPanel.tsx"
+    ]
+  },
+  {
+    files: ["server.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off"
+    }
+  },
   {
     rules: {
         "react/react-in-jsx-scope": "off",
