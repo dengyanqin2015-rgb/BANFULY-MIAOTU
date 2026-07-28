@@ -155,22 +155,30 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       x: item.box.x * source.naturalWidth, y: item.box.y * source.naturalHeight,
       width: item.box.width * source.naturalWidth, height: item.box.height * source.naturalHeight,
     }));
-    const left = Math.min(...selectedRegions.map(item => item.x));
-    const top = Math.min(...selectedRegions.map(item => item.y));
-    const right = Math.max(...selectedRegions.map(item => item.x + item.width));
-    const bottom = Math.max(...selectedRegions.map(item => item.y + item.height));
-    const unionWidth = right - left; const unionHeight = bottom - top;
-    const padded = {
-      x: Math.max(0, left - unionWidth * 0.1), y: Math.max(0, top - unionHeight * 0.14),
-      width: Math.min(source.naturalWidth, unionWidth * 1.2), height: Math.min(source.naturalHeight, unionHeight * 1.28),
-    };
-    padded.x = Math.min(padded.x, source.naturalWidth - padded.width); padded.y = Math.min(padded.y, source.naturalHeight - padded.height);
+    let padded: Box;
+    if (model === 'gpt-image-2') {
+      // GPT needs the complete composition to understand what must remain
+      // untouched. A full-size image and mask also keep mask coordinates exact.
+      padded = { x: 0, y: 0, width: source.naturalWidth, height: source.naturalHeight };
+    } else {
+      const left = Math.min(...selectedRegions.map(item => item.x));
+      const top = Math.min(...selectedRegions.map(item => item.y));
+      const right = Math.max(...selectedRegions.map(item => item.x + item.width));
+      const bottom = Math.max(...selectedRegions.map(item => item.y + item.height));
+      const unionWidth = right - left; const unionHeight = bottom - top;
+      padded = {
+        x: Math.max(0, left - unionWidth * 0.1), y: Math.max(0, top - unionHeight * 0.14),
+        width: Math.min(source.naturalWidth, unionWidth * 1.2), height: Math.min(source.naturalHeight, unionHeight * 1.28),
+      };
+      padded.x = Math.min(padded.x, source.naturalWidth - padded.width); padded.y = Math.min(padded.y, source.naturalHeight - padded.height);
+      const cropAspect = closestAspect(padded.width, padded.height, model);
+      const centerX = padded.x + padded.width / 2; const centerY = padded.y + padded.height / 2;
+      if (padded.width / padded.height < cropAspect.value) padded.width = Math.min(source.naturalWidth, padded.height * cropAspect.value);
+      else padded.height = Math.min(source.naturalHeight, padded.width / cropAspect.value);
+      padded.x = Math.max(0, Math.min(source.naturalWidth - padded.width, centerX - padded.width / 2));
+      padded.y = Math.max(0, Math.min(source.naturalHeight - padded.height, centerY - padded.height / 2));
+    }
     const aspect = closestAspect(padded.width, padded.height, model);
-    const centerX = padded.x + padded.width / 2; const centerY = padded.y + padded.height / 2;
-    if (padded.width / padded.height < aspect.value) padded.width = Math.min(source.naturalWidth, padded.height * aspect.value);
-    else padded.height = Math.min(source.naturalHeight, padded.width / aspect.value);
-    padded.x = Math.max(0, Math.min(source.naturalWidth - padded.width, centerX - padded.width / 2));
-    padded.y = Math.max(0, Math.min(source.naturalHeight - padded.height, centerY - padded.height / 2));
 
     const crop = document.createElement('canvas'); crop.width = Math.max(1, Math.round(padded.width)); crop.height = Math.max(1, Math.round(padded.height));
     const cropContext = crop.getContext('2d'); if (!cropContext) throw new Error('无法创建文字修改区域');
