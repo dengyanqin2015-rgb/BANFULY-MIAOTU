@@ -7,34 +7,8 @@ import fs from "fs";
 import path from "path";
 import cors from "cors";
 import pg from "pg";
-import { spawn, type ChildProcess } from "child_process";
 
 const app = express();
-const OCR_SERVICE_URL = process.env.OCR_SERVICE_URL || "http://127.0.0.1:8787";
-let ocrProcess: ChildProcess | null = null;
-const startOcrService = () => {
-  if (process.env.DISABLE_LOCAL_OCR === "true" || process.env.OCR_SERVICE_URL) return;
-  const bundledPython = process.platform === "win32"
-    ? path.join(process.cwd(), ".venv-ocr", "Scripts", "python.exe")
-    : path.join(process.cwd(), ".venv-ocr", "bin", "python");
-  const python = process.env.OCR_PYTHON || (fs.existsSync(bundledPython) ? bundledPython : (process.platform === "win32" ? "python" : "python3"));
-  const script = path.join(process.cwd(), "ocr_server.py");
-  if (!fs.existsSync(script)) {
-    console.warn("[OCR] Server model is not installed; browser OCR fallback remains available.");
-    return;
-  }
-  ocrProcess = spawn(python, [script], {
-    cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
-    env: { ...process.env, OMP_NUM_THREADS: "2", OPENBLAS_NUM_THREADS: "2" },
-  });
-  ocrProcess.stdout?.on("data", data => console.log(String(data).trim()));
-  ocrProcess.stderr?.on("data", data => console.warn(String(data).trim()));
-  ocrProcess.on("exit", code => { console.warn(`[OCR] Service stopped (${code ?? "unknown"})`); ocrProcess = null; });
-};
-startOcrService();
-process.on("exit", () => ocrProcess?.kill());
-app.use('/ocr-data', express.static(path.join(process.cwd(), 'node_modules', '@tesseract.js-data', 'chi_sim', '4.0.0_best_int')));
-app.use('/ocr-data', express.static(path.join(process.cwd(), 'node_modules', '@tesseract.js-data', 'eng', '4.0.0_best_int')));
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? "" : "banfuly-local-dev-secret-change-me");
 if (!JWT_SECRET) {
   throw new Error("Production requires JWT_SECRET");
@@ -729,20 +703,8 @@ app.put("/api/admin/image-analysis-templates", authenticateToken, isAdmin, (req:
 
 // --- API Routes (REGISTERED FIRST) ---
 
-app.get("/api/health", async (req, res) => {
-  let ocr = { ready: false, model: null as string | null };
-  try {
-    const response = await fetch(`${OCR_SERVICE_URL}/health`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (response.ok) {
-      const payload = await response.json() as { model?: string };
-      ocr = { ready: true, model: payload.model || "unknown" };
-    }
-  } catch {
-    // Keep the main health endpoint available while reporting OCR separately.
-  }
-  res.json({ status: "ok", dbInitialized, ocr });
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", dbInitialized });
 });
 
 app.get("/api/test", async (req, res) => {
@@ -1287,22 +1249,6 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
       code: error.cause?.code || null
     }));
     return res.status(502).json({ message: "无法连接 OpenAI 官方图像服务", error: error.message });
-  }
-});
-
-app.post("/api/ocr/server", authenticateToken, async (req: Request, res: Response) => {
-  try {
-    const response = await fetch(`${OCR_SERVICE_URL}/ocr`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: req.body?.image }),
-      signal: AbortSignal.timeout(90000),
-    });
-    const payload = await response.json();
-    if (!response.ok) return res.status(502).json(payload);
-    res.json(payload);
-  } catch (error) {
-    res.status(503).json({ error: "PP-OCRv5 Server unavailable", detail: (error as Error).message });
   }
 });
 
