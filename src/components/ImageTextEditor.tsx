@@ -19,6 +19,8 @@ const AI_TEXT_MODELS: { id: ImageModel; label: string; price: number }[] = [
   { id: 'gemini-3-pro-image-preview', label: 'Google Pro 3.0', price: 1.00 },
 ];
 
+const DEFAULT_GPT_GLOBAL_INSTRUCTION = '只修改用户框选区域内的指定文案。整张图片的构图、尺寸、商品、人物、背景、光影、色彩、纹理、装饰、图标及所有未框选文字必须保持与原图完全一致；不得重绘、移动、缩放或美化框选区域以外的任何内容。新文案必须逐字准确，并尽量继承原位置的字体风格、字号、颜色、材质、描边、阴影和排版。';
+
 const loadImage = (url: string) => new Promise<HTMLImageElement>((resolve, reject) => {
   const image = new Image();
   image.crossOrigin = 'anonymous';
@@ -96,6 +98,7 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     const saved = localStorage.getItem('image_text_ai_model') as ImageModel | null;
     return AI_TEXT_MODELS.some(item => item.id === saved) ? saved! : 'gpt-image-2';
   });
+  const [gptGlobalInstruction, setGptGlobalInstruction] = useState(() => localStorage.getItem('gpt_text_edit_global_instruction') || DEFAULT_GPT_GLOBAL_INSTRUCTION);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState('可连续框选多个区域，并分别输入需要生成的文字');
   const [historyIndex, setHistoryIndex] = useState(0);
@@ -193,6 +196,7 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       return `${position}；${operation}；${style}。必须逐字准确显示“${exactText}”。`;
     });
     const prompt = [
+      ...(model === 'gpt-image-2' ? [`全局强制指令：${gptGlobalInstruction.trim() || DEFAULT_GPT_GLOBAL_INSTRUCTION}`] : []),
       `这是一次包含 ${items.length} 个独立区域的批量文字编辑任务。只允许修改遮罩中的这些区域。`,
       ...regionRules,
       '严格按照上述区域编号和坐标对应文字，不得交换、合并、增字、漏字、错字或重复文字。',
@@ -229,6 +233,7 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
   const runBatch = async () => {
     if (!readyRegions.length) { setMessage('请至少框选一个区域并填写文字'); return; }
     setWorking(true); localStorage.setItem('image_text_ai_model', model);
+    if (model === 'gpt-image-2') localStorage.setItem('gpt_text_edit_global_instruction', gptGlobalInstruction.trim() || DEFAULT_GPT_GLOBAL_INSTRUCTION);
     try {
       setMessage(`正在一次性处理 ${readyRegions.length} 个区域…`);
       const result = await editRegions(currentImage, readyRegions); pushHistory(result);
@@ -274,7 +279,7 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
         </div>)}
         {!regions.length && <div className="rounded-xl border border-dashed border-[#444] px-4 py-8 text-center text-xs text-gray-500">点击上方按钮，在图片内连续框选区域</div>}
       </div>
-      <div className="mt-4 space-y-3 rounded-xl border border-[#303030] bg-[#111] p-3"><label className="block text-xs font-bold">AI 模型<select value={model} onChange={event => setModel(event.target.value as ImageModel)} disabled={working} className="mt-2 w-full rounded-lg border border-[#444] bg-[#202020] px-3 py-2 text-xs outline-none">{AI_TEXT_MODELS.map(item => <option key={item.id} value={item.id}>{item.label} · 整个任务约 ¥{item.price.toFixed(2)}</option>)}</select></label><button onClick={() => void runBatch()} disabled={working || !readyRegions.length} className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-3 text-sm font-bold disabled:opacity-40"><Sparkles size={16}/>{working ? 'AI 一次性处理中…' : `一次修改 ${readyRegions.length} 个区域 · 约 ¥${estimatedTotal.toFixed(2)}`}</button><p className="text-xs leading-relaxed text-gray-400">{message}</p><p className="text-[10px] leading-relaxed text-gray-600">最多 5 个区域会合并为一个遮罩，只发送一个生图任务并计费一次；任务失败不扣网站额度。</p></div>
+      <div className="mt-4 space-y-3 rounded-xl border border-[#303030] bg-[#111] p-3"><label className="block text-xs font-bold">AI 模型<select value={model} onChange={event => setModel(event.target.value as ImageModel)} disabled={working} className="mt-2 w-full rounded-lg border border-[#444] bg-[#202020] px-3 py-2 text-xs outline-none">{AI_TEXT_MODELS.map(item => <option key={item.id} value={item.id}>{item.label} · 整个任务约 ¥{item.price.toFixed(2)}</option>)}</select></label>{model === 'gpt-image-2' && <label className="block text-xs font-bold text-violet-200">GPT 全局改字指令<textarea value={gptGlobalInstruction} onChange={event => setGptGlobalInstruction(event.target.value)} disabled={working} rows={5} className="mt-2 w-full resize-y rounded-lg border border-violet-700/60 bg-[#191522] p-2 text-xs font-normal leading-relaxed text-gray-200 outline-none focus:border-violet-400"/><span className="mt-1 block text-[10px] font-normal text-gray-500">默认约束整张图片只变框选文案；可按本次任务自行编辑。</span></label>}<button onClick={() => void runBatch()} disabled={working || !readyRegions.length} className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-3 text-sm font-bold disabled:opacity-40"><Sparkles size={16}/>{working ? 'AI 一次性处理中…' : `一次修改 ${readyRegions.length} 个区域 · 约 ¥${estimatedTotal.toFixed(2)}`}</button><p className="text-xs leading-relaxed text-gray-400">{message}</p><p className="text-[10px] leading-relaxed text-gray-600">最多 5 个区域会合并为一个遮罩，只发送一个生图任务并计费一次；任务失败不扣网站额度。</p></div>
       <div className="mt-4 grid grid-cols-2 gap-2"><button onClick={onClose} disabled={working} className="rounded-lg border border-[#444] px-3 py-2 text-xs font-bold">取消</button><button onClick={() => onConfirm(currentImage)} disabled={working || currentImage === imageUrl} className="flex items-center justify-center gap-2 rounded-lg bg-red-600 px-3 py-2 text-xs font-bold disabled:opacity-40"><Check size={15}/>保存为新图</button></div>
     </aside>
   </div>;
