@@ -54,7 +54,7 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
   const startRef = useRef<{ x: number; y: number } | null>(null);
   const modelOption = AI_TEXT_MODELS.find(item => item.id === model) || AI_TEXT_MODELS[0];
   const readyRegions = regions.filter(item => item.text.trim());
-  const estimatedTotal = readyRegions.length * modelOption.price;
+  const estimatedTotal = readyRegions.length ? modelOption.price : 0;
 
   const updateDraft = (clientX: number, clientY: number) => {
     const stage = stageRef.current?.getBoundingClientRect(); const start = startRef.current;
@@ -76,8 +76,11 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
   const finishRegion = () => {
     startRef.current = null;
     if (draftBox && draftBox.width >= 0.01 && draftBox.height >= 0.01 && selectingMode) {
-      setRegions(current => [...current, { id: `region-${Date.now()}`, box: draftBox, mode: selectingMode, text: '', style: '' }]);
-      setMessage(`已添加区域 ${regions.length + 1}，可以继续框选或填写文字`);
+      if (regions.length >= 5) setMessage('单次任务最多支持 5 个区域');
+      else {
+        setRegions(current => [...current, { id: `region-${Date.now()}`, box: draftBox, mode: selectingMode, text: '', style: '' }]);
+        setMessage(`已添加区域 ${regions.length + 1}，可以继续框选或填写文字`);
+      }
     }
     setDraftBox(null); setSelectingMode(null);
   };
@@ -92,15 +95,21 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
   const undo = () => { if (historyIndex > 0) { const next = historyIndex - 1; setHistoryIndex(next); setCurrentImage(historyRef.current[next]); } };
   const redo = () => { if (historyIndex < historyRef.current.length - 1) { const next = historyIndex + 1; setHistoryIndex(next); setCurrentImage(historyRef.current[next]); } };
 
-  const editOneRegion = async (sourceUrl: string, item: EditRegion) => {
+  const editRegions = async (sourceUrl: string, items: EditRegion[]) => {
     const source = await loadImage(sourceUrl);
-    const selected = {
+    const selectedRegions = items.map(item => ({
+      item,
       x: item.box.x * source.naturalWidth, y: item.box.y * source.naturalHeight,
       width: item.box.width * source.naturalWidth, height: item.box.height * source.naturalHeight,
-    };
+    }));
+    const left = Math.min(...selectedRegions.map(item => item.x));
+    const top = Math.min(...selectedRegions.map(item => item.y));
+    const right = Math.max(...selectedRegions.map(item => item.x + item.width));
+    const bottom = Math.max(...selectedRegions.map(item => item.y + item.height));
+    const unionWidth = right - left; const unionHeight = bottom - top;
     const padded = {
-      x: Math.max(0, selected.x - selected.width * 0.18), y: Math.max(0, selected.y - selected.height * 0.35),
-      width: Math.min(source.naturalWidth, selected.width * 1.36), height: Math.min(source.naturalHeight, selected.height * 1.7),
+      x: Math.max(0, left - unionWidth * 0.1), y: Math.max(0, top - unionHeight * 0.14),
+      width: Math.min(source.naturalWidth, unionWidth * 1.2), height: Math.min(source.naturalHeight, unionHeight * 1.28),
     };
     padded.x = Math.min(padded.x, source.naturalWidth - padded.width); padded.y = Math.min(padded.y, source.naturalHeight - padded.height);
     const aspect = closestAspect(padded.width, padded.height, model);
@@ -117,20 +126,26 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     const maskContext = mask.getContext('2d'); if (!maskContext) throw new Error('无法创建文字修改遮罩');
     maskContext.fillStyle = '#ffffff'; maskContext.fillRect(0, 0, mask.width, mask.height);
     const scaleX = mask.width / padded.width; const scaleY = mask.height / padded.height;
-    const padX = Math.max(3, selected.width * 0.06); const padY = Math.max(3, selected.height * 0.16);
-    maskContext.clearRect((selected.x - padded.x - padX) * scaleX, (selected.y - padded.y - padY) * scaleY, (selected.width + padX * 2) * scaleX, (selected.height + padY * 2) * scaleY);
+    selectedRegions.forEach(selected => {
+      const padX = Math.max(3, selected.width * 0.06); const padY = Math.max(3, selected.height * 0.16);
+      maskContext.clearRect((selected.x - padded.x - padX) * scaleX, (selected.y - padded.y - padY) * scaleY, (selected.width + padX * 2) * scaleX, (selected.height + padY * 2) * scaleY);
+    });
 
-    const exactText = item.text.trim();
-    const operation = item.mode === 'replace'
-      ? `只修改遮罩区域，将其中原有文字替换为“${exactText}”。先自然清除旧文字，再在相同位置生成新文字。`
-      : `只在遮罩标出的空白区域新增文字“${exactText}”，不要删除或覆盖区域外原有内容。`;
-    const styleRule = item.style.trim()
-      ? `严格遵循以下样式要求：${item.style.trim()}`
-      : '未指定样式时，请自动分析整张海报和附近文字，合理匹配字体风格、字号、字重、颜色、间距、对齐、材质、描边、阴影和广告特效。';
+    const regionRules = selectedRegions.map((selected, index) => {
+      const exactText = selected.item.text.trim();
+      const position = `区域${index + 1}位于输入图的左侧${Math.round((selected.x - padded.x) / padded.width * 100)}%、顶部${Math.round((selected.y - padded.y) / padded.height * 100)}%，宽${Math.round(selected.width / padded.width * 100)}%、高${Math.round(selected.height / padded.height * 100)}%`;
+      const operation = selected.item.mode === 'replace'
+        ? `替换其中原有文字为“${exactText}”，自然清除旧字后在相同位置生成新字`
+        : `在该空白区域新增文字“${exactText}”，不要覆盖区域外内容`;
+      const style = selected.item.style.trim()
+        ? `样式要求：${selected.item.style.trim()}`
+        : '样式要求：自动匹配整张海报及附近文字的字体、颜色、字号、间距、材质和广告特效';
+      return `${position}；${operation}；${style}。必须逐字准确显示“${exactText}”。`;
+    });
     const prompt = [
-      operation,
-      `最终画面必须逐字准确显示“${exactText}”，不得增字、漏字、错字或重复文字。`,
-      styleRule,
+      `这是一次包含 ${items.length} 个独立区域的批量文字编辑任务。只允许修改遮罩中的这些区域。`,
+      ...regionRules,
+      '严格按照上述区域编号和坐标对应文字，不得交换、合并、增字、漏字、错字或重复文字。',
       '保持人物、商品、背景、图标以及遮罩外所有内容完全不变。不要新增其他文字、标志或水印。',
     ].join('\n');
     const cropUrl = crop.toDataURL('image/png'); const maskUrl = mask.toDataURL('image/png');
@@ -142,27 +157,38 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     const edited = await loadImage(editedUrl);
     const output = document.createElement('canvas'); output.width = source.naturalWidth; output.height = source.naturalHeight;
     const outputContext = output.getContext('2d'); if (!outputContext) throw new Error('无法合成文字修改结果');
-    outputContext.drawImage(source, 0, 0); outputContext.drawImage(edited, padded.x, padded.y, padded.width, padded.height);
+    outputContext.drawImage(source, 0, 0);
+    // Never trust the model to preserve pixels outside the requested areas.
+    // Composite back only the exact user-selected rectangles, so changes made
+    // by the provider elsewhere in the generated crop are discarded locally.
+    selectedRegions.forEach(selected => {
+      const sourceX = (selected.x - padded.x) / padded.width * edited.naturalWidth;
+      const sourceY = (selected.y - padded.y) / padded.height * edited.naturalHeight;
+      const sourceWidth = selected.width / padded.width * edited.naturalWidth;
+      const sourceHeight = selected.height / padded.height * edited.naturalHeight;
+      outputContext.drawImage(
+        edited,
+        sourceX, sourceY, sourceWidth, sourceHeight,
+        selected.x, selected.y, selected.width, selected.height,
+      );
+    });
     return output.toDataURL('image/png');
   };
 
   const runBatch = async () => {
     if (!readyRegions.length) { setMessage('请至少框选一个区域并填写文字'); return; }
     setWorking(true); localStorage.setItem('image_text_ai_model', model);
-    let result = currentImage; let completed = 0;
     try {
-      for (let index = 0; index < readyRegions.length; index += 1) {
-        setMessage(`正在处理区域 ${regions.indexOf(readyRegions[index]) + 1}（${index + 1}/${readyRegions.length}）…`);
-        result = await editOneRegion(result, readyRegions[index]); completed += 1; pushHistory(result);
-        const token = localStorage.getItem('auth_token');
-        await fetch('/api/user/deduct-credit', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-          body: JSON.stringify({ amount: modelOption.price }),
-        }).catch(() => undefined);
-      }
-      setMessage(`已完成 ${completed} 个区域，可以保存为新图`);
+      setMessage(`正在一次性处理 ${readyRegions.length} 个区域…`);
+      const result = await editRegions(currentImage, readyRegions); pushHistory(result);
+      const token = localStorage.getItem('auth_token');
+      await fetch('/api/user/deduct-credit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ amount: modelOption.price }),
+      }).catch(() => undefined);
+      setMessage(`已通过一个任务完成 ${readyRegions.length} 个区域，只计费一次，可以保存为新图`);
     } catch (error) {
-      setMessage(`已完成 ${completed} 个区域；区域 ${completed + 1} 失败：${error instanceof Error ? error.message : '未知错误'}`);
+      setMessage(`批量修改失败：${error instanceof Error ? error.message : '未知错误'}；本次不扣网站额度`);
     } finally { setWorking(false); }
   };
 
@@ -188,7 +214,7 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       </div>
     </div>
     <aside className="w-[380px] shrink-0 overflow-y-auto border-l border-[#333] bg-[#171717] p-4 text-white">
-      <div className="grid grid-cols-2 gap-2"><button onClick={() => { setSelectingMode('replace'); setMessage('请框选需要替换的原文字'); }} disabled={working} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold ${selectingMode === 'replace' ? 'border-cyan-300 bg-cyan-500/20 text-cyan-200' : 'border-[#444] bg-[#222]'}`}><Type size={15}/>框选改字</button><button onClick={() => { setSelectingMode('add'); setMessage('请框选要新增文字的空白区域'); }} disabled={working} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold ${selectingMode === 'add' ? 'border-emerald-300 bg-emerald-500/20 text-emerald-200' : 'border-[#444] bg-[#222]'}`}><Plus size={15}/>框选新增</button></div>
+      <div className="grid grid-cols-2 gap-2"><button onClick={() => { setSelectingMode('replace'); setMessage('请框选需要替换的原文字'); }} disabled={working || regions.length >= 5} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold disabled:opacity-40 ${selectingMode === 'replace' ? 'border-cyan-300 bg-cyan-500/20 text-cyan-200' : 'border-[#444] bg-[#222]'}`}><Type size={15}/>框选改字</button><button onClick={() => { setSelectingMode('add'); setMessage('请框选要新增文字的空白区域'); }} disabled={working || regions.length >= 5} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold disabled:opacity-40 ${selectingMode === 'add' ? 'border-emerald-300 bg-emerald-500/20 text-emerald-200' : 'border-[#444] bg-[#222]'}`}><Plus size={15}/>框选新增</button></div>
       <div className="mt-3 max-h-[52vh] space-y-3 overflow-y-auto pr-1">
         {regions.map((item, index) => <div key={item.id} className={`rounded-xl border p-3 ${item.mode === 'add' ? 'border-emerald-800/70 bg-emerald-500/5' : 'border-cyan-800/70 bg-cyan-500/5'}`}>
           <div className="mb-2 flex items-center justify-between"><div className="flex items-center gap-2"><span className={`flex h-6 min-w-6 items-center justify-center rounded-full text-xs font-black text-black ${item.mode === 'add' ? 'bg-emerald-300' : 'bg-cyan-300'}`}>{index + 1}</span><select value={item.mode} onChange={event => updateItem(item.id, { mode: event.target.value as EditMode })} disabled={working} className="rounded border border-[#444] bg-[#202020] px-2 py-1 text-xs"><option value="replace">替换原文字</option><option value="add">空白处新增</option></select></div><button onClick={() => removeItem(item.id)} disabled={working} className="rounded p-1.5 text-red-400 hover:bg-red-500/10"><Trash2 size={15}/></button></div>
@@ -197,7 +223,7 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
         </div>)}
         {!regions.length && <div className="rounded-xl border border-dashed border-[#444] px-4 py-8 text-center text-xs text-gray-500">点击上方按钮，在图片内连续框选区域</div>}
       </div>
-      <div className="mt-4 space-y-3 rounded-xl border border-[#303030] bg-[#111] p-3"><label className="block text-xs font-bold">AI 模型<select value={model} onChange={event => setModel(event.target.value as ImageModel)} disabled={working} className="mt-2 w-full rounded-lg border border-[#444] bg-[#202020] px-3 py-2 text-xs outline-none">{AI_TEXT_MODELS.map(item => <option key={item.id} value={item.id}>{item.label} · 单区域约 ¥{item.price.toFixed(2)}</option>)}</select></label><button onClick={() => void runBatch()} disabled={working || !readyRegions.length} className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-3 text-sm font-bold disabled:opacity-40"><Sparkles size={16}/>{working ? 'AI 批量处理中…' : `批量修改 ${readyRegions.length} 个区域 · 约 ¥${estimatedTotal.toFixed(2)}`}</button><p className="text-xs leading-relaxed text-gray-400">{message}</p><p className="text-[10px] leading-relaxed text-gray-600">系统按编号依次处理，避免文字对应错位。仅成功区域计费；失败时保留已完成结果。</p></div>
+      <div className="mt-4 space-y-3 rounded-xl border border-[#303030] bg-[#111] p-3"><label className="block text-xs font-bold">AI 模型<select value={model} onChange={event => setModel(event.target.value as ImageModel)} disabled={working} className="mt-2 w-full rounded-lg border border-[#444] bg-[#202020] px-3 py-2 text-xs outline-none">{AI_TEXT_MODELS.map(item => <option key={item.id} value={item.id}>{item.label} · 整个任务约 ¥{item.price.toFixed(2)}</option>)}</select></label><button onClick={() => void runBatch()} disabled={working || !readyRegions.length} className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-3 text-sm font-bold disabled:opacity-40"><Sparkles size={16}/>{working ? 'AI 一次性处理中…' : `一次修改 ${readyRegions.length} 个区域 · 约 ¥${estimatedTotal.toFixed(2)}`}</button><p className="text-xs leading-relaxed text-gray-400">{message}</p><p className="text-[10px] leading-relaxed text-gray-600">最多 5 个区域会合并为一个遮罩，只发送一个生图任务并计费一次；任务失败不扣网站额度。</p></div>
       <div className="mt-4 grid grid-cols-2 gap-2"><button onClick={onClose} disabled={working} className="rounded-lg border border-[#444] px-3 py-2 text-xs font-bold">取消</button><button onClick={() => onConfirm(currentImage)} disabled={working || currentImage === imageUrl} className="flex items-center justify-center gap-2 rounded-lg bg-red-600 px-3 py-2 text-xs font-bold disabled:opacity-40"><Check size={15}/>保存为新图</button></div>
     </aside>
   </div>;
