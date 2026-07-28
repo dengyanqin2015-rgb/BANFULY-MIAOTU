@@ -14,15 +14,18 @@ const OCR_SERVICE_URL = process.env.OCR_SERVICE_URL || "http://127.0.0.1:8787";
 let ocrProcess: ChildProcess | null = null;
 const startOcrService = () => {
   if (process.env.DISABLE_LOCAL_OCR === "true" || process.env.OCR_SERVICE_URL) return;
-  const python = path.join(process.cwd(), ".venv-ocr", "Scripts", "python.exe");
+  const bundledPython = process.platform === "win32"
+    ? path.join(process.cwd(), ".venv-ocr", "Scripts", "python.exe")
+    : path.join(process.cwd(), ".venv-ocr", "bin", "python");
+  const python = process.env.OCR_PYTHON || (fs.existsSync(bundledPython) ? bundledPython : (process.platform === "win32" ? "python" : "python3"));
   const script = path.join(process.cwd(), "ocr_server.py");
-  if (!fs.existsSync(python) || !fs.existsSync(script)) {
+  if (!fs.existsSync(script)) {
     console.warn("[OCR] Server model is not installed; browser OCR fallback remains available.");
     return;
   }
   ocrProcess = spawn(python, [script], {
     cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
-    env: { ...process.env, PADDLE_PDX_MODEL_SOURCE: "BOS", FLAGS_use_mkldnn: "0" },
+    env: { ...process.env, OMP_NUM_THREADS: "2", OPENBLAS_NUM_THREADS: "2" },
   });
   ocrProcess.stdout?.on("data", data => console.log(String(data).trim()));
   ocrProcess.stderr?.on("data", data => console.warn(String(data).trim()));
@@ -726,8 +729,20 @@ app.put("/api/admin/image-analysis-templates", authenticateToken, isAdmin, (req:
 
 // --- API Routes (REGISTERED FIRST) ---
 
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", dbInitialized });
+app.get("/api/health", async (req, res) => {
+  let ocr = { ready: false, model: null as string | null };
+  try {
+    const response = await fetch(`${OCR_SERVICE_URL}/health`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (response.ok) {
+      const payload = await response.json() as { model?: string };
+      ocr = { ready: true, model: payload.model || "unknown" };
+    }
+  } catch {
+    // Keep the main health endpoint available while reporting OCR separately.
+  }
+  res.json({ status: "ok", dbInitialized, ocr });
 });
 
 app.get("/api/test", async (req, res) => {
