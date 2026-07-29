@@ -132,6 +132,13 @@ const App: React.FC = () => {
   // 管理后台分页状态
   const [adminPage, setAdminPage] = useState<number>(1);
   const [adminPageSize, setAdminPageSize] = useState<number>(20);
+  const [adminRechargeTotal, setAdminRechargeTotal] = useState(0);
+  const [adminGenerationTotal, setAdminGenerationTotal] = useState(0);
+  const [userRechargePage, setUserRechargePage] = useState(1);
+  const [userGenerationPage, setUserGenerationPage] = useState(1);
+  const [userRechargeTotal, setUserRechargeTotal] = useState(0);
+  const [userGenerationTotal, setUserGenerationTotal] = useState(0);
+  const profilePageSize = 20;
 
   // 充值流水和生图统计走势图
   const rechargeTrendData = React.useMemo(() => {
@@ -242,34 +249,20 @@ const App: React.FC = () => {
 
   // 缓存筛选和分页后的列表
   const filteredRechargeLogs = React.useMemo(() => {
-    return rechargeLogs.filter(log => {
-      const date = new Date(Number(log.timestamp));
-      return (filterUser === 'all' || log.username === filterUser) &&
-             (!filterYear || date.getFullYear().toString() === filterYear) &&
-             (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-             (!filterDay || date.getDate().toString() === filterDay);
-    });
-  }, [rechargeLogs, filterUser, filterYear, filterMonth, filterDay]);
+    return rechargeLogs;
+  }, [rechargeLogs]);
 
   const paginatedRechargeLogs = React.useMemo(() => {
-    const startIndex = (adminPage - 1) * adminPageSize;
-    return filteredRechargeLogs.slice(startIndex, startIndex + adminPageSize);
-  }, [filteredRechargeLogs, adminPage, adminPageSize]);
+    return filteredRechargeLogs;
+  }, [filteredRechargeLogs]);
 
   const filteredGenerationLogs = React.useMemo(() => {
-    return generationLogs.filter(log => {
-      const date = new Date(Number(log.timestamp));
-      return (filterUser === 'all' || log.userId === filterUser) &&
-             (!filterYear || date.getFullYear().toString() === filterYear) &&
-             (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-             (!filterDay || date.getDate().toString() === filterDay);
-    });
-  }, [generationLogs, filterUser, filterYear, filterMonth, filterDay]);
+    return generationLogs;
+  }, [generationLogs]);
 
   const paginatedGenerationLogs = React.useMemo(() => {
-    const startIndex = (adminPage - 1) * adminPageSize;
-    return filteredGenerationLogs.slice(startIndex, startIndex + adminPageSize);
-  }, [filteredGenerationLogs, adminPage, adminPageSize]);
+    return filteredGenerationLogs;
+  }, [filteredGenerationLogs]);
 
   const exportToExcel = (data: Record<string, string | number | boolean | null>[], fileName: string) => {
     const ws = XLSX.utils.json_to_sheet(data);
@@ -557,13 +550,32 @@ const App: React.FC = () => {
     }
   };
 
+  const buildAdminLogQuery = (kind: 'recharge' | 'generation') => {
+    const params = new URLSearchParams({ page: String(adminPage), pageSize: String(adminPageSize) });
+    if (filterUser !== 'all') params.set(kind === 'recharge' ? 'username' : 'userId', filterUser);
+    if (filterYear) {
+      const year = Number(filterYear);
+      const month = filterMonth ? Number(filterMonth) - 1 : 0;
+      const day = filterDay ? Number(filterDay) : 1;
+      const from = new Date(year, month, day).getTime();
+      let to: number;
+      if (filterDay) to = new Date(year, month, day + 1).getTime();
+      else if (filterMonth) to = new Date(year, month + 1, 1).getTime();
+      else to = new Date(year + 1, 0, 1).getTime();
+      params.set('from', String(from));
+      params.set('to', String(to));
+    }
+    return params;
+  };
+
   const fetchRechargeLogs = async () => {
     setAdminLoading(true);
     try {
-      const res = await fetch('/api/admin/recharge-logs');
+      const res = await fetch(`/api/admin/recharge-logs?${buildAdminLogQuery('recharge')}`);
       if (res.ok) {
-        const logs = await res.json();
-        setRechargeLogs(logs);
+        const data = await res.json();
+        setRechargeLogs(data.items || []);
+        setAdminRechargeTotal(Number(data.total || 0));
       }
     } catch (err) {
       console.error(err);
@@ -575,10 +587,11 @@ const App: React.FC = () => {
   const fetchGenerationLogs = async () => {
     setAdminLoading(true);
     try {
-      const res = await fetch('/api/admin/generation-logs');
+      const res = await fetch(`/api/admin/generation-logs?${buildAdminLogQuery('generation')}`);
       if (res.ok) {
-        const logs = await res.json();
-        setGenerationLogs(logs);
+        const data = await res.json();
+        setGenerationLogs(data.items || []);
+        setAdminGenerationTotal(Number(data.total || 0));
       }
     } catch (err) {
       console.error(err);
@@ -586,6 +599,12 @@ const App: React.FC = () => {
       setAdminLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (step !== AppStep.ADMIN_PANEL) return;
+    if (adminTab === 'recharge') void fetchRechargeLogs();
+    if (adminTab === 'stats') void fetchGenerationLogs();
+  }, [step, adminTab, adminPage, adminPageSize, filterUser, filterYear, filterMonth, filterDay]);
 
   const updateCredits = async (userId: string, credits: number) => {
     try {
@@ -1318,18 +1337,42 @@ ${p.prompt}
   const fetchUserLogs = async () => {
     setProfileLoading(true);
     try {
+      const generationParams = new URLSearchParams({ page: String(userGenerationPage), pageSize: String(profilePageSize) });
+      if (filterYear) {
+        const year = Number(filterYear);
+        const month = filterMonth ? Number(filterMonth) - 1 : 0;
+        const day = filterDay ? Number(filterDay) : 1;
+        generationParams.set('from', String(new Date(year, month, day).getTime()));
+        generationParams.set('to', String(
+          filterDay ? new Date(year, month, day + 1).getTime() :
+          filterMonth ? new Date(year, month + 1, 1).getTime() :
+          new Date(year + 1, 0, 1).getTime()
+        ));
+      }
       const [rechargeRes, genRes] = await Promise.all([
-        fetch('/api/user/recharge-logs'),
-        fetch('/api/user/generation-logs')
+        fetch(`/api/user/recharge-logs?page=${userRechargePage}&pageSize=${profilePageSize}`),
+        fetch(`/api/user/generation-logs?${generationParams}`)
       ]);
-      if (rechargeRes.ok) setUserRechargeLogs(await rechargeRes.json());
-      if (genRes.ok) setUserGenLogs(await genRes.json());
+      if (rechargeRes.ok) {
+        const data = await rechargeRes.json();
+        setUserRechargeLogs(data.items || []);
+        setUserRechargeTotal(Number(data.total || 0));
+      }
+      if (genRes.ok) {
+        const data = await genRes.json();
+        setUserGenLogs(data.items || []);
+        setUserGenerationTotal(Number(data.total || 0));
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setProfileLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (step === AppStep.PROFILE && profileTab !== 'password') void fetchUserLogs();
+  }, [step, profileTab, userRechargePage, userGenerationPage, filterYear, filterMonth, filterDay]);
 
   const activeGenCard = finalPrompts.find(p => p.id === activeGenCardId);
 
@@ -2927,6 +2970,13 @@ ${p.prompt}
                         ))}
                       </tbody>
                     </table>
+                    <div className="flex items-center justify-between border-t border-black/5 px-4 py-4 text-xs font-bold text-[#86868b]">
+                      <span>共 {userRechargeTotal} 条，第 {userRechargePage} / {Math.ceil(userRechargeTotal / profilePageSize) || 1} 页</span>
+                      <div className="flex gap-2">
+                        <button disabled={userRechargePage === 1} onClick={() => setUserRechargePage(page => Math.max(1, page - 1))} className="rounded-lg border border-black/10 px-3 py-1.5 disabled:opacity-30">上一页</button>
+                        <button disabled={userRechargePage >= Math.ceil(userRechargeTotal / profilePageSize)} onClick={() => setUserRechargePage(page => page + 1)} className="rounded-lg border border-black/10 px-3 py-1.5 disabled:opacity-30">下一页</button>
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -2935,21 +2985,21 @@ ${p.prompt}
                     <div className="flex flex-wrap items-center gap-4 bg-[#F5F5F7] p-6 rounded-2xl border border-black/5">
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">年份</span>
-                        <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterYear} onChange={(e) => { setFilterYear(e.target.value); setUserGenerationPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {[2024, 2025, 2026].map(y => <option key={y} value={y}>{y}年</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">月份</span>
-                        <select value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterMonth} onChange={(e) => { setFilterMonth(e.target.value); setUserGenerationPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {Array.from({length: 12}, (_, i) => i + 1).map(m => <option key={m} value={m}>{m}月</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">日期</span>
-                        <select value={filterDay} onChange={(e) => setFilterDay(e.target.value)} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterDay} onChange={(e) => { setFilterDay(e.target.value); setUserGenerationPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {Array.from({length: 31}, (_, i) => i + 1).map(d => <option key={d} value={d}>{d}日</option>)}
                         </select>
@@ -2958,12 +3008,7 @@ ${p.prompt}
                         <div className="text-right">
                           <span className="text-[10px] font-black opacity-40 block uppercase">筛选后总计</span>
                           <span className="text-2xl font-black text-[#0071e3]">
-                            {userGenLogs.filter(log => {
-                              const date = new Date(log.timestamp);
-                              return (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                     (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                     (!filterDay || date.getDate().toString() === filterDay);
-                            }).length}
+                            {userGenerationTotal}
                           </span>
                         </div>
                         <button 
@@ -2992,19 +3037,9 @@ ${p.prompt}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-black/5">
-                          {userGenLogs.filter(log => {
-                            const date = new Date(log.timestamp);
-                            return (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                   (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                   (!filterDay || date.getDate().toString() === filterDay);
-                          }).length === 0 ? (
+                          {userGenLogs.length === 0 ? (
                             <tr><td colSpan={2} className="px-8 py-10 text-center text-[#86868b] font-bold">暂无符合条件的生图记录</td></tr>
-                          ) : userGenLogs.filter(log => {
-                            const date = new Date(log.timestamp);
-                            return (!filterYear || date.getFullYear().toString() === filterYear) &&
-                                   (!filterMonth || (date.getMonth() + 1).toString() === filterMonth) &&
-                                   (!filterDay || date.getDate().toString() === filterDay);
-                          }).map(log => (
+                          ) : userGenLogs.map(log => (
                             <tr key={log.id} className="hover:bg-[#F5F5F7]/30 transition-all">
                               <td className="px-8 py-6 text-[12px] text-[#86868b] font-medium">
                                 {new Date(log.timestamp).toLocaleString()}
@@ -3018,6 +3053,13 @@ ${p.prompt}
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                    <div className="flex items-center justify-between border-t border-black/5 px-4 py-4 text-xs font-bold text-[#86868b]">
+                      <span>共 {userGenerationTotal} 条，第 {userGenerationPage} / {Math.ceil(userGenerationTotal / profilePageSize) || 1} 页</span>
+                      <div className="flex gap-2">
+                        <button disabled={userGenerationPage === 1} onClick={() => setUserGenerationPage(page => Math.max(1, page - 1))} className="rounded-lg border border-black/10 px-3 py-1.5 disabled:opacity-30">上一页</button>
+                        <button disabled={userGenerationPage >= Math.ceil(userGenerationTotal / profilePageSize)} onClick={() => setUserGenerationPage(page => page + 1)} className="rounded-lg border border-black/10 px-3 py-1.5 disabled:opacity-30">下一页</button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -3051,7 +3093,6 @@ ${p.prompt}
                 <button 
                   onClick={() => { 
                     setAdminTab('recharge'); 
-                    fetchRechargeLogs(); 
                     setFilterUser('all'); 
                     setFilterYear(new Date().getFullYear().toString()); 
                     setFilterMonth((new Date().getMonth() + 1).toString()); 
@@ -3065,7 +3106,6 @@ ${p.prompt}
                 <button 
                   onClick={() => { 
                     setAdminTab('stats'); 
-                    fetchGenerationLogs(); 
                     setFilterUser('all'); 
                     setFilterYear(new Date().getFullYear().toString()); 
                     setFilterMonth((new Date().getMonth() + 1).toString()); 
@@ -3228,7 +3268,7 @@ ${p.prompt}
                         <div className="text-right">
                           <span className="text-[10px] font-black opacity-40 block uppercase">筛选后总计</span>
                           <span className="text-2xl font-black text-[#0071e3]">
-                            {filteredRechargeLogs.length}
+                            {adminRechargeTotal}
                           </span>
                         </div>
                         <button 
@@ -3284,7 +3324,7 @@ ${p.prompt}
                     {/* Pagination Controls */}
                     <div className="flex items-center justify-between px-8 py-4 bg-[#F5F5F7]/30 border-t border-black/5 text-xs">
                       <div className="flex items-center gap-4 text-[#86868b] font-bold">
-                        <span>显示 {(adminPage - 1) * adminPageSize + 1} - {Math.min(adminPage * adminPageSize, filteredRechargeLogs.length)} 条，共 {filteredRechargeLogs.length} 条</span>
+                        <span>显示 {adminRechargeTotal === 0 ? 0 : (adminPage - 1) * adminPageSize + 1} - {Math.min(adminPage * adminPageSize, adminRechargeTotal)} 条，共 {adminRechargeTotal} 条</span>
                         <div className="flex items-center gap-1.5 ml-4">
                           <span>每页</span>
                           <select 
@@ -3306,9 +3346,9 @@ ${p.prompt}
                         >
                           上一页
                         </button>
-                        <span className="text-[#86868b] font-bold px-1">{adminPage} / {Math.ceil(filteredRechargeLogs.length / adminPageSize) || 1} 页</span>
+                        <span className="text-[#86868b] font-bold px-1">{adminPage} / {Math.ceil(adminRechargeTotal / adminPageSize) || 1} 页</span>
                         <button
-                          disabled={adminPage >= Math.ceil(filteredRechargeLogs.length / adminPageSize)}
+                          disabled={adminPage >= Math.ceil(adminRechargeTotal / adminPageSize)}
                           onClick={() => setAdminPage(p => p + 1)}
                           className="px-3.5 py-1.5 bg-white border border-black/10 rounded-lg font-black text-[#86868b] hover:text-black hover:bg-[#F5F5F7] disabled:opacity-30 disabled:pointer-events-none transition-all"
                         >
@@ -3387,7 +3427,7 @@ ${p.prompt}
                         <div className="text-right">
                           <span className="text-[10px] font-black opacity-40 block uppercase">筛选后总计</span>
                           <span className="text-2xl font-black text-[#0071e3]">
-                            {filteredGenerationLogs.length}
+                            {adminGenerationTotal}
                           </span>
                         </div>
                         <button 
@@ -3433,7 +3473,7 @@ ${p.prompt}
                     {/* Pagination Controls */}
                     <div className="flex items-center justify-between px-8 py-4 bg-[#F5F5F7]/30 border-t border-black/5 text-xs">
                       <div className="flex items-center gap-4 text-[#86868b] font-bold">
-                        <span>显示 {(adminPage - 1) * adminPageSize + 1} - {Math.min(adminPage * adminPageSize, filteredGenerationLogs.length)} 条，共 {filteredGenerationLogs.length} 条</span>
+                        <span>显示 {adminGenerationTotal === 0 ? 0 : (adminPage - 1) * adminPageSize + 1} - {Math.min(adminPage * adminPageSize, adminGenerationTotal)} 条，共 {adminGenerationTotal} 条</span>
                         <div className="flex items-center gap-1.5 ml-4">
                           <span>每页</span>
                           <select 
@@ -3455,9 +3495,9 @@ ${p.prompt}
                         >
                           上一页
                         </button>
-                        <span className="text-[#86868b] font-bold px-1">{adminPage} / {Math.ceil(filteredGenerationLogs.length / adminPageSize) || 1} 页</span>
+                        <span className="text-[#86868b] font-bold px-1">{adminPage} / {Math.ceil(adminGenerationTotal / adminPageSize) || 1} 页</span>
                         <button
-                          disabled={adminPage >= Math.ceil(filteredGenerationLogs.length / adminPageSize)}
+                          disabled={adminPage >= Math.ceil(adminGenerationTotal / adminPageSize)}
                           onClick={() => setAdminPage(p => p + 1)}
                           className="px-3.5 py-1.5 bg-white border border-black/10 rounded-lg font-black text-[#86868b] hover:text-black hover:bg-[#F5F5F7] disabled:opacity-30 disabled:pointer-events-none transition-all"
                         >

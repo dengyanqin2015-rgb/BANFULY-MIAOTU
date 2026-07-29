@@ -180,6 +180,22 @@ interface GenerationLog {
   timestamp: number;
 }
 
+interface LogPageOptions {
+  page: number;
+  pageSize: number;
+  userId?: string;
+  username?: string;
+  from?: number;
+  to?: number;
+}
+
+interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 interface ImageHistory {
   id: string;
   userId: string;
@@ -461,16 +477,36 @@ class DatabaseService {
     }
   }
 
-  async getRechargeLogs(userId?: string): Promise<RechargeLog[]> {
+  async getRechargeLogs(options: LogPageOptions): Promise<PaginatedResult<RechargeLog>> {
+    const { page, pageSize, userId, username, from, to } = options;
+    const offset = (page - 1) * pageSize;
     if (this.pool) {
-      const query = userId 
-        ? "SELECT id, user_id as \"userId\", username, amount, previous_credits as \"previousCredits\", new_credits as \"newCredits\", timestamp, admin_id as \"adminId\", admin_name as \"adminName\" FROM recharge_logs WHERE user_id = $1 ORDER BY timestamp DESC"
-        : "SELECT id, user_id as \"userId\", username, amount, previous_credits as \"previousCredits\", new_credits as \"newCredits\", timestamp, admin_id as \"adminId\", admin_name as \"adminName\" FROM recharge_logs ORDER BY timestamp DESC";
-      const res = await this.pool.query(query, userId ? [userId] : []);
-      return res.rows;
+      const clauses: string[] = [];
+      const filterParams: Array<string | number> = [];
+      if (userId) { filterParams.push(userId); clauses.push(`user_id = $${filterParams.length}`); }
+      if (username) { filterParams.push(username); clauses.push(`username = $${filterParams.length}`); }
+      if (from !== undefined) { filterParams.push(from); clauses.push(`timestamp >= $${filterParams.length}`); }
+      if (to !== undefined) { filterParams.push(to); clauses.push(`timestamp < $${filterParams.length}`); }
+      const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+      const limitIndex = filterParams.length + 1;
+      const offsetIndex = filterParams.length + 2;
+      const [countResult, rowsResult] = await Promise.all([
+        this.pool.query(`SELECT COUNT(*)::int AS total FROM recharge_logs${where}`, filterParams),
+        this.pool.query(
+          `SELECT id, user_id as "userId", username, amount, previous_credits as "previousCredits", new_credits as "newCredits", timestamp, admin_id as "adminId", admin_name as "adminName" FROM recharge_logs${where} ORDER BY timestamp DESC LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+          [...filterParams, pageSize, offset]
+        )
+      ]);
+      return { items: rowsResult.rows, total: Number(countResult.rows[0]?.total || 0), page, pageSize };
     }
-    const logs = userId ? this.fileData!.rechargeLogs.filter(l => l.userId === userId) : this.fileData!.rechargeLogs;
-    return [...logs].sort((a, b) => b.timestamp - a.timestamp);
+    const logs = this.fileData!.rechargeLogs.filter(log =>
+      (!userId || log.userId === userId) &&
+      (!username || log.username === username) &&
+      (from === undefined || log.timestamp >= from) &&
+      (to === undefined || log.timestamp < to)
+    );
+    const sorted = [...logs].sort((a, b) => b.timestamp - a.timestamp);
+    return { items: sorted.slice(offset, offset + pageSize), total: sorted.length, page, pageSize };
   }
 
   async addGenerationLog(log: GenerationLog) {
@@ -485,16 +521,36 @@ class DatabaseService {
     }
   }
 
-  async getGenerationLogs(userId?: string): Promise<GenerationLog[]> {
+  async getGenerationLogs(options: LogPageOptions): Promise<PaginatedResult<GenerationLog>> {
+    const { page, pageSize, userId, username, from, to } = options;
+    const offset = (page - 1) * pageSize;
     if (this.pool) {
-      const query = userId 
-        ? "SELECT id, user_id as \"userId\", username, timestamp FROM generation_logs WHERE user_id = $1 ORDER BY timestamp DESC"
-        : "SELECT id, user_id as \"userId\", username, timestamp FROM generation_logs ORDER BY timestamp DESC";
-      const res = await this.pool.query(query, userId ? [userId] : []);
-      return res.rows;
+      const clauses: string[] = [];
+      const filterParams: Array<string | number> = [];
+      if (userId) { filterParams.push(userId); clauses.push(`user_id = $${filterParams.length}`); }
+      if (username) { filterParams.push(username); clauses.push(`username = $${filterParams.length}`); }
+      if (from !== undefined) { filterParams.push(from); clauses.push(`timestamp >= $${filterParams.length}`); }
+      if (to !== undefined) { filterParams.push(to); clauses.push(`timestamp < $${filterParams.length}`); }
+      const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+      const limitIndex = filterParams.length + 1;
+      const offsetIndex = filterParams.length + 2;
+      const [countResult, rowsResult] = await Promise.all([
+        this.pool.query(`SELECT COUNT(*)::int AS total FROM generation_logs${where}`, filterParams),
+        this.pool.query(
+          `SELECT id, user_id as "userId", username, timestamp FROM generation_logs${where} ORDER BY timestamp DESC LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+          [...filterParams, pageSize, offset]
+        )
+      ]);
+      return { items: rowsResult.rows, total: Number(countResult.rows[0]?.total || 0), page, pageSize };
     }
-    const logs = userId ? this.fileData!.generationLogs.filter(l => l.userId === userId) : this.fileData!.generationLogs;
-    return [...logs].sort((a, b) => b.timestamp - a.timestamp);
+    const logs = this.fileData!.generationLogs.filter(log =>
+      (!userId || log.userId === userId) &&
+      (!username || log.username === username) &&
+      (from === undefined || log.timestamp >= from) &&
+      (to === undefined || log.timestamp < to)
+    );
+    const sorted = [...logs].sort((a, b) => b.timestamp - a.timestamp);
+    return { items: sorted.slice(offset, offset + pageSize), total: sorted.length, page, pageSize };
   }
 
   async addImageHistory(history: ImageHistory) {
@@ -825,14 +881,25 @@ app.post("/api/admin/users/:id/credits", authenticateToken, isAdmin, async (req:
   res.json({ message: "更新成功", user: { id: user.id, username: user.username, role: user.role, credits: newCredits } });
 });
 
+const parseLogPage = (req: Request, userId?: string): LogPageOptions => {
+  const rawPage = Number.parseInt(String(req.query.page || "1"), 10);
+  const rawPageSize = Number.parseInt(String(req.query.pageSize || "20"), 10);
+  return {
+    page: Number.isFinite(rawPage) ? Math.max(1, rawPage) : 1,
+    pageSize: Number.isFinite(rawPageSize) ? Math.min(100, Math.max(10, rawPageSize)) : 20,
+    userId: userId || (typeof req.query.userId === "string" && req.query.userId.trim() ? req.query.userId.trim() : undefined),
+    username: typeof req.query.username === "string" && req.query.username.trim() ? req.query.username.trim() : undefined,
+    from: Number.isFinite(Number(req.query.from)) ? Number(req.query.from) : undefined,
+    to: Number.isFinite(Number(req.query.to)) ? Number(req.query.to) : undefined,
+  };
+};
+
 app.get("/api/admin/recharge-logs", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
-  const logs = await db.getRechargeLogs();
-  res.json(logs);
+  res.json(await db.getRechargeLogs(parseLogPage(req)));
 });
 
 app.get("/api/admin/generation-logs", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
-  const logs = await db.getGenerationLogs();
-  res.json(logs);
+  res.json(await db.getGenerationLogs(parseLogPage(req)));
 });
 
 app.post("/api/admin/users/:id/role", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
@@ -870,13 +937,11 @@ app.post("/api/user/change-password", authenticateToken, async (req: AuthRequest
 });
 
 app.get("/api/user/recharge-logs", authenticateToken, async (req: AuthRequest, res: Response) => {
-  const logs = await db.getRechargeLogs(req.user?.id);
-  res.json(logs);
+  res.json(await db.getRechargeLogs(parseLogPage(req, req.user?.id)));
 });
 
 app.get("/api/user/generation-logs", authenticateToken, async (req: AuthRequest, res: Response) => {
-  const logs = await db.getGenerationLogs(req.user?.id);
-  res.json(logs);
+  res.json(await db.getGenerationLogs(parseLogPage(req, req.user?.id)));
 });
 
 app.post("/api/user/history", authenticateToken, async (req: AuthRequest, res: Response) => {
