@@ -146,12 +146,13 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         className={cn(
-          "bg-[#1a1a1a] rounded-lg overflow-hidden shadow-2xl transition-all duration-200 w-full",
+          "relative bg-[#1a1a1a] rounded-lg overflow-visible shadow-2xl transition-all duration-200 w-full",
           selected ? "ring-2 ring-red-600 ring-offset-2 ring-offset-[#0a0a0a]" : "border border-[#333]"
         )}
       >
-        <Handle type="target" position={Position.Left} className="!w-2 !h-2 !bg-red-600 !border-none -left-1" />
+        <Handle type="target" position={Position.Left} className="!z-20 !h-3 !w-3 !border-2 !border-[#0a0a0a] !bg-red-600" />
         
+        <div className="overflow-hidden rounded-lg">
         <div className="relative w-full bg-[#0a0a0a] flex items-center justify-center group cursor-pointer">
           {data.isLoading ? (
             <div className="flex flex-col items-center gap-3 py-20">
@@ -201,8 +202,9 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
             </>
           ) : null}
         </div>
+        </div>
 
-        <Handle type="source" position={Position.Right} className="!w-2 !h-2 !bg-red-600 !border-none -right-1" />
+        <Handle type="source" position={Position.Right} className="!z-20 !h-3 !w-3 !border-2 !border-[#0a0a0a] !bg-red-600" />
       </motion.div>
 
       {data.type === 'generated' && (
