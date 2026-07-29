@@ -47,6 +47,49 @@ const closestAspect = (width: number, height: number, model: ImageModel) => {
   return ratios.reduce((best, item) => Math.abs(Math.log(target / item.value)) < Math.abs(Math.log(target / best.value)) ? item : best, ratios[0]);
 };
 
+const compositeWithSoftProtection = (
+  source: HTMLImageElement,
+  edited: HTMLImageElement,
+  preserveMask: HTMLCanvasElement,
+) => {
+  const width = preserveMask.width; const height = preserveMask.height;
+  const originalCanvas = document.createElement('canvas'); originalCanvas.width = width; originalCanvas.height = height;
+  const generatedCanvas = document.createElement('canvas'); generatedCanvas.width = width; generatedCanvas.height = height;
+  const matteCanvas = document.createElement('canvas'); matteCanvas.width = width; matteCanvas.height = height;
+  const softenedCanvas = document.createElement('canvas'); softenedCanvas.width = width; softenedCanvas.height = height;
+  const originalContext = originalCanvas.getContext('2d', { willReadFrequently: true });
+  const generatedContext = generatedCanvas.getContext('2d', { willReadFrequently: true });
+  const maskContext = preserveMask.getContext('2d', { willReadFrequently: true });
+  const matteContext = matteCanvas.getContext('2d');
+  const softenedContext = softenedCanvas.getContext('2d', { willReadFrequently: true });
+  if (!originalContext || !generatedContext || !maskContext || !matteContext || !softenedContext) throw new Error('无法创建自然过渡保护层');
+  originalContext.drawImage(source, 0, 0, width, height);
+  generatedContext.drawImage(edited, 0, 0, width, height);
+  const maskPixels = maskContext.getImageData(0, 0, width, height);
+  const editable = matteContext.createImageData(width, height);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const offset = pixel * 4;
+    editable.data[offset] = 255; editable.data[offset + 1] = 255; editable.data[offset + 2] = 255;
+    editable.data[offset + 3] = 255 - maskPixels.data[offset + 3];
+  }
+  matteContext.putImageData(editable, 0, 0);
+  const spread = Math.max(10, Math.round(Math.min(width, height) * 0.018));
+  const feather = Math.max(12, Math.round(Math.min(width, height) * 0.022));
+  softenedContext.filter = `blur(${feather}px)`;
+  for (const offsetX of [-spread, 0, spread]) for (const offsetY of [-spread, 0, spread]) softenedContext.drawImage(matteCanvas, offsetX, offsetY);
+  softenedContext.filter = 'none';
+  const original = originalContext.getImageData(0, 0, width, height);
+  const generated = generatedContext.getImageData(0, 0, width, height);
+  const softMask = softenedContext.getImageData(0, 0, width, height);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const offset = pixel * 4; const alpha = softMask.data[offset + 3] / 255;
+    for (let channel = 0; channel < 3; channel += 1) generated.data[offset + channel] = Math.round(original.data[offset + channel] * (1 - alpha) + generated.data[offset + channel] * alpha);
+    generated.data[offset + 3] = 255;
+  }
+  generatedContext.putImageData(generated, 0, 0);
+  return generatedCanvas.toDataURL('image/png');
+};
+
 export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onClose, onConfirm, onBackgroundTask, backgroundActive = false, initialDraft, onDraftChange, title = 'AI 遮罩定点修改' }) => {
   const [currentImage, setCurrentImage] = useState(imageUrl);
   const [regions, setRegions] = useState<EditRegion[]>(initialDraft?.regions || []);
@@ -165,6 +208,35 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       }
     });
 
+    const guide = document.createElement('canvas'); guide.width = crop.width; guide.height = crop.height;
+    const guideContext = guide.getContext('2d'); if (!guideContext) throw new Error('无法创建区域定位图');
+    guideContext.drawImage(crop, 0, 0);
+    selectedRegions.forEach((selected, index) => {
+      const x = (selected.x - padded.x) * scaleX; const y = (selected.y - padded.y) * scaleY;
+      const width = selected.width * scaleX; const height = selected.height * scaleY;
+      const color = selected.item.mode === 'text' ? '#00e5ff' : '#4ade80';
+      guideContext.save(); guideContext.strokeStyle = color; guideContext.fillStyle = color;
+      guideContext.lineWidth = Math.max(3, Math.round(Math.min(guide.width, guide.height) * 0.004));
+      if (selected.item.tool === 'brush' && selected.item.points?.length) {
+        guideContext.lineCap = 'round'; guideContext.lineJoin = 'round';
+        guideContext.lineWidth = Math.max(8, (selected.item.brushSize || 0.035) * source.naturalWidth * scaleX);
+        guideContext.globalAlpha = 0.38; guideContext.beginPath();
+        selected.item.points.forEach((point, pointIndex) => {
+          const pointX = (point.x * source.naturalWidth - padded.x) * scaleX;
+          const pointY = (point.y * source.naturalHeight - padded.y) * scaleY;
+          if (pointIndex === 0) guideContext.moveTo(pointX, pointY); else guideContext.lineTo(pointX, pointY);
+        });
+        guideContext.stroke(); guideContext.globalAlpha = 1;
+      } else {
+        guideContext.fillStyle = `${color}22`; guideContext.fillRect(x, y, width, height);
+        guideContext.strokeStyle = color; guideContext.strokeRect(x, y, width, height);
+      }
+      const radius = Math.max(14, Math.round(Math.min(guide.width, guide.height) * 0.022));
+      guideContext.fillStyle = color; guideContext.beginPath(); guideContext.arc(x + radius, y + radius, radius, 0, Math.PI * 2); guideContext.fill();
+      guideContext.fillStyle = '#061014'; guideContext.font = `900 ${Math.round(radius * 1.25)}px sans-serif`; guideContext.textAlign = 'center'; guideContext.textBaseline = 'middle'; guideContext.fillText(String(index + 1), x + radius, y + radius);
+      guideContext.restore();
+    });
+
     const regionRules = selectedRegions.map((selected, index) => {
       const exactText = selected.item.text.trim();
       const position = `区域${index + 1}位于输入图的左侧${Math.round((selected.x - padded.x) / padded.width * 100)}%、顶部${Math.round((selected.y - padded.y) / padded.height * 100)}%，宽${Math.round(selected.width / padded.width * 100)}%、高${Math.round(selected.height / padded.height * 100)}%`;
@@ -181,23 +253,23 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     const prompt = [
       `全局编辑指令：${model === 'gpt-image-2' ? (gptGlobalInstruction.trim() || DEFAULT_GPT_GLOBAL_INSTRUCTION) : DEFAULT_GPT_GLOBAL_INSTRUCTION}`,
       `这是一次包含 ${items.length} 个独立区域的整图引导编辑任务。标记区域用于说明修改重点，不作为硬裁切边界。`,
+      ...(model === 'gpt-image-2' ? [] : ['输入图1是需要修改的完整原图；输入图2是区域定位地图。图2中的彩色框、涂抹和编号只用于定位，绝对不要把这些辅助标记画入最终结果。']),
       ...regionRules,
       '严格按照上述区域编号和坐标执行对应要求，不得交换、合并或遗漏区域；文字任务不得增字、漏字、错字或重复文字。',
       '整体画面必须自然连续，修改区域不能出现拼接边、色块、矩形边界或局部贴图感。不要新增其他文字、标志或水印。',
     ].join('\n');
-    const cropUrl = crop.toDataURL('image/png'); const maskUrl = mask.toDataURL('image/png');
+    const cropUrl = crop.toDataURL('image/png'); const maskUrl = mask.toDataURL('image/png'); const guideUrl = guide.toDataURL('image/png');
     const [editedUrl] = await generateImage({
       prompt, model, imageSize: '1K', aspectRatio: aspect.id, quality: model === 'gpt-image-2' ? 'medium' : 'low',
-      images: [{ data: cropUrl.split(',')[1], mimeType: 'image/png' }],
+      images: model === 'gpt-image-2'
+        ? [{ data: cropUrl.split(',')[1], mimeType: 'image/png' }]
+        : [{ data: cropUrl.split(',')[1], mimeType: 'image/png' }, { data: guideUrl.split(',')[1], mimeType: 'image/png' }],
       mask: model === 'gpt-image-2' ? { data: maskUrl.split(',')[1], mimeType: 'image/png' } : undefined,
     });
     const edited = await loadImage(editedUrl);
-    const output = document.createElement('canvas'); output.width = source.naturalWidth; output.height = source.naturalHeight;
-    const outputContext = output.getContext('2d'); if (!outputContext) throw new Error('无法合成文字修改结果');
-    // Preserve the provider's complete result for natural continuity. Hard
-    // pixel compositing is intentionally avoided because it creates seams.
-    outputContext.drawImage(edited, 0, 0, output.width, output.height);
-    return output.toDataURL('image/png');
+    // Keep a generous, feathered transition around every guided region while
+    // restoring distant text, logos and product details from the source.
+    return compositeWithSoftProtection(source, edited, mask);
   };
 
   const runBatch = async () => {

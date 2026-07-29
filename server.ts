@@ -1181,7 +1181,15 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
     };
 
     let attempt = 1;
-    let openAiResponse = await requestOpenAiImage(enhancedPrompt);
+    let openAiResponse: globalThis.Response;
+    try {
+      openAiResponse = await requestOpenAiImage(enhancedPrompt);
+    } catch {
+      attempt += 1;
+      console.log("[ImageDiagnostic]", JSON.stringify({ diagnosticId, event: "network_retry_started", attempt }));
+      await sleep(1500);
+      openAiResponse = await requestOpenAiImage(enhancedPrompt);
+    }
     let payload: any = await openAiResponse.json().catch(() => ({}));
     let moderationDetails = payload?.error?.moderation_details || null;
 
@@ -1200,12 +1208,27 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
       }));
     logProviderResponse();
 
+    if (!openAiResponse.ok && (openAiResponse.status === 429 || openAiResponse.status >= 500)) {
+      attempt += 1;
+      console.log("[ImageDiagnostic]", JSON.stringify({
+        diagnosticId,
+        event: "transient_retry_started",
+        attempt,
+        previousStatus: openAiResponse.status
+      }));
+      await sleep(1500);
+      openAiResponse = await requestOpenAiImage(enhancedPrompt);
+      payload = await openAiResponse.json().catch(() => ({}));
+      moderationDetails = payload?.error?.moderation_details || null;
+      logProviderResponse();
+    }
+
     if (
       !openAiResponse.ok &&
       payload?.error?.code === "moderation_blocked" &&
       moderationDetails?.moderation_stage === "output"
     ) {
-      attempt = 2;
+      attempt += 1;
       console.log("[ImageDiagnostic]", JSON.stringify({
         diagnosticId,
         event: "safety_retry_started",

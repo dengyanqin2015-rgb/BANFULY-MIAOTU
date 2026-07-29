@@ -166,7 +166,7 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
       body: JSON.stringify({ apiKey, prompt: params.prompt, size, quality, images: params.images || [], mask: params.mask })
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.message || response.statusText);
+    if (!response.ok) throw new Error(`${result.message || response.statusText}${result.diagnosticId ? `（诊断编号：${result.diagnosticId}）` : ''}`);
     const image = result.images?.[0]?.url;
     if (!image) throw new Error("OpenAI 未返回图片数据");
     return [image.startsWith('http') || image.startsWith('data:') ? image : `data:image/png;base64,${image}`];
