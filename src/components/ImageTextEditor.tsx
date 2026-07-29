@@ -1,15 +1,18 @@
 import React, { useRef, useState } from 'react';
-import { Check, Plus, Redo2, Sparkles, Trash2, Type, Undo2, X } from 'lucide-react';
+import { Check, Paintbrush, Redo2, Sparkles, Square, Trash2, Type, Undo2, X } from 'lucide-react';
 import { generateImage, type AspectRatio, type ImageModel } from '../lib/gemini';
 
 type Box = { x: number; y: number; width: number; height: number };
-type EditMode = 'replace' | 'add';
-type EditRegion = { id: string; box: Box; mode: EditMode; text: string; style: string };
+type EditMode = 'text' | 'content';
+type MaskTool = 'rect' | 'brush';
+type Point = { x: number; y: number };
+type EditRegion = { id: string; box: Box; mode: EditMode; text: string; style: string; tool: MaskTool; points?: Point[]; brushSize?: number };
 
 interface ImageTextEditorProps {
   imageUrl: string;
   onClose: () => void;
   onConfirm: (imageUrl: string) => void;
+  title?: string;
 }
 
 const AI_TEXT_MODELS: { id: ImageModel; label: string; price: number }[] = [
@@ -19,7 +22,7 @@ const AI_TEXT_MODELS: { id: ImageModel; label: string; price: number }[] = [
   { id: 'gemini-3-pro-image-preview', label: 'Google Pro 3.0', price: 1.00 },
 ];
 
-const DEFAULT_GPT_GLOBAL_INSTRUCTION = '只修改用户框选区域内的指定文案。整张图片的构图、尺寸、商品、人物、背景、光影、色彩、纹理、装饰、图标及所有未框选文字必须保持与原图完全一致；不得重绘、移动、缩放或美化框选区域以外的任何内容。新文案必须逐字准确，并尽量继承原位置的字体风格、字号、颜色、材质、描边、阴影和排版。';
+const DEFAULT_GPT_GLOBAL_INSTRUCTION = '只修改用户遮罩标记区域内的指定文字或画面内容。整张图片的构图、尺寸、商品、人物、背景、光影、色彩、纹理、装饰、图标及所有未遮罩内容必须保持与原图完全一致；不得重绘、移动、缩放或美化遮罩区域以外的任何内容。文字任务必须逐字准确并继承原位置的字体风格、字号、颜色、材质、描边、阴影和排版；内容任务只执行对应编号中明确描述的变化。';
 
 const loadImage = (url: string) => new Promise<HTMLImageElement>((resolve, reject) => {
   const image = new Image();
@@ -39,61 +42,42 @@ const closestAspect = (width: number, height: number, model: ImageModel) => {
   return ratios.reduce((best, item) => Math.abs(Math.log(target / item.value)) < Math.abs(Math.log(target / best.value)) ? item : best, ratios[0]);
 };
 
-const compositeFeatheredRegions = (
+const compositeMaskedResult = (
   outputContext: CanvasRenderingContext2D,
   source: HTMLImageElement,
   edited: HTMLImageElement,
   padded: Box,
-  selectedRegions: Array<{ x: number; y: number; width: number; height: number }>,
+  preserveMask: HTMLCanvasElement,
 ) => {
-  selectedRegions.forEach(selected => {
-    const width = Math.max(1, Math.round(selected.width)); const height = Math.max(1, Math.round(selected.height));
-    const originalCanvas = document.createElement('canvas'); originalCanvas.width = width; originalCanvas.height = height;
-    const generatedCanvas = document.createElement('canvas'); generatedCanvas.width = width; generatedCanvas.height = height;
-    const originalContext = originalCanvas.getContext('2d', { willReadFrequently: true });
-    const generatedContext = generatedCanvas.getContext('2d', { willReadFrequently: true });
-    if (!originalContext || !generatedContext) throw new Error('无法对齐 AI 改字结果');
-    originalContext.drawImage(source, selected.x, selected.y, selected.width, selected.height, 0, 0, width, height);
-    const sourceX = (selected.x - padded.x) / padded.width * edited.naturalWidth;
-    const sourceY = (selected.y - padded.y) / padded.height * edited.naturalHeight;
-    const sourceWidth = selected.width / padded.width * edited.naturalWidth;
-    const sourceHeight = selected.height / padded.height * edited.naturalHeight;
-    generatedContext.drawImage(edited, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
-    const original = originalContext.getImageData(0, 0, width, height);
-    const generated = generatedContext.getImageData(0, 0, width, height);
-    const band = Math.max(2, Math.min(10, Math.round(Math.min(width, height) * 0.08)));
-    const differences: number[][] = [[], [], []];
-    for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
-      if (Math.min(x, width - 1 - x, y, height - 1 - y) >= band) continue;
-      const offset = (y * width + x) * 4;
-      for (let channel = 0; channel < 3; channel += 1) differences[channel].push(original.data[offset + channel] - generated.data[offset + channel]);
-    }
-    const corrections = differences.map(values => {
-      values.sort((a, b) => a - b); const median = values[Math.floor(values.length / 2)] || 0;
-      return Math.max(-48, Math.min(48, median));
-    });
-    const feather = Math.max(4, Math.min(18, Math.round(Math.min(width, height) * 0.12)));
-    for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
-      const offset = (y * width + x) * 4;
-      const distance = Math.min(x, width - 1 - x, y, height - 1 - y);
-      const progress = Math.max(0, Math.min(1, distance / feather));
-      const alpha = progress * progress * (3 - 2 * progress);
-      for (let channel = 0; channel < 3; channel += 1) {
-        const corrected = Math.max(0, Math.min(255, generated.data[offset + channel] + corrections[channel]));
-        generated.data[offset + channel] = Math.round(original.data[offset + channel] * (1 - alpha) + corrected * alpha);
-      }
-      generated.data[offset + 3] = 255;
-    }
-    generatedContext.putImageData(generated, 0, 0);
-    outputContext.drawImage(generatedCanvas, selected.x, selected.y, selected.width, selected.height);
-  });
+  const width = preserveMask.width; const height = preserveMask.height;
+  const originalCanvas = document.createElement('canvas'); originalCanvas.width = width; originalCanvas.height = height;
+  const generatedCanvas = document.createElement('canvas'); generatedCanvas.width = width; generatedCanvas.height = height;
+  const originalContext = originalCanvas.getContext('2d', { willReadFrequently: true });
+  const generatedContext = generatedCanvas.getContext('2d', { willReadFrequently: true });
+  const maskContext = preserveMask.getContext('2d', { willReadFrequently: true });
+  if (!originalContext || !generatedContext || !maskContext) throw new Error('无法合成 AI 遮罩结果');
+  originalContext.drawImage(source, padded.x, padded.y, padded.width, padded.height, 0, 0, width, height);
+  generatedContext.drawImage(edited, 0, 0, width, height);
+  const original = originalContext.getImageData(0, 0, width, height);
+  const generated = generatedContext.getImageData(0, 0, width, height);
+  const maskPixels = maskContext.getImageData(0, 0, width, height);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const offset = pixel * 4; const editAlpha = 1 - maskPixels.data[offset + 3] / 255;
+    for (let channel = 0; channel < 3; channel += 1) generated.data[offset + channel] = Math.round(original.data[offset + channel] * (1 - editAlpha) + generated.data[offset + channel] * editAlpha);
+    generated.data[offset + 3] = 255;
+  }
+  generatedContext.putImageData(generated, 0, 0);
+  outputContext.drawImage(generatedCanvas, padded.x, padded.y, padded.width, padded.height);
 };
 
-export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onClose, onConfirm }) => {
+export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onClose, onConfirm, title = 'AI 遮罩定点修改' }) => {
   const [currentImage, setCurrentImage] = useState(imageUrl);
   const [regions, setRegions] = useState<EditRegion[]>([]);
   const [draftBox, setDraftBox] = useState<Box | null>(null);
   const [selectingMode, setSelectingMode] = useState<EditMode | null>(null);
+  const [maskTool, setMaskTool] = useState<MaskTool>('rect');
+  const [brushSize, setBrushSize] = useState(0.035);
+  const [draftPoints, setDraftPoints] = useState<Point[]>([]);
   const [model, setModel] = useState<ImageModel>(() => {
     const saved = localStorage.getItem('image_text_ai_model') as ImageModel | null;
     return AI_TEXT_MODELS.some(item => item.id === saved) ? saved! : 'gpt-image-2';
@@ -114,7 +98,14 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     if (!stage || !start) return;
     const x = Math.max(0, Math.min(1, (clientX - stage.left) / stage.width));
     const y = Math.max(0, Math.min(1, (clientY - stage.top) / stage.height));
-    setDraftBox({ x: Math.min(start.x, x), y: Math.min(start.y, y), width: Math.abs(x - start.x), height: Math.abs(y - start.y) });
+    if (maskTool === 'brush') {
+      setDraftPoints(current => {
+        const points = [...current, { x, y }];
+        const xs = points.map(point => point.x); const ys = points.map(point => point.y); const radius = brushSize / 2;
+        setDraftBox({ x: Math.max(0, Math.min(...xs) - radius), y: Math.max(0, Math.min(...ys) - radius), width: Math.min(1, Math.max(...xs) + radius) - Math.max(0, Math.min(...xs) - radius), height: Math.min(1, Math.max(...ys) + radius) - Math.max(0, Math.min(...ys) - radius) });
+        return points;
+      });
+    } else setDraftBox({ x: Math.min(start.x, x), y: Math.min(start.y, y), width: Math.abs(x - start.x), height: Math.abs(y - start.y) });
   };
 
   const beginRegion = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -123,7 +114,9 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId);
     const x = Math.max(0, Math.min(1, (event.clientX - stage.left) / stage.width));
     const y = Math.max(0, Math.min(1, (event.clientY - stage.top) / stage.height));
-    startRef.current = { x, y }; setDraftBox({ x, y, width: 0, height: 0 });
+    startRef.current = { x, y };
+    if (maskTool === 'brush') { setDraftPoints([{ x, y }]); setDraftBox({ x: Math.max(0, x - brushSize / 2), y: Math.max(0, y - brushSize / 2), width: brushSize, height: brushSize }); }
+    else setDraftBox({ x, y, width: 0, height: 0 });
   };
 
   const finishRegion = () => {
@@ -131,11 +124,11 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     if (draftBox && draftBox.width >= 0.01 && draftBox.height >= 0.01 && selectingMode) {
       if (regions.length >= 5) setMessage('单次任务最多支持 5 个区域');
       else {
-        setRegions(current => [...current, { id: `region-${Date.now()}`, box: draftBox, mode: selectingMode, text: '', style: '' }]);
+        setRegions(current => [...current, { id: `region-${Date.now()}`, box: draftBox, mode: selectingMode, text: '', style: '', tool: maskTool, points: maskTool === 'brush' ? draftPoints : undefined, brushSize: maskTool === 'brush' ? brushSize : undefined }]);
         setMessage(`已添加区域 ${regions.length + 1}，可以继续框选或填写文字`);
       }
     }
-    setDraftBox(null); setSelectingMode(null);
+    setDraftBox(null); setDraftPoints([]); setSelectingMode(null);
   };
 
   const updateItem = (id: string, patch: Partial<EditRegion>) => setRegions(current => current.map(item => item.id === id ? { ...item, ...patch } : item));
@@ -188,16 +181,29 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     maskContext.fillStyle = '#ffffff'; maskContext.fillRect(0, 0, mask.width, mask.height);
     const scaleX = mask.width / padded.width; const scaleY = mask.height / padded.height;
     selectedRegions.forEach(selected => {
-      const padX = Math.max(3, selected.width * 0.06); const padY = Math.max(3, selected.height * 0.16);
-      maskContext.clearRect((selected.x - padded.x - padX) * scaleX, (selected.y - padded.y - padY) * scaleY, (selected.width + padX * 2) * scaleX, (selected.height + padY * 2) * scaleY);
+      if (selected.item.tool === 'brush' && selected.item.points?.length) {
+        maskContext.save(); maskContext.globalCompositeOperation = 'destination-out'; maskContext.lineCap = 'round'; maskContext.lineJoin = 'round';
+        maskContext.lineWidth = Math.max(4, (selected.item.brushSize || 0.035) * source.naturalWidth * scaleX);
+        maskContext.beginPath();
+        selected.item.points.forEach((point, index) => {
+          const x = (point.x * source.naturalWidth - padded.x) * scaleX; const y = (point.y * source.naturalHeight - padded.y) * scaleY;
+          if (index === 0) maskContext.moveTo(x, y); else maskContext.lineTo(x, y);
+        });
+        if (selected.item.points.length === 1) { const point = selected.item.points[0]; maskContext.arc((point.x * source.naturalWidth - padded.x) * scaleX, (point.y * source.naturalHeight - padded.y) * scaleY, maskContext.lineWidth / 2, 0, Math.PI * 2); maskContext.fill(); }
+        else maskContext.stroke();
+        maskContext.restore();
+      } else {
+        const padX = Math.max(3, selected.width * 0.04); const padY = Math.max(3, selected.height * 0.1);
+        maskContext.clearRect((selected.x - padded.x - padX) * scaleX, (selected.y - padded.y - padY) * scaleY, (selected.width + padX * 2) * scaleX, (selected.height + padY * 2) * scaleY);
+      }
     });
 
     const regionRules = selectedRegions.map((selected, index) => {
       const exactText = selected.item.text.trim();
       const position = `区域${index + 1}位于输入图的左侧${Math.round((selected.x - padded.x) / padded.width * 100)}%、顶部${Math.round((selected.y - padded.y) / padded.height * 100)}%，宽${Math.round(selected.width / padded.width * 100)}%、高${Math.round(selected.height / padded.height * 100)}%`;
-      const operation = selected.item.mode === 'replace'
-        ? `替换其中原有文字为“${exactText}”，自然清除旧字后在相同位置生成新字`
-        : `在该空白区域新增文字“${exactText}”，不要覆盖区域外内容`;
+      const operation = selected.item.mode === 'text'
+        ? `仅修改该遮罩区域内的文字，目标文案为“${exactText}”；自然清除旧字并在原位置生成准确新字`
+        : `仅修改该遮罩区域内的画面内容，修改要求为“${exactText}”；不得改变区域外任何内容`;
       const style = selected.item.style.trim()
         ? `样式要求：${selected.item.style.trim()}`
         : '样式要求：自动匹配整张海报及附近文字的字体、颜色、字号、间距、材质和广告特效';
@@ -205,14 +211,14 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     });
     const prompt = [
       ...(model === 'gpt-image-2' ? [`全局强制指令：${gptGlobalInstruction.trim() || DEFAULT_GPT_GLOBAL_INSTRUCTION}`] : []),
-      `这是一次包含 ${items.length} 个独立区域的批量文字编辑任务。只允许修改遮罩中的这些区域。`,
+      `这是一次包含 ${items.length} 个独立区域的遮罩定点编辑任务。只允许修改遮罩中的这些区域。`,
       ...regionRules,
-      '严格按照上述区域编号和坐标对应文字，不得交换、合并、增字、漏字、错字或重复文字。',
+      '严格按照上述区域编号和坐标执行对应要求，不得交换、合并或遗漏区域；文字任务不得增字、漏字、错字或重复文字。',
       '保持人物、商品、背景、图标以及遮罩外所有内容完全不变。不要新增其他文字、标志或水印。',
     ].join('\n');
     const cropUrl = crop.toDataURL('image/png'); const maskUrl = mask.toDataURL('image/png');
     const [editedUrl] = await generateImage({
-      prompt, model, imageSize: '1K', aspectRatio: aspect.id, quality: 'low',
+      prompt, model, imageSize: '1K', aspectRatio: aspect.id, quality: model === 'gpt-image-2' ? 'medium' : 'low',
       images: [{ data: cropUrl.split(',')[1], mimeType: 'image/png' }],
       mask: model === 'gpt-image-2' ? { data: maskUrl.split(',')[1], mimeType: 'image/png' } : undefined,
     });
@@ -220,21 +226,9 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     const output = document.createElement('canvas'); output.width = source.naturalWidth; output.height = source.naturalHeight;
     const outputContext = output.getContext('2d'); if (!outputContext) throw new Error('无法合成文字修改结果');
     outputContext.drawImage(source, 0, 0);
-    if (model === 'gpt-image-2') {
-      // GPT Image often repaints the masked background. Composite each user
-      // region independently, color-match its perimeter, and feather inward.
-      compositeFeatheredRegions(outputContext, source, edited, padded, selectedRegions);
-    } else {
-      // Gemini preserves local image coherence better. Keep its exact selected
-      // areas, while still discarding every pixel outside the user's boxes.
-      selectedRegions.forEach(selected => {
-        const sourceX = (selected.x - padded.x) / padded.width * edited.naturalWidth;
-        const sourceY = (selected.y - padded.y) / padded.height * edited.naturalHeight;
-        const sourceWidth = selected.width / padded.width * edited.naturalWidth;
-        const sourceHeight = selected.height / padded.height * edited.naturalHeight;
-        outputContext.drawImage(edited, sourceX, sourceY, sourceWidth, sourceHeight, selected.x, selected.y, selected.width, selected.height);
-      });
-    }
+    // The provider mask is guidance, not a pixel guarantee. Enforce the same
+    // mask locally for both GPT and Gemini so every unmasked pixel stays exact.
+    compositeMaskedResult(outputContext, source, edited, padded, mask);
     return output.toDataURL('image/png');
   };
 
@@ -258,14 +252,15 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
 
   return <div className="fixed inset-0 z-[10020] flex bg-black/90 backdrop-blur-sm">
     <div className="flex min-w-0 flex-1 flex-col p-4">
-      <div className="mb-3 flex items-center justify-between text-white"><div><h3 className="text-base font-bold">AI 批量修改图片文字</h3><p className="text-xs text-gray-500">支持多区域改字，也可以在空白区域新增文字。</p></div><button onClick={onClose} className="rounded-lg p-2 text-gray-400 hover:bg-white/10"><X size={20}/></button></div>
+      <div className="mb-3 flex items-center justify-between text-white"><div><h3 className="text-base font-bold">{title}</h3><p className="text-xs text-gray-500">框选或涂抹多个区域，分别修改文字或画面内容。</p></div><button onClick={onClose} className="rounded-lg p-2 text-gray-400 hover:bg-white/10"><X size={20}/></button></div>
       <div className="mb-2 flex items-center gap-2 text-xs text-gray-400"><button onClick={undo} disabled={historyIndex <= 0 || working} className="rounded-lg bg-[#252525] p-2 disabled:opacity-30"><Undo2 size={14}/></button><button onClick={redo} disabled={historyIndex >= historyRef.current.length - 1 || working} className="rounded-lg bg-[#252525] p-2 disabled:opacity-30"><Redo2 size={14}/></button></div>
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-[#333] bg-[#0b0b0b] p-3">
         <div ref={stageRef} className="relative inline-flex max-h-full max-w-full select-none">
           <img src={currentImage} crossOrigin="anonymous" className="max-h-[78vh] max-w-full object-contain" alt="AI 文字编辑"/>
-          {regions.map((item, index) => <div key={item.id} className={`pointer-events-none absolute z-40 border-2 ${item.mode === 'add' ? 'border-emerald-300 bg-emerald-400/10' : 'border-cyan-300 bg-cyan-400/10'}`} style={{ left: `${item.box.x * 100}%`, top: `${item.box.y * 100}%`, width: `${item.box.width * 100}%`, height: `${item.box.height * 100}%` }}><span className={`absolute -left-2 -top-3 flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-xs font-black text-black ${item.mode === 'add' ? 'bg-emerald-300' : 'bg-cyan-300'}`}>{index + 1}</span></div>)}
-          {draftBox && <div
-            className={`pointer-events-none absolute z-50 border-2 border-dashed ${selectingMode === 'add' ? 'border-emerald-300 bg-emerald-400/10' : 'border-cyan-300 bg-cyan-400/10'}`}
+          <svg className="pointer-events-none absolute inset-0 z-40 h-full w-full" viewBox="0 0 1000 1000" preserveAspectRatio="none">{regions.map((item, index) => item.tool === 'brush' ? <g key={item.id}><polyline points={(item.points || []).map(point => `${point.x * 1000},${point.y * 1000}`).join(' ')} fill="none" stroke={item.mode === 'content' ? '#6ee7b7' : '#67e8f9'} strokeOpacity="0.42" strokeWidth={(item.brushSize || 0.035) * 1000} strokeLinecap="round" strokeLinejoin="round"/><text x={item.box.x * 1000} y={Math.max(22, item.box.y * 1000 - 8)} fill="#fff" fontSize="24" fontWeight="900">{index + 1}</text></g> : null)}{maskTool === 'brush' && draftPoints.length > 0 && <polyline points={draftPoints.map(point => `${point.x * 1000},${point.y * 1000}`).join(' ')} fill="none" stroke="#67e8f9" strokeOpacity="0.55" strokeWidth={brushSize * 1000} strokeLinecap="round" strokeLinejoin="round"/>}</svg>
+          {regions.map((item, index) => item.tool === 'rect' && <div key={item.id} className={`pointer-events-none absolute z-40 border-2 ${item.mode === 'content' ? 'border-emerald-300 bg-emerald-400/10' : 'border-cyan-300 bg-cyan-400/10'}`} style={{ left: `${item.box.x * 100}%`, top: `${item.box.y * 100}%`, width: `${item.box.width * 100}%`, height: `${item.box.height * 100}%` }}><span className={`absolute -left-2 -top-3 flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-xs font-black text-black ${item.mode === 'content' ? 'bg-emerald-300' : 'bg-cyan-300'}`}>{index + 1}</span></div>)}
+          {draftBox && maskTool === 'rect' && <div
+            className={`pointer-events-none absolute z-50 border-2 border-dashed ${selectingMode === 'content' ? 'border-emerald-300 bg-emerald-400/10' : 'border-cyan-300 bg-cyan-400/10'}`}
             style={{ left: `${draftBox.x * 100}%`, top: `${draftBox.y * 100}%`, width: `${draftBox.width * 100}%`, height: `${draftBox.height * 100}%` }}
           />}
           {selectingMode && <div
@@ -278,16 +273,18 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       </div>
     </div>
     <aside className="w-[380px] shrink-0 overflow-y-auto border-l border-[#333] bg-[#171717] p-4 text-white">
-      <div className="grid grid-cols-2 gap-2"><button onClick={() => { setSelectingMode('replace'); setMessage('请框选需要替换的原文字'); }} disabled={working || regions.length >= 5} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold disabled:opacity-40 ${selectingMode === 'replace' ? 'border-cyan-300 bg-cyan-500/20 text-cyan-200' : 'border-[#444] bg-[#222]'}`}><Type size={15}/>框选改字</button><button onClick={() => { setSelectingMode('add'); setMessage('请框选要新增文字的空白区域'); }} disabled={working || regions.length >= 5} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold disabled:opacity-40 ${selectingMode === 'add' ? 'border-emerald-300 bg-emerald-500/20 text-emerald-200' : 'border-[#444] bg-[#222]'}`}><Plus size={15}/>框选新增</button></div>
+      <div className="grid grid-cols-2 gap-2"><button onClick={() => { setMaskTool('rect'); setMessage('已选择框选工具'); }} disabled={working} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${maskTool === 'rect' ? 'border-violet-400 bg-violet-500/20' : 'border-[#444] bg-[#222]'}`}><Square size={14}/>框选</button><button onClick={() => { setMaskTool('brush'); setMessage('已选择涂抹工具'); }} disabled={working} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${maskTool === 'brush' ? 'border-violet-400 bg-violet-500/20' : 'border-[#444] bg-[#222]'}`}><Paintbrush size={14}/>涂抹</button></div>
+      {maskTool === 'brush' && <label className="mt-2 flex items-center gap-3 text-[11px] text-gray-400">笔刷大小<input type="range" min="0.01" max="0.12" step="0.005" value={brushSize} onChange={event => setBrushSize(Number(event.target.value))} className="flex-1"/></label>}
+      <div className="mt-2 grid grid-cols-2 gap-2"><button onClick={() => { setSelectingMode('text'); setMessage(`请用${maskTool === 'brush' ? '涂抹' : '框选'}标记要修改的文字区域`); }} disabled={working || regions.length >= 5} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold disabled:opacity-40 ${selectingMode === 'text' ? 'border-cyan-300 bg-cyan-500/20 text-cyan-200' : 'border-[#444] bg-[#222]'}`}><Type size={15}/>修改文字</button><button onClick={() => { setSelectingMode('content'); setMessage(`请用${maskTool === 'brush' ? '涂抹' : '框选'}标记要修改的内容区域`); }} disabled={working || regions.length >= 5} className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold disabled:opacity-40 ${selectingMode === 'content' ? 'border-emerald-300 bg-emerald-500/20 text-emerald-200' : 'border-[#444] bg-[#222]'}`}><Sparkles size={15}/>修改内容</button></div>
       <div className="mt-3 max-h-[52vh] space-y-3 overflow-y-auto pr-1">
-        {regions.map((item, index) => <div key={item.id} className={`rounded-xl border p-3 ${item.mode === 'add' ? 'border-emerald-800/70 bg-emerald-500/5' : 'border-cyan-800/70 bg-cyan-500/5'}`}>
-          <div className="mb-2 flex items-center justify-between"><div className="flex items-center gap-2"><span className={`flex h-6 min-w-6 items-center justify-center rounded-full text-xs font-black text-black ${item.mode === 'add' ? 'bg-emerald-300' : 'bg-cyan-300'}`}>{index + 1}</span><select value={item.mode} onChange={event => updateItem(item.id, { mode: event.target.value as EditMode })} disabled={working} className="rounded border border-[#444] bg-[#202020] px-2 py-1 text-xs"><option value="replace">替换原文字</option><option value="add">空白处新增</option></select></div><button onClick={() => removeItem(item.id)} disabled={working} className="rounded p-1.5 text-red-400 hover:bg-red-500/10"><Trash2 size={15}/></button></div>
-          <textarea value={item.text} onChange={event => updateItem(item.id, { text: event.target.value })} rows={2} placeholder={item.mode === 'add' ? '输入要新增的准确文字' : '输入替换后的准确文字'} className="w-full resize-none rounded-lg border border-[#444] bg-[#202020] p-2 text-sm outline-none focus:border-violet-500"/>
+        {regions.map((item, index) => <div key={item.id} className={`rounded-xl border p-3 ${item.mode === 'content' ? 'border-emerald-800/70 bg-emerald-500/5' : 'border-cyan-800/70 bg-cyan-500/5'}`}>
+          <div className="mb-2 flex items-center justify-between"><div className="flex items-center gap-2"><span className={`flex h-6 min-w-6 items-center justify-center rounded-full text-xs font-black text-black ${item.mode === 'content' ? 'bg-emerald-300' : 'bg-cyan-300'}`}>{index + 1}</span><select value={item.mode} onChange={event => updateItem(item.id, { mode: event.target.value as EditMode })} disabled={working} className="rounded border border-[#444] bg-[#202020] px-2 py-1 text-xs"><option value="text">修改文字</option><option value="content">修改内容</option></select><span className="text-[10px] text-gray-500">{item.tool === 'brush' ? '涂抹' : '框选'}</span></div><button onClick={() => removeItem(item.id)} disabled={working} className="rounded p-1.5 text-red-400 hover:bg-red-500/10"><Trash2 size={15}/></button></div>
+          <textarea value={item.text} onChange={event => updateItem(item.id, { text: event.target.value })} rows={2} placeholder={item.mode === 'text' ? '输入要显示的准确文字' : '描述该区域要修改成什么内容'} className="w-full resize-none rounded-lg border border-[#444] bg-[#202020] p-2 text-sm outline-none focus:border-violet-500"/>
           <textarea value={item.style} onChange={event => updateItem(item.id, { style: event.target.value })} rows={2} placeholder="可选：描述字体、颜色、大小、排版或特效；留空则由 AI 自动匹配页面" className="mt-2 w-full resize-none rounded-lg border border-[#383838] bg-[#191919] p-2 text-xs text-gray-300 outline-none focus:border-violet-500"/>
         </div>)}
         {!regions.length && <div className="rounded-xl border border-dashed border-[#444] px-4 py-8 text-center text-xs text-gray-500">点击上方按钮，在图片内连续框选区域</div>}
       </div>
-      <div className="mt-4 space-y-3 rounded-xl border border-[#303030] bg-[#111] p-3"><label className="block text-xs font-bold">AI 模型<select value={model} onChange={event => setModel(event.target.value as ImageModel)} disabled={working} className="mt-2 w-full rounded-lg border border-[#444] bg-[#202020] px-3 py-2 text-xs outline-none">{AI_TEXT_MODELS.map(item => <option key={item.id} value={item.id}>{item.label} · 整个任务约 ¥{item.price.toFixed(2)}</option>)}</select></label>{model === 'gpt-image-2' && <label className="block text-xs font-bold text-violet-200">GPT 全局改字指令<textarea value={gptGlobalInstruction} onChange={event => setGptGlobalInstruction(event.target.value)} disabled={working} rows={5} className="mt-2 w-full resize-y rounded-lg border border-violet-700/60 bg-[#191522] p-2 text-xs font-normal leading-relaxed text-gray-200 outline-none focus:border-violet-400"/><span className="mt-1 block text-[10px] font-normal text-gray-500">默认约束整张图片只变框选文案；可按本次任务自行编辑。</span></label>}<button onClick={() => void runBatch()} disabled={working || !readyRegions.length} className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-3 text-sm font-bold disabled:opacity-40"><Sparkles size={16}/>{working ? 'AI 一次性处理中…' : `一次修改 ${readyRegions.length} 个区域 · 约 ¥${estimatedTotal.toFixed(2)}`}</button><p className="text-xs leading-relaxed text-gray-400">{message}</p><p className="text-[10px] leading-relaxed text-gray-600">最多 5 个区域会合并为一个遮罩，只发送一个生图任务并计费一次；任务失败不扣网站额度。</p></div>
+      <div className="mt-4 space-y-3 rounded-xl border border-[#303030] bg-[#111] p-3"><label className="block text-xs font-bold">AI 模型<select value={model} onChange={event => setModel(event.target.value as ImageModel)} disabled={working} className="mt-2 w-full rounded-lg border border-[#444] bg-[#202020] px-3 py-2 text-xs outline-none">{AI_TEXT_MODELS.map(item => <option key={item.id} value={item.id}>{item.label} · 整个任务约 ¥{item.price.toFixed(2)}</option>)}</select></label>{model === 'gpt-image-2' && <label className="block text-xs font-bold text-violet-200">GPT 全局遮罩指令<textarea value={gptGlobalInstruction} onChange={event => setGptGlobalInstruction(event.target.value)} disabled={working} rows={5} className="mt-2 w-full resize-y rounded-lg border border-violet-700/60 bg-[#191522] p-2 text-xs font-normal leading-relaxed text-gray-200 outline-none focus:border-violet-400"/><span className="mt-1 block text-[10px] font-normal text-gray-500">默认只改变遮罩内容，遮罩外强制保留原图；可按本次任务编辑。</span></label>}<button onClick={() => void runBatch()} disabled={working || !readyRegions.length} className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-3 text-sm font-bold disabled:opacity-40"><Sparkles size={16}/>{working ? 'AI 一次性处理中…' : `一次修改 ${readyRegions.length} 个区域 · 约 ¥${estimatedTotal.toFixed(2)}`}</button><p className="text-xs leading-relaxed text-gray-400">{message}</p><p className="text-[10px] leading-relaxed text-gray-600">最多 5 个区域会合并为一个遮罩，只发送一个生图任务并计费一次；任务失败不扣网站额度。</p></div>
       <div className="mt-4 grid grid-cols-2 gap-2"><button onClick={onClose} disabled={working} className="rounded-lg border border-[#444] px-3 py-2 text-xs font-bold">取消</button><button onClick={() => onConfirm(currentImage)} disabled={working || currentImage === imageUrl} className="flex items-center justify-center gap-2 rounded-lg bg-red-600 px-3 py-2 text-xs font-bold disabled:opacity-40"><Check size={15}/>保存为新图</button></div>
     </aside>
   </div>;

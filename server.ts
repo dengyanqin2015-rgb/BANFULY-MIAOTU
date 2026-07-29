@@ -1093,6 +1093,7 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
   }
   const targetSize = requestedSize;
   const headers = { "Authorization": `Bearer ${apiKey}` };
+  const isEditRequest = images.length > 0;
   const promptGuidance = [
     "请准确理解并执行用户意图；如果指令较简短或存在未说明的视觉细节，请采用合理、保守且专业的商业视觉默认值补全，不要反问。",
     images.length > 0
@@ -1101,13 +1102,20 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
     "画面应适合全年龄大众观看，角色造型完整得体、姿态自然，场景积极友好；不要自行添加无关人物、品牌、文字或可能引起误解的元素。",
     "除用户明确要求保留或生成的品牌标识与文字外，画面中不要添加任何额外水印、签名、平台角标、作者署名、二维码、应用图标或装饰性伪文字；保持成品画面干净。"
   ].join("\n");
+  const editGuidance = [
+    "这是对输入图片的局部编辑任务，不是重新创作或重绘整张图片。",
+    "透明遮罩区域是唯一允许变化的位置；只执行用户对各编号区域明确指定的修改。",
+    "遮罩外的构图、人物、商品、背景、光影、颜色、纹理、文字、图标和尺寸必须保持原图，不添加额外创意、文字、水印或装饰。"
+  ].join("\n");
   // Only send the compiled prompt to the provider. Including the untouched
   // original prompt here would reintroduce the exact wording the compiler
   // removed and could cause an otherwise-corrected request to be blocked.
-  const enhancedPrompt = `执行指令：\n${safetyCompilation.optimized_prompt}\n\n生成规范：\n${promptGuidance}`;
-  const retryPrompt = safetyCompilation.risk_reason.some(reason => reason.includes("泳装") || reason.includes("内衣"))
-    ? `执行指令：\n${safetyCompilation.optimized_prompt}\n\n安全重绘要求：\n保持用户要求的泳装商品主题与款式不变。改用专业服装目录画面：仅呈现明确成年的时尚模特，平视全身构图，自然站立，双臂放松，表情自然；泳装面料完整不透，画面重点是服装版型、颜色、材质和穿着效果。避免低角度、身体局部特写、夸张曲线、挑逗姿态和任何性暗示。背景简洁明亮，整体适合大众电商平台展示。`
-    : `${enhancedPrompt}\n请重新构思一个同样满足用户要求、表达更清晰稳妥的版本，保持主体和目标不变。`;
+  const enhancedPrompt = `执行指令：\n${safetyCompilation.optimized_prompt}\n\n${isEditRequest ? `局部编辑规范：\n${editGuidance}` : `生成规范：\n${promptGuidance}`}`;
+  const retryPrompt = isEditRequest
+    ? `${enhancedPrompt}\n若原指令表述不够清晰，只对其做安全、保守的同义理解，仍不得扩大遮罩范围或改变遮罩外内容。`
+    : safetyCompilation.risk_reason.some(reason => reason.includes("泳装") || reason.includes("内衣"))
+      ? `执行指令：\n${safetyCompilation.optimized_prompt}\n\n安全重绘要求：\n保持用户要求的泳装商品主题与款式不变。改用专业服装目录画面：仅呈现明确成年的时尚模特，平视全身构图，自然站立，双臂放松，表情自然；泳装面料完整不透，画面重点是服装版型、颜色、材质和穿着效果。避免低角度、身体局部特写、夸张曲线、挑逗姿态和任何性暗示。背景简洁明亮，整体适合大众电商平台展示。`
+      : `${enhancedPrompt}\n请重新构思一个同样满足用户要求、表达更清晰稳妥的版本，保持主体和目标不变。`;
 
   const preparedImages: { mimeType: string; bytes: Uint8Array; extension: string; index: number }[] = [];
   for (const [index, image] of images.entries()) {

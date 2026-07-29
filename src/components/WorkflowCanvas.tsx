@@ -19,6 +19,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { ImageNode, ImageNodeData } from './ImageNode';
+import { MaskEditNode, type MaskEditNodeData } from './MaskEditNode';
 import { NoteNode, NoteNodeData } from './NoteNode';
 import { GenerationBar, GenerationBarRef } from './GenerationBar';
 import { Assistant, AssistantRef } from './Assistant';
@@ -32,6 +33,7 @@ import { User } from '../types';
 const nodeTypes = {
   imageNode: ImageNode,
   noteNode: NoteNode,
+  maskEditNode: MaskEditNode,
 };
 
 interface Project {
@@ -409,7 +411,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       delete newNodeData.onAdjust;
       delete newNodeData.onAnalyze;
       delete newNodeData.onCrop;
-      delete newNodeData.onTextEdit;
+      delete newNodeData.onCreateMask;
+      delete (newNodeData as Record<string, unknown>).onApply;
       delete newNodeData.onSendToAssistant;
 
       // Extract imageUrl
@@ -690,6 +693,41 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       };
     }
 
+    if (node.type === 'maskEditNode') {
+      const nodeData = node.data as MaskEditNodeData;
+      return {
+        ...node,
+        data: {
+          ...nodeData,
+          onDelete: () => {
+            setNodes(current => current.filter(item => item.id !== node.id));
+            setEdges(current => current.filter(edge => edge.source !== node.id && edge.target !== node.id));
+          },
+          onApply: (editedImageUrl: string) => {
+            const createdAt = Date.now();
+            const resultNodeId = `mask-result-${createdAt}`;
+            setNodes(current => {
+              const position = findSafePositionToRight(node.position.x + 400, node.position.y, current);
+              const resultNode = attachNodeActions({
+                id: resultNodeId,
+                type: 'imageNode',
+                position,
+                data: {
+                  prompt: `遮罩修改自：${nodeData.prompt || '原始图片'}`,
+                  imageUrl: editedImageUrl,
+                  type: 'source',
+                  sourceNodeId: node.id,
+                  resolution: '遮罩定点修改图片'
+                }
+              });
+              return [...current, resultNode];
+            });
+            setEdges(current => [...current, { id: `edge-mask-result-${createdAt}`, source: node.id, target: resultNodeId }]);
+          }
+        }
+      };
+    }
+
     const nodeData = node.data as ImageNodeData;
     
     // Recovery logic for legacy nodes
@@ -821,29 +859,27 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             }))
           ]);
         } : undefined,
-        onTextEdit: nodeData.imageUrl ? (editedImageUrl: string) => {
+        onCreateMask: nodeData.imageUrl ? () => {
           const createdAt = Date.now();
-          const editedNodeId = `text-edit-${createdAt}`;
+          const maskNodeId = `mask-edit-${createdAt}`;
           setNodes(current => {
             const position = findSafePositionToRight(node.position.x + 400, node.position.y, current);
-            const editedNode = attachNodeActions({
-              id: editedNodeId,
-              type: 'imageNode',
+            const maskNode = attachNodeActions({
+              id: maskNodeId,
+              type: 'maskEditNode',
               position,
               data: {
-                prompt: `文字编辑自：${nodeData.prompt || '原始图片'}`,
-                imageUrl: editedImageUrl,
-                type: 'source',
+                prompt: nodeData.prompt || '原始图片',
+                imageUrl: nodeData.imageUrl!,
                 sourceNodeId: node.id,
-                resolution: nodeData.resolution || '文字编辑图片'
               }
             });
-            return [...current, editedNode];
+            return [...current, maskNode];
           });
           setEdges(current => [...current, {
-            id: `edge-text-edit-${createdAt}`,
+            id: `edge-mask-edit-${createdAt}`,
             source: node.id,
-            target: editedNodeId
+            target: maskNodeId
           }]);
         } : undefined,
         onSendToAssistant: nodeData.imageUrl ? () => {

@@ -1,12 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position, NodeProps, type Node } from '@xyflow/react';
-import { Download, Trash2, Loader2, Search, RefreshCw, Settings2, FileImage, X, Copy, Check, Sparkles, Scissors, Type } from 'lucide-react';
+import { Download, Trash2, Loader2, Search, RefreshCw, Settings2, FileImage, X, Copy, Check, Sparkles, Scissors, Brush } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { ImageSliceEditor } from './ImageSliceEditor';
-import { ImageTextEditor } from './ImageTextEditor';
 
 export interface ImageNodeData extends Record<string, unknown> {
   imageUrl?: string;
@@ -18,7 +17,7 @@ export interface ImageNodeData extends Record<string, unknown> {
   onAdjust?: (mode?: 'reference' | 'text') => void;
   onAnalyze?: () => void;
   onCrop?: (images: string[]) => void;
-  onTextEdit?: (imageUrl: string) => void;
+  onCreateMask?: () => void;
   onSendToAssistant?: () => void;
   refImages?: string[]; // Base64 or URLs of reference images used
   originalImages?: { data: string; mimeType: string; sourceNodeId?: string }[];
@@ -44,7 +43,6 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
   const [analysisCopied, setAnalysisCopied] = useState(false);
   const [showAdjustChoice, setShowAdjustChoice] = useState(false);
   const [showSliceEditor, setShowSliceEditor] = useState(false);
-  const [showTextEditor, setShowTextEditor] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const handleCopy = (e: React.MouseEvent) => {
@@ -372,12 +370,12 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
               <span>一键裁剪</span>
             </button>
             <button
-              onClick={() => { setShowMenu(false); setShowTextEditor(true); }}
+              onClick={() => { setShowMenu(false); data.onCreateMask?.(); }}
               disabled={!data.imageUrl}
               className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition-colors disabled:opacity-40"
             >
-              <Type size={16} className="text-cyan-400" />
-              <span>编辑图片文字</span>
+              <Brush size={16} className="text-cyan-400" />
+              <span>插入遮罩编辑层</span>
             </button>
             <div className="h-px bg-[#333] my-1.5 mx-2" />
             <div className="px-4 py-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-widest">导出图片 / EXPORT</div>
@@ -415,18 +413,6 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
           onConfirm={(images) => {
             data.onCrop?.(images);
             setShowSliceEditor(false);
-          }}
-        />,
-        document.body
-      )}
-
-      {showTextEditor && data.imageUrl && createPortal(
-        <ImageTextEditor
-          imageUrl={data.imageUrl}
-          onClose={() => setShowTextEditor(false)}
-          onConfirm={(imageUrl) => {
-            data.onTextEdit?.(imageUrl);
-            setShowTextEditor(false);
           }}
         />,
         document.body
