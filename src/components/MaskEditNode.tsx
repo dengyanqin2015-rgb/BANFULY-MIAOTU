@@ -19,7 +19,7 @@ export const MaskEditNode = ({ data, selected }: NodeProps<Node<MaskEditNodeData
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
   const [draft, setDraft] = useState<MaskEditorDraft | undefined>(data.draft);
-  const preserveDraft = useCallback((next: MaskEditorDraft) => { setDraft(next); data.onDraftChange?.(next); }, [data]);
+  const preserveDraft = useCallback((next: MaskEditorDraft) => { setDraft(next); data.onDraftChange?.(next); }, [data.onDraftChange]);
 
   const runInBackground = (task: Promise<string>) => {
     setWorking(true); setError('');
