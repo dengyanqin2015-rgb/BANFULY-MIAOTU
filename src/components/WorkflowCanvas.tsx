@@ -413,6 +413,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       delete newNodeData.onCrop;
       delete newNodeData.onCreateMask;
       delete (newNodeData as Record<string, unknown>).onApply;
+      delete (newNodeData as Record<string, unknown>).onDraftChange;
       delete newNodeData.onSendToAssistant;
 
       // Extract imageUrl
@@ -702,6 +703,9 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           onDelete: () => {
             setNodes(current => current.filter(item => item.id !== node.id));
             setEdges(current => current.filter(edge => edge.source !== node.id && edge.target !== node.id));
+          },
+          onDraftChange: (draft) => {
+            setNodes(current => current.map(item => item.id === node.id ? { ...item, data: { ...item.data, draft } } : item));
           },
           onApply: (editedImageUrl: string) => {
             const createdAt = Date.now();

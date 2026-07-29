@@ -1,17 +1,21 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Check, Paintbrush, Redo2, Sparkles, Square, Trash2, Type, Undo2, X } from 'lucide-react';
 import { generateImage, type AspectRatio, type ImageModel } from '../lib/gemini';
 
 type Box = { x: number; y: number; width: number; height: number };
-type EditMode = 'text' | 'content';
-type MaskTool = 'rect' | 'brush';
-type Point = { x: number; y: number };
-type EditRegion = { id: string; box: Box; mode: EditMode; text: string; style: string; tool: MaskTool; points?: Point[]; brushSize?: number };
+export type EditMode = 'text' | 'content';
+export type MaskTool = 'rect' | 'brush';
+export type Point = { x: number; y: number };
+export type EditRegion = { id: string; box: Box; mode: EditMode; text: string; style: string; tool: MaskTool; points?: Point[]; brushSize?: number };
+export interface MaskEditorDraft { regions: EditRegion[]; maskTool: MaskTool; brushSize: number; model: ImageModel; gptGlobalInstruction: string }
 
 interface ImageTextEditorProps {
   imageUrl: string;
   onClose: () => void;
   onConfirm: (imageUrl: string) => void;
+  onBackgroundTask?: (task: Promise<string>) => void;
+  initialDraft?: MaskEditorDraft;
+  onDraftChange?: (draft: MaskEditorDraft) => void;
   title?: string;
 }
 
@@ -70,19 +74,20 @@ const compositeMaskedResult = (
   outputContext.drawImage(generatedCanvas, padded.x, padded.y, padded.width, padded.height);
 };
 
-export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onClose, onConfirm, title = 'AI 遮罩定点修改' }) => {
+export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onClose, onConfirm, onBackgroundTask, initialDraft, onDraftChange, title = 'AI 遮罩定点修改' }) => {
   const [currentImage, setCurrentImage] = useState(imageUrl);
-  const [regions, setRegions] = useState<EditRegion[]>([]);
+  const [regions, setRegions] = useState<EditRegion[]>(initialDraft?.regions || []);
   const [draftBox, setDraftBox] = useState<Box | null>(null);
   const [selectingMode, setSelectingMode] = useState<EditMode | null>(null);
-  const [maskTool, setMaskTool] = useState<MaskTool>('rect');
-  const [brushSize, setBrushSize] = useState(0.035);
+  const [maskTool, setMaskTool] = useState<MaskTool>(initialDraft?.maskTool || 'rect');
+  const [brushSize, setBrushSize] = useState(initialDraft?.brushSize || 0.035);
   const [draftPoints, setDraftPoints] = useState<Point[]>([]);
   const [model, setModel] = useState<ImageModel>(() => {
+    if (initialDraft?.model) return initialDraft.model;
     const saved = localStorage.getItem('image_text_ai_model') as ImageModel | null;
     return AI_TEXT_MODELS.some(item => item.id === saved) ? saved! : 'gpt-image-2';
   });
-  const [gptGlobalInstruction, setGptGlobalInstruction] = useState(() => localStorage.getItem('gpt_text_edit_global_instruction') || DEFAULT_GPT_GLOBAL_INSTRUCTION);
+  const [gptGlobalInstruction, setGptGlobalInstruction] = useState(() => initialDraft?.gptGlobalInstruction || localStorage.getItem('gpt_text_edit_global_instruction') || DEFAULT_GPT_GLOBAL_INSTRUCTION);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState('可连续框选多个区域，并分别输入需要生成的文字');
   const [historyIndex, setHistoryIndex] = useState(0);
@@ -92,6 +97,10 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
   const modelOption = AI_TEXT_MODELS.find(item => item.id === model) || AI_TEXT_MODELS[0];
   const readyRegions = regions.filter(item => item.text.trim());
   const estimatedTotal = readyRegions.length ? modelOption.price : 0;
+
+  useEffect(() => {
+    onDraftChange?.({ regions, maskTool, brushSize, model, gptGlobalInstruction });
+  }, [brushSize, gptGlobalInstruction, maskTool, model, onDraftChange, regions]);
 
   const updateDraft = (clientX: number, clientY: number) => {
     const stage = stageRef.current?.getBoundingClientRect(); const start = startRef.current;
@@ -234,16 +243,26 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
 
   const runBatch = async () => {
     if (!readyRegions.length) { setMessage('请至少框选一个区域并填写文字'); return; }
-    setWorking(true); localStorage.setItem('image_text_ai_model', model);
+    localStorage.setItem('image_text_ai_model', model);
     if (model === 'gpt-image-2') localStorage.setItem('gpt_text_edit_global_instruction', gptGlobalInstruction.trim() || DEFAULT_GPT_GLOBAL_INSTRUCTION);
-    try {
-      setMessage(`正在一次性处理 ${readyRegions.length} 个区域…`);
-      const result = await editRegions(currentImage, readyRegions); pushHistory(result);
+    const task = (async () => {
+      const result = await editRegions(currentImage, readyRegions);
       const token = localStorage.getItem('auth_token');
       await fetch('/api/user/deduct-credit', {
         method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ amount: modelOption.price }),
       }).catch(() => undefined);
+      return result;
+    })();
+    if (onBackgroundTask) {
+      onBackgroundTask(task);
+      onClose();
+      return;
+    }
+    setWorking(true);
+    try {
+      setMessage(`正在一次性处理 ${readyRegions.length} 个区域…`);
+      const result = await task; pushHistory(result);
       setMessage(`已通过一个任务完成 ${readyRegions.length} 个区域，只计费一次，可以保存为新图`);
     } catch (error) {
       setMessage(`批量修改失败：${error instanceof Error ? error.message : '未知错误'}；本次不扣网站额度`);
