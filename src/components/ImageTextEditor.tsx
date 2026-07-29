@@ -27,7 +27,7 @@ const AI_TEXT_MODELS: { id: ImageModel; label: string; price: number }[] = [
   { id: 'gemini-3-pro-image-preview', label: 'Google Pro 3.0', price: 1.00 },
 ];
 
-const DEFAULT_GPT_GLOBAL_INSTRUCTION = '只修改用户遮罩标记区域内的指定文字或画面内容。整张图片的构图、尺寸、商品、人物、背景、光影、色彩、纹理、装饰、图标及所有未遮罩内容必须保持与原图完全一致；不得重绘、移动、缩放或美化遮罩区域以外的任何内容。文字任务必须逐字准确并继承原位置的字体风格、字号、颜色、材质、描边、阴影和排版；内容任务只执行对应编号中明确描述的变化。';
+const DEFAULT_GPT_GLOBAL_INSTRUCTION = '基于完整原图进行自然编辑，重点修改用户标记的指定区域。允许为了消除接缝而自然协调修改区域边缘附近的光影、颜色、纹理和过渡，但不要重构整张图片，也不要改变与任务无关的人物、商品、背景、构图、图标和文字。文字任务应逐字准确，并尽量继承原位置的字体风格、字号、颜色、材质、描边、阴影和排版；内容任务只执行对应编号中明确描述的变化。';
 
 const loadImage = (url: string) => new Promise<HTMLImageElement>((resolve, reject) => {
   const image = new Image();
@@ -45,34 +45,6 @@ const closestAspect = (width: number, height: number, model: ImageModel) => {
   ];
   const target = width / Math.max(1, height);
   return ratios.reduce((best, item) => Math.abs(Math.log(target / item.value)) < Math.abs(Math.log(target / best.value)) ? item : best, ratios[0]);
-};
-
-const compositeMaskedResult = (
-  outputContext: CanvasRenderingContext2D,
-  source: HTMLImageElement,
-  edited: HTMLImageElement,
-  padded: Box,
-  preserveMask: HTMLCanvasElement,
-) => {
-  const width = preserveMask.width; const height = preserveMask.height;
-  const originalCanvas = document.createElement('canvas'); originalCanvas.width = width; originalCanvas.height = height;
-  const generatedCanvas = document.createElement('canvas'); generatedCanvas.width = width; generatedCanvas.height = height;
-  const originalContext = originalCanvas.getContext('2d', { willReadFrequently: true });
-  const generatedContext = generatedCanvas.getContext('2d', { willReadFrequently: true });
-  const maskContext = preserveMask.getContext('2d', { willReadFrequently: true });
-  if (!originalContext || !generatedContext || !maskContext) throw new Error('无法合成 AI 遮罩结果');
-  originalContext.drawImage(source, padded.x, padded.y, padded.width, padded.height, 0, 0, width, height);
-  generatedContext.drawImage(edited, 0, 0, width, height);
-  const original = originalContext.getImageData(0, 0, width, height);
-  const generated = generatedContext.getImageData(0, 0, width, height);
-  const maskPixels = maskContext.getImageData(0, 0, width, height);
-  for (let pixel = 0; pixel < width * height; pixel += 1) {
-    const offset = pixel * 4; const editAlpha = 1 - maskPixels.data[offset + 3] / 255;
-    for (let channel = 0; channel < 3; channel += 1) generated.data[offset + channel] = Math.round(original.data[offset + channel] * (1 - editAlpha) + generated.data[offset + channel] * editAlpha);
-    generated.data[offset + 3] = 255;
-  }
-  generatedContext.putImageData(generated, 0, 0);
-  outputContext.drawImage(generatedCanvas, padded.x, padded.y, padded.width, padded.height);
 };
 
 export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onClose, onConfirm, onBackgroundTask, backgroundActive = false, initialDraft, onDraftChange, title = 'AI 遮罩定点修改' }) => {
@@ -163,29 +135,9 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       x: item.box.x * source.naturalWidth, y: item.box.y * source.naturalHeight,
       width: item.box.width * source.naturalWidth, height: item.box.height * source.naturalHeight,
     }));
-    let padded: Box;
-    if (model === 'gpt-image-2') {
-      // GPT needs the complete composition to understand what must remain
-      // untouched. A full-size image and mask also keep mask coordinates exact.
-      padded = { x: 0, y: 0, width: source.naturalWidth, height: source.naturalHeight };
-    } else {
-      const left = Math.min(...selectedRegions.map(item => item.x));
-      const top = Math.min(...selectedRegions.map(item => item.y));
-      const right = Math.max(...selectedRegions.map(item => item.x + item.width));
-      const bottom = Math.max(...selectedRegions.map(item => item.y + item.height));
-      const unionWidth = right - left; const unionHeight = bottom - top;
-      padded = {
-        x: Math.max(0, left - unionWidth * 0.1), y: Math.max(0, top - unionHeight * 0.14),
-        width: Math.min(source.naturalWidth, unionWidth * 1.2), height: Math.min(source.naturalHeight, unionHeight * 1.28),
-      };
-      padded.x = Math.min(padded.x, source.naturalWidth - padded.width); padded.y = Math.min(padded.y, source.naturalHeight - padded.height);
-      const cropAspect = closestAspect(padded.width, padded.height, model);
-      const centerX = padded.x + padded.width / 2; const centerY = padded.y + padded.height / 2;
-      if (padded.width / padded.height < cropAspect.value) padded.width = Math.min(source.naturalWidth, padded.height * cropAspect.value);
-      else padded.height = Math.min(source.naturalHeight, padded.width / cropAspect.value);
-      padded.x = Math.max(0, Math.min(source.naturalWidth - padded.width, centerX - padded.width / 2));
-      padded.y = Math.max(0, Math.min(source.naturalHeight - padded.height, centerY - padded.height / 2));
-    }
+    // Both providers receive the complete composition. Regions, coordinates,
+    // mask and prompt guide the requested changes without client-side cutting.
+    const padded: Box = { x: 0, y: 0, width: source.naturalWidth, height: source.naturalHeight };
     const aspect = closestAspect(padded.width, padded.height, model);
 
     const crop = document.createElement('canvas'); crop.width = Math.max(1, Math.round(padded.width)); crop.height = Math.max(1, Math.round(padded.height));
@@ -217,19 +169,21 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       const exactText = selected.item.text.trim();
       const position = `区域${index + 1}位于输入图的左侧${Math.round((selected.x - padded.x) / padded.width * 100)}%、顶部${Math.round((selected.y - padded.y) / padded.height * 100)}%，宽${Math.round(selected.width / padded.width * 100)}%、高${Math.round(selected.height / padded.height * 100)}%`;
       const operation = selected.item.mode === 'text'
-        ? `仅修改该遮罩区域内的文字，目标文案为“${exactText}”；自然清除旧字并在原位置生成准确新字`
-        : `仅修改该遮罩区域内的画面内容，修改要求为“${exactText}”；不得改变区域外任何内容`;
+        ? `重点修改该标记区域内的文字，目标文案为“${exactText}”；自然清除旧字并在原位置生成准确新字`
+        : `重点修改该标记区域内的画面内容，修改要求为“${exactText}”；允许自然协调区域边缘，其他画面尽量保持`;
       const style = selected.item.style.trim()
         ? `样式要求：${selected.item.style.trim()}`
         : '样式要求：自动匹配整张海报及附近文字的字体、颜色、字号、间距、材质和广告特效';
-      return `${position}；${operation}；${style}。必须逐字准确显示“${exactText}”。`;
+      return selected.item.mode === 'text'
+        ? `${position}；${operation}；${style}。必须逐字准确显示“${exactText}”。`
+        : `${position}；${operation}；${style}。这是画面修改说明，不要把说明文字写到图片中。`;
     });
     const prompt = [
-      ...(model === 'gpt-image-2' ? [`全局强制指令：${gptGlobalInstruction.trim() || DEFAULT_GPT_GLOBAL_INSTRUCTION}`] : []),
-      `这是一次包含 ${items.length} 个独立区域的遮罩定点编辑任务。只允许修改遮罩中的这些区域。`,
+      `全局编辑指令：${model === 'gpt-image-2' ? (gptGlobalInstruction.trim() || DEFAULT_GPT_GLOBAL_INSTRUCTION) : DEFAULT_GPT_GLOBAL_INSTRUCTION}`,
+      `这是一次包含 ${items.length} 个独立区域的整图引导编辑任务。标记区域用于说明修改重点，不作为硬裁切边界。`,
       ...regionRules,
       '严格按照上述区域编号和坐标执行对应要求，不得交换、合并或遗漏区域；文字任务不得增字、漏字、错字或重复文字。',
-      '保持人物、商品、背景、图标以及遮罩外所有内容完全不变。不要新增其他文字、标志或水印。',
+      '整体画面必须自然连续，修改区域不能出现拼接边、色块、矩形边界或局部贴图感。不要新增其他文字、标志或水印。',
     ].join('\n');
     const cropUrl = crop.toDataURL('image/png'); const maskUrl = mask.toDataURL('image/png');
     const [editedUrl] = await generateImage({
@@ -240,10 +194,9 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     const edited = await loadImage(editedUrl);
     const output = document.createElement('canvas'); output.width = source.naturalWidth; output.height = source.naturalHeight;
     const outputContext = output.getContext('2d'); if (!outputContext) throw new Error('无法合成文字修改结果');
-    outputContext.drawImage(source, 0, 0);
-    // The provider mask is guidance, not a pixel guarantee. Enforce the same
-    // mask locally for both GPT and Gemini so every unmasked pixel stays exact.
-    compositeMaskedResult(outputContext, source, edited, padded, mask);
+    // Preserve the provider's complete result for natural continuity. Hard
+    // pixel compositing is intentionally avoided because it creates seams.
+    outputContext.drawImage(edited, 0, 0, output.width, output.height);
     return output.toDataURL('image/png');
   };
 
