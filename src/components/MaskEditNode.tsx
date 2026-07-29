@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
-import { Brush, Loader2, Maximize2, RotateCcw, Trash2 } from 'lucide-react';
+import { Loader2, Maximize2, RotateCcw, Trash2 } from 'lucide-react';
 import { ImageTextEditor, type MaskEditorDraft } from './ImageTextEditor';
 
 export interface MaskEditNodeData extends Record<string, unknown> {
@@ -33,18 +33,20 @@ export const MaskEditNode = ({ data, selected }: NodeProps<Node<MaskEditNodeData
   };
 
   return <>
-    <div className={`w-[320px] overflow-hidden rounded-2xl border bg-[#171717] text-white shadow-2xl ${selected ? 'border-cyan-400' : 'border-[#343434]'}`}>
-      <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-0 !bg-cyan-400" />
-      <div className="flex items-center justify-between border-b border-[#303030] px-4 py-3">
-        <div className="flex items-center gap-2"><span className="rounded-lg bg-cyan-400/15 p-2 text-cyan-300"><Brush size={16}/></span><div><div className="text-sm font-bold">遮罩编辑层</div><div className="text-[10px] text-gray-500">框选或涂抹 · 文字与内容</div></div></div>
-        <button disabled={working} className="rounded-lg p-2 text-gray-500 hover:bg-white/10 hover:text-red-400 disabled:opacity-30" onClick={() => data.onDelete?.()} title="删除遮罩层"><Trash2 size={15}/></button>
+    <div className="flex w-[320px] flex-col gap-1.5 text-white">
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-400"><span className={`h-1.5 w-1.5 rounded-full ${working ? 'animate-pulse bg-cyan-300' : error ? 'bg-red-500' : 'bg-cyan-400'}`}/><span>遮罩编辑层</span></div>
+        <button disabled={working} className="rounded p-1 text-gray-500 hover:bg-[#333] hover:text-red-400 disabled:opacity-30" onClick={() => data.onDelete?.()} title="删除遮罩层"><Trash2 size={12}/></button>
       </div>
-      <button disabled={working} onClick={() => setOpen(true)} className="group relative block h-44 w-full overflow-hidden bg-black disabled:cursor-wait">
-        <img src={data.imageUrl} crossOrigin="anonymous" alt="遮罩编辑源图" className="h-full w-full object-contain opacity-70 transition group-hover:opacity-90"/>
-        <span className="absolute inset-0 flex items-center justify-center"><span className="flex items-center gap-2 rounded-xl border border-cyan-400/40 bg-black/75 px-4 py-2 text-xs font-bold text-cyan-200">{working ? <><Loader2 size={14} className="animate-spin"/>后台处理中…</> : <><Maximize2 size={14}/>{error ? '重新打开修改' : '打开遮罩编辑'}</>}</span></span>
-      </button>
-      <div className={`px-4 py-3 text-[11px] leading-relaxed ${error ? 'text-red-400' : working ? 'text-cyan-300' : 'text-gray-400'}`}>{error ? <span className="flex items-start gap-2"><RotateCcw size={13} className="mt-0.5 shrink-0"/>{error}</span> : working ? '任务已在后台运行，你可以继续操作画布；完成后会自动生成结果节点。' : '最多 5 个编号区域合并为一次提交、一次计费；开始后编辑器会自动缩小。'}</div>
-      <Handle type="source" position={Position.Right} className="!h-3 !w-3 !border-0 !bg-cyan-400" />
+      <div className={`relative w-full overflow-hidden rounded-lg bg-[#1a1a1a] shadow-2xl ${selected ? 'ring-2 ring-cyan-400 ring-offset-2 ring-offset-[#0a0a0a]' : 'border border-[#333]'}`}>
+        <Handle type="target" position={Position.Left} className="!-left-1 !h-2 !w-2 !border-0 !bg-cyan-400" />
+        <button disabled={working} onClick={() => setOpen(true)} className="group relative block w-full overflow-hidden bg-[#0a0a0a] disabled:cursor-wait">
+          <img src={data.imageUrl} crossOrigin="anonymous" alt="遮罩编辑源图" className="h-auto w-full object-contain opacity-75 transition group-hover:opacity-95"/>
+          <span className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-100 transition group-hover:bg-black/45"><span className="flex items-center gap-2 rounded-full border border-white/10 bg-black/70 px-3 py-1.5 text-[10px] font-bold text-cyan-200 backdrop-blur-md">{working ? <><Loader2 size={13} className="animate-spin"/>后台处理中…</> : <><Maximize2 size={13}/>{error ? '重新打开修改' : '打开遮罩编辑'}</>}</span></span>
+        </button>
+        <Handle type="source" position={Position.Right} className="!-right-1 !h-2 !w-2 !border-0 !bg-cyan-400" />
+      </div>
+      <div className={`px-1 text-[10px] leading-relaxed ${error ? 'text-red-400' : working ? 'text-cyan-300' : 'text-gray-500'}`}>{error ? <span className="flex items-start gap-1"><RotateCcw size={11} className="mt-0.5 shrink-0"/>{error}</span> : working ? '后台处理中，完成后自动在右侧生成结果图' : '框选或涂抹 · 修改文字或内容 · 一次提交'}</div>
     </div>
     {open && createPortal(<ImageTextEditor imageUrl={data.imageUrl} title="遮罩定点修改" onClose={() => setOpen(false)} onConfirm={(imageUrl) => { data.onApply?.(imageUrl); setOpen(false); }} onBackgroundTask={runInBackground} initialDraft={draft} onDraftChange={preserveDraft}/>, document.body)}
   </>;
