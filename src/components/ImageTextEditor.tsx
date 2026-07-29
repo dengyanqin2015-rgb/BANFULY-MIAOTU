@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Check, Paintbrush, Redo2, Sparkles, Square, Trash2, Type, Undo2, X } from 'lucide-react';
+import { Check, Minimize2, Paintbrush, Redo2, Sparkles, Square, Trash2, Type, Undo2 } from 'lucide-react';
 import { generateImage, type AspectRatio, type ImageModel } from '../lib/gemini';
 
 type Box = { x: number; y: number; width: number; height: number };
@@ -14,6 +14,7 @@ interface ImageTextEditorProps {
   onClose: () => void;
   onConfirm: (imageUrl: string) => void;
   onBackgroundTask?: (task: Promise<string>) => void;
+  backgroundActive?: boolean;
   initialDraft?: MaskEditorDraft;
   onDraftChange?: (draft: MaskEditorDraft) => void;
   title?: string;
@@ -74,7 +75,7 @@ const compositeMaskedResult = (
   outputContext.drawImage(generatedCanvas, padded.x, padded.y, padded.width, padded.height);
 };
 
-export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onClose, onConfirm, onBackgroundTask, initialDraft, onDraftChange, title = 'AI 遮罩定点修改' }) => {
+export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onClose, onConfirm, onBackgroundTask, backgroundActive = false, initialDraft, onDraftChange, title = 'AI 遮罩定点修改' }) => {
   const [currentImage, setCurrentImage] = useState(imageUrl);
   const [regions, setRegions] = useState<EditRegion[]>(initialDraft?.regions || []);
   const [draftBox, setDraftBox] = useState<Box | null>(null);
@@ -101,6 +102,11 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
   useEffect(() => {
     onDraftChange?.({ regions, maskTool, brushSize, model, gptGlobalInstruction });
   }, [brushSize, gptGlobalInstruction, maskTool, model, onDraftChange, regions]);
+
+  useEffect(() => {
+    setWorking(backgroundActive);
+    if (backgroundActive) setMessage('任务正在后台处理中，可以收起后继续操作画布，也可以随时重新打开查看。');
+  }, [backgroundActive]);
 
   const updateDraft = (clientX: number, clientY: number) => {
     const stage = stageRef.current?.getBoundingClientRect(); const start = startRef.current;
@@ -255,8 +261,15 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       return result;
     })();
     if (onBackgroundTask) {
+      setWorking(true);
+      setMessage(`已提交 ${readyRegions.length} 个区域，正在后台处理；可手动收起或留在此处查看。`);
       onBackgroundTask(task);
-      onClose();
+      void task.then(result => {
+        pushHistory(result);
+        setMessage(`后台任务已完成 ${readyRegions.length} 个区域，结果图已自动生成到画布右侧。`);
+      }).catch(error => {
+        setMessage(`后台修改失败：${error instanceof Error ? error.message : '未知错误'}；可以调整后重试。`);
+      }).finally(() => setWorking(false));
       return;
     }
     setWorking(true);
@@ -271,7 +284,7 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
 
   return <div className="fixed inset-0 z-[10020] flex bg-black/90 backdrop-blur-sm">
     <div className="flex min-w-0 flex-1 flex-col p-4">
-      <div className="mb-3 flex items-center justify-between text-white"><div><h3 className="text-base font-bold">{title}</h3><p className="text-xs text-gray-500">框选或涂抹多个区域，分别修改文字或画面内容。</p></div><button onClick={onClose} className="rounded-lg p-2 text-gray-400 hover:bg-white/10"><X size={20}/></button></div>
+      <div className="mb-3 flex items-center justify-between text-white"><div><h3 className="text-base font-bold">{title}</h3><p className="text-xs text-gray-500">框选或涂抹多个区域，分别修改文字或画面内容。</p></div><button onClick={onClose} className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-gray-300 hover:bg-white/10" title="收起到遮罩节点"><Minimize2 size={17}/>收起</button></div>
       <div className="mb-2 flex items-center gap-2 text-xs text-gray-400"><button onClick={undo} disabled={historyIndex <= 0 || working} className="rounded-lg bg-[#252525] p-2 disabled:opacity-30"><Undo2 size={14}/></button><button onClick={redo} disabled={historyIndex >= historyRef.current.length - 1 || working} className="rounded-lg bg-[#252525] p-2 disabled:opacity-30"><Redo2 size={14}/></button></div>
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-[#333] bg-[#0b0b0b] p-3">
         <div ref={stageRef} className="relative inline-flex max-h-full max-w-full select-none">
@@ -304,7 +317,7 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
         {!regions.length && <div className="rounded-xl border border-dashed border-[#444] px-4 py-8 text-center text-xs text-gray-500">点击上方按钮，在图片内连续框选区域</div>}
       </div>
       <div className="mt-4 space-y-3 rounded-xl border border-[#303030] bg-[#111] p-3"><label className="block text-xs font-bold">AI 模型<select value={model} onChange={event => setModel(event.target.value as ImageModel)} disabled={working} className="mt-2 w-full rounded-lg border border-[#444] bg-[#202020] px-3 py-2 text-xs outline-none">{AI_TEXT_MODELS.map(item => <option key={item.id} value={item.id}>{item.label} · 整个任务约 ¥{item.price.toFixed(2)}</option>)}</select></label>{model === 'gpt-image-2' && <label className="block text-xs font-bold text-violet-200">GPT 全局遮罩指令<textarea value={gptGlobalInstruction} onChange={event => setGptGlobalInstruction(event.target.value)} disabled={working} rows={5} className="mt-2 w-full resize-y rounded-lg border border-violet-700/60 bg-[#191522] p-2 text-xs font-normal leading-relaxed text-gray-200 outline-none focus:border-violet-400"/><span className="mt-1 block text-[10px] font-normal text-gray-500">默认只改变遮罩内容，遮罩外强制保留原图；可按本次任务编辑。</span></label>}<button onClick={() => void runBatch()} disabled={working || !readyRegions.length} className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-3 text-sm font-bold disabled:opacity-40"><Sparkles size={16}/>{working ? 'AI 一次性处理中…' : `一次修改 ${readyRegions.length} 个区域 · 约 ¥${estimatedTotal.toFixed(2)}`}</button><p className="text-xs leading-relaxed text-gray-400">{message}</p><p className="text-[10px] leading-relaxed text-gray-600">最多 5 个区域会合并为一个遮罩，只发送一个生图任务并计费一次；任务失败不扣网站额度。</p></div>
-      <div className="mt-4 grid grid-cols-2 gap-2"><button onClick={onClose} disabled={working} className="rounded-lg border border-[#444] px-3 py-2 text-xs font-bold">取消</button><button onClick={() => onConfirm(currentImage)} disabled={working || currentImage === imageUrl} className="flex items-center justify-center gap-2 rounded-lg bg-red-600 px-3 py-2 text-xs font-bold disabled:opacity-40"><Check size={15}/>保存为新图</button></div>
+      <div className="mt-4 grid grid-cols-2 gap-2"><button onClick={onClose} className="rounded-lg border border-[#444] px-3 py-2 text-xs font-bold">手动收起</button><button onClick={() => onConfirm(currentImage)} disabled={working || currentImage === imageUrl} className="flex items-center justify-center gap-2 rounded-lg bg-red-600 px-3 py-2 text-xs font-bold disabled:opacity-40"><Check size={15}/>保存为新图</button></div>
     </aside>
   </div>;
 };

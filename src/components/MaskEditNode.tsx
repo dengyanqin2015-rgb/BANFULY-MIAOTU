@@ -40,7 +40,7 @@ export const MaskEditNode = ({ data, selected }: NodeProps<Node<MaskEditNodeData
       </div>
       <div className={`relative w-full overflow-visible rounded-lg bg-[#1a1a1a] shadow-2xl ${selected ? 'ring-2 ring-cyan-400 ring-offset-2 ring-offset-[#0a0a0a]' : 'border border-[#333]'}`}>
         <Handle type="target" position={Position.Left} className="!z-20 !h-3 !w-3 !border-2 !border-[#0a0a0a] !bg-cyan-400" />
-        <button disabled={working} onClick={() => setOpen(true)} className="group relative block w-full overflow-hidden rounded-lg bg-[#0a0a0a] disabled:cursor-wait">
+        <button onClick={() => setOpen(true)} className="group relative block w-full overflow-hidden rounded-lg bg-[#0a0a0a]">
           <img src={data.imageUrl} crossOrigin="anonymous" alt="遮罩编辑源图" className="h-auto w-full object-contain opacity-75 transition group-hover:opacity-95"/>
           <span className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-100 transition group-hover:bg-black/45"><span className="flex items-center gap-2 rounded-full border border-white/10 bg-black/70 px-3 py-1.5 text-[10px] font-bold text-cyan-200 backdrop-blur-md">{working ? <><Loader2 size={13} className="animate-spin"/>后台处理中…</> : <><Maximize2 size={13}/>{error ? '重新打开修改' : '打开遮罩编辑'}</>}</span></span>
         </button>
@@ -48,6 +48,6 @@ export const MaskEditNode = ({ data, selected }: NodeProps<Node<MaskEditNodeData
       </div>
       <div className={`px-1 text-[10px] leading-relaxed ${error ? 'text-red-400' : working ? 'text-cyan-300' : 'text-gray-500'}`}>{error ? <span className="flex items-start gap-1"><RotateCcw size={11} className="mt-0.5 shrink-0"/>{error}</span> : working ? '后台处理中，完成后自动在右侧生成结果图' : '框选或涂抹 · 修改文字或内容 · 一次提交'}</div>
     </div>
-    {open && createPortal(<ImageTextEditor imageUrl={data.imageUrl} title="遮罩定点修改" onClose={() => setOpen(false)} onConfirm={(imageUrl) => { data.onApply?.(imageUrl); setOpen(false); }} onBackgroundTask={runInBackground} initialDraft={draft} onDraftChange={preserveDraft}/>, document.body)}
+    {open && createPortal(<ImageTextEditor imageUrl={data.imageUrl} title="遮罩定点修改" onClose={() => setOpen(false)} onConfirm={(imageUrl) => { data.onApply?.(imageUrl); setOpen(false); }} onBackgroundTask={runInBackground} backgroundActive={working} initialDraft={draft} onDraftChange={preserveDraft}/>, document.body)}
   </>;
 };
