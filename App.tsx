@@ -18,6 +18,7 @@ import { WorkflowCanvas } from './src/components/WorkflowCanvas';
 import { ImageAnalysisTemplateManager } from './src/components/ImageAnalysisTemplateManager';
 import { RequestLogPanel } from './src/components/RequestLogPanel';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { processImageFiles } from './src/lib/uploadProcessing';
 
 const BBOX_COLORS = [
   'border-blue-400 bg-blue-400/20',
@@ -715,42 +716,48 @@ const App: React.FC = () => {
   }, [analysis]);
 
   // 文件处理函数
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, setter: (val: string) => void) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, setter: (val: string) => void) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => setter(reader.result as string);
-      reader.readAsDataURL(file);
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const [image] = await processImageFiles([file]);
+      setter(image.dataUrl);
+    } catch (error) {
+      alert((error as Error).message);
     }
   };
 
-  const handleMultipleFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files) {
-      Array.from(files).forEach((file: File) => {
-        const reader = new FileReader();
-        reader.onloadend = () => setProductImages(prev => [...prev, reader.result as string]);
-        reader.readAsDataURL(file);
-      });
+  const handleMultipleFilesChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    try {
+      const existingBytes = productImages.reduce((sum, image) => sum + Math.ceil((image.split(',')[1] || '').length * 3 / 4), 0);
+      const images = await processImageFiles(files, productImages.length, existingBytes);
+      setProductImages(prev => [...prev, ...images.map(image => image.dataUrl)]);
+    } catch (error) {
+      alert((error as Error).message);
     }
   };
 
-  const handleCardRefImage = (e: React.ChangeEvent<HTMLInputElement>, cardId: string) => {
+  const handleCardRefImage = async (e: React.ChangeEvent<HTMLInputElement>, cardId: string) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => setCardRefImages(prev => ({ ...prev, [cardId]: reader.result as string }));
-      reader.readAsDataURL(file);
-    }
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const [image] = await processImageFiles([file]);
+      setCardRefImages(prev => ({ ...prev, [cardId]: image.dataUrl }));
+    } catch (error) { alert((error as Error).message); }
   };
 
   // 强化全案批量同步逻辑
-  const handleBulkRefImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBulkRefImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const b64 = reader.result as string;
+      try {
+        const [image] = await processImageFiles([file]);
+        const b64 = image.dataUrl;
         setBulkRefImage(b64);
         
         // 核心同步逻辑：将全案参考图同步到每一个分镜卡片
@@ -759,8 +766,7 @@ const App: React.FC = () => {
           newCardRefs[p.id] = b64;
         });
         setCardRefImages(newCardRefs);
-      };
-      reader.readAsDataURL(file);
+      } catch (error) { alert((error as Error).message); }
     }
   };
 
@@ -1053,15 +1059,14 @@ ${p.prompt}
     }
   };
 
-  const handleDetailRefImageChange = (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDetailRefImageChange = async (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const b64 = event.target?.result as string;
-      setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, refImage: b64 } : s));
-    };
-    reader.readAsDataURL(file);
+    try {
+      const [image] = await processImageFiles([file]);
+      setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, refImage: image.dataUrl } : s));
+    } catch (error) { alert((error as Error).message); }
   };
 
   const runDetailBulkDownload = () => {
@@ -1700,7 +1705,7 @@ ${p.prompt}
                   <h2 className="text-xl font-black mb-4 tracking-tight">产品特性识别 <span className="text-[#86868b]">深度解析核心卖点</span></h2>
                   
                   <div className="bg-[#F5F5F7] p-4 rounded-2xl border border-black/5 mb-6">
-                    <label className="section-label text-[9px] mb-3 block text-black font-black uppercase tracking-widest">上传产品白底图 (最多6张)</label>
+                    <label className="section-label text-[9px] mb-3 block text-black font-black uppercase tracking-widest">上传产品白底图 (最多8张)</label>
                     <div className="grid grid-cols-3 gap-2">
                       {productImages.map((img, idx) => (
                         <div key={idx} className="aspect-square rounded-lg bg-white border border-black/10 relative group overflow-hidden shadow-sm">
@@ -1708,7 +1713,7 @@ ${p.prompt}
                           <button onClick={() => removeProductImage(idx)} className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/70 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 scale-75 hover:bg-black transition-all"><i className="fas fa-times text-[8px]"></i></button>
                         </div>
                       ))}
-                      {productImages.length < 6 && (
+                      {productImages.length < 8 && (
                         <div className="aspect-square rounded-lg border-2 border-dashed border-black/15 hover:border-[#FF7F00]/30 flex flex-col items-center justify-center cursor-pointer bg-white transition-all group" onClick={() => document.getElementById('detail-prod-upload')?.click()}>
                           <i className="fas fa-plus opacity-20 group-hover:opacity-100 mb-0.5 text-xs"></i>
                           <span className="text-[8px] font-bold opacity-30 group-hover:opacity-100 uppercase">添加</span>
@@ -3634,7 +3639,7 @@ ${p.prompt}
                             <button onClick={() => removeProductImage(idx)} className="absolute top-1 right-1 w-5 h-5 bg-black/70 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 scale-75 hover:bg-black transition-all"><i className="fas fa-times text-[9px]"></i></button>
                           </div>
                         ))}
-                        {productImages.length < 6 && (
+                        {productImages.length < 8 && (
                           <div className="aspect-square rounded-xl border-2 border-dashed border-black/15 hover:border-[#0071e3]/30 flex flex-col items-center justify-center cursor-pointer bg-white transition-all group" onClick={() => document.getElementById('prod-multi')?.click()}>
                             <i className="fas fa-plus opacity-20 group-hover:opacity-100 mb-1 text-sm"></i>
                             <span className="text-[9px] font-bold opacity-30 group-hover:opacity-100 uppercase">添加</span>

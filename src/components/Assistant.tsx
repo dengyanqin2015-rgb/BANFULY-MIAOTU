@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 import { cn } from '../lib/utils';
 import { chatWithAssistant } from '../lib/gemini';
 import { User } from '../types';
+import { DOCUMENT_UPLOAD_LIMITS, processImageFiles, readFileAsArrayBuffer, readFileAsDataUrl, validateDocumentFiles } from '../lib/uploadProcessing';
 
 export interface AssistantRef {
   open: () => void;
@@ -38,7 +39,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [mode, setMode] = useState<'normal' | 'deep'>('normal');
-  const [pendingImages, setPendingImages] = useState<{ data: string; mimeType: string; preview: string; name?: string }[]>([]);
+  const [pendingImages, setPendingImages] = useState<{ data: string; mimeType: string; preview: string; name?: string; originalBytes?: number }[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 450, height: 650 });
   const [position, setPosition] = useState({ x: window.innerWidth - 500, y: 100 });
@@ -226,44 +227,43 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-
-    Array.from(files).forEach(file => {
-      if (file.size > 50 * 1024 * 1024) {
-        setMessages(prev => [...prev, { role: 'model', content: `文件“${file.name}”超过 50MB，未加入分析。`, timestamp: Date.now() }]);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        try {
-          if (/\.xlsx?$/i.test(file.name)) {
-            const workbook = XLSX.read(reader.result as ArrayBuffer, { type: 'array' });
-            const text = workbook.SheetNames.map(name => `工作表：${name}\n${XLSX.utils.sheet_to_csv(workbook.Sheets[name])}`).join('\n\n');
-            const bytes = new TextEncoder().encode(text);
-            let binary = '';
-            for (let index = 0; index < bytes.length; index += 0x8000) {
-              binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-            }
-            setPendingImages(prev => [...prev, { data: btoa(binary), mimeType: 'text/csv', preview: '', name: file.name }]);
-            return;
-          }
-          const dataUrl = reader.result as string;
-          setPendingImages(prev => [...prev, {
-            data: dataUrl.split(',')[1],
-            mimeType: file.type || 'text/plain',
-            preview: file.type.startsWith('image/') ? dataUrl : '',
-            name: file.name
-          }]);
-        } catch (error) {
-          setMessages(prev => [...prev, { role: 'model', content: `无法解析文件“${file.name}”：${(error as Error).message}`, timestamp: Date.now() }]);
-        }
-      };
-      if (/\.xlsx?$/i.test(file.name)) reader.readAsArrayBuffer(file);
-      else reader.readAsDataURL(file);
-    });
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (!files.length) return;
+    try {
+      const imageFiles = files.filter(file => file.type.startsWith('image/'));
+      const existingDocuments = pendingImages.filter(file => !file.preview);
+      const existingImages = pendingImages.filter(file => Boolean(file.preview));
+      const documentFiles = validateDocumentFiles(files.filter(file => !file.type.startsWith('image/')), existingDocuments.length, existingDocuments.reduce((sum, file) => sum + (file.originalBytes ?? Math.ceil(file.data.length * 3 / 4)), 0));
+      const images = await processImageFiles(imageFiles, existingImages.length, existingImages.reduce((sum, file) => sum + Math.ceil(file.data.length * 3 / 4), 0));
+      const additions = images.map(image => ({ data: image.data, mimeType: image.mimeType, preview: image.dataUrl, name: image.file.name, originalBytes: image.file.size }));
+      for (const file of documentFiles) {
+        if (/\.xlsx?$/i.test(file.name)) {
+          const workbook = XLSX.read(await readFileAsArrayBuffer(file), { type: 'array', sheetRows: DOCUMENT_UPLOAD_LIMITS.maxExcelRows + 1 });
+          let cellCount = 0;
+          const parts = workbook.SheetNames.map(name => {
+            const sheet = workbook.Sheets[name];
+            const range = sheet['!ref'] ? XLSX.utils.decode_range(sheet['!ref']) : undefined;
+            const rows = range ? range.e.r + 1 : 0;
+            cellCount += range ? (range.e.r + 1) * (range.e.c + 1) : 0;
+            if (rows > DOCUMENT_UPLOAD_LIMITS.maxExcelRows) throw new Error(`“${file.name}”工作表“${name}”超过 ${DOCUMENT_UPLOAD_LIMITS.maxExcelRows} 行`);
+            if (cellCount > DOCUMENT_UPLOAD_LIMITS.maxExcelCells) throw new Error(`“${file.name}”超过 ${DOCUMENT_UPLOAD_LIMITS.maxExcelCells} 个单元格限制`);
+            return `工作表：${name}\n${XLSX.utils.sheet_to_csv(sheet)}`;
+          });
+          const bytes = new TextEncoder().encode(parts.join('\n\n'));
+          let binary = '';
+          for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+          additions.push({ data: btoa(binary), mimeType: 'text/csv', preview: '', name: file.name, originalBytes: file.size });
+        } else {
+          const dataUrl = await readFileAsDataUrl(file);
+          additions.push({ data: dataUrl.split(',')[1], mimeType: file.type || 'text/plain', preview: '', name: file.name, originalBytes: file.size });
+        }
+      }
+      setPendingImages(prev => [...prev, ...additions]);
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'model', content: `附件添加失败：${(error as Error).message}`, timestamp: Date.now() }]);
+    }
   };
 
   const handleCopy = async (text: string, id: string, event?: React.MouseEvent) => {

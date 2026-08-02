@@ -3,6 +3,7 @@ import { Send, ChevronDown, Key, Image as ImageIcon, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { cn } from '../lib/utils';
+import { processImageFiles } from '../lib/uploadProcessing';
 
 export interface GenerationBarRef {
   addImage: (data: string, mimeType: string, preview: string, sourceNodeId?: string) => void;
@@ -217,32 +218,23 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
     }
   }));
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-
-    Array.from(files).forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = (reader.result as string).split(',')[1];
-        const preview = reader.result as string;
-        
-        const img = new Image();
-        img.onload = () => {
-          setImages(prev => [...prev, {
-            data: base64String,
-            mimeType: file.type,
-            preview,
-            width: img.width,
-            height: img.height
-          }]);
-          // Auto expand options when image is uploaded
-          setShowOptions(true);
-        };
-        img.src = preview;
-      };
-      reader.readAsDataURL(file);
-    });
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    try {
+      const existingBytes = images.reduce((sum, image) => sum + Math.ceil(image.data.length * 3 / 4), 0);
+      const processed = await processImageFiles(files, images.length, existingBytes);
+      setImages(prev => [...prev, ...processed.map(image => ({
+        data: image.data,
+        mimeType: image.mimeType,
+        preview: image.dataUrl,
+        width: image.width,
+        height: image.height,
+      }))]);
+      setShowOptions(true);
+    } catch (error) {
+      alert((error as Error).message);
+    }
     
     if (fileInputRef.current) {
       fileInputRef.current.value = '';

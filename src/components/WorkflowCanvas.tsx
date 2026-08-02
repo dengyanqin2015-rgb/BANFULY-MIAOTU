@@ -29,6 +29,7 @@ import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
+import { getBatchImportPosition, processImageFiles } from '../lib/uploadProcessing';
 
 const nodeTypes = {
   imageNode: ImageNode,
@@ -937,44 +938,32 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     input.multiple = true;
     input.accept = 'image/*';
     input.onchange = async (e) => {
-      const files = (e.target as HTMLInputElement).files;
-      if (!files) return;
+      const files = Array.from((e.target as HTMLInputElement).files || []);
+      if (!files.length) return;
 
       const position = paneMenu ? rfInstance.current?.screenToFlowPosition({
         x: paneMenu.x,
         y: paneMenu.y,
       }) : { x: 100, y: 100 };
 
-      let currentX = position?.x || 100;
-      let currentY = position?.y || 100;
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-          const base64 = event.target?.result as string;
+      try {
+        const images = await processImageFiles(files);
+        const importedNodes = images.map((image, i) => {
           const newNodeId = `import-${Date.now()}-${i}`;
-          
-          const newNode = attachNodeActions({
+          return attachNodeActions({
             id: newNodeId,
             type: 'imageNode',
-            position: { x: currentX, y: currentY },
+            position: getBatchImportPosition({ x: position?.x || 100, y: position?.y || 100 }, i),
             data: {
-              prompt: file.name,
-              imageUrl: base64,
+              prompt: image.file.name,
+              imageUrl: image.dataUrl,
               type: 'source',
             },
           });
-
-          setNodes((nds) => [...nds, newNode]);
-        };
-        reader.readAsDataURL(file);
-        
-        currentX += 350;
-        if ((i + 1) % 3 === 0) {
-          currentX = position?.x || 100;
-          currentY += 450;
-        }
+        });
+        setNodes((nds) => [...nds, ...importedNodes]);
+      } catch (error) {
+        alert((error as Error).message);
       }
       setPaneMenu(null);
     };
@@ -990,10 +979,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         if (item.type.indexOf('image') !== -1) {
           const file = item.getAsFile();
           if (file) {
-            const reader = new FileReader();
-            reader.onload = async (e) => {
-              const base64 = e.target?.result as string;
-              
+            void processImageFiles([file]).then(([image]) => {
               const position = rfInstance.current?.screenToFlowPosition({
                 x: window.innerWidth / 2,
                 y: window.innerHeight / 2,
@@ -1006,14 +992,13 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 position,
                 data: {
                   prompt: 'Pasted Image',
-                  imageUrl: base64,
+                  imageUrl: image.dataUrl,
                   type: 'source',
                 },
               });
               
               setNodes((nds) => [...nds, newNode]);
-            };
-            reader.readAsDataURL(file);
+            }).catch(error => alert((error as Error).message));
           }
         }
       }
