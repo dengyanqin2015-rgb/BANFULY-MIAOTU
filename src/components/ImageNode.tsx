@@ -26,6 +26,8 @@ export interface ImageNodeData extends Record<string, unknown> {
   originalImages?: { data: string; mimeType: string; sourceNodeId?: string }[];
   resolution?: string;
   type?: 'source' | 'generated';
+  layoutMode?: 'grid' | 'reference';
+  layoutSlot?: { x: number; y: number };
   sourceNodeId?: string;
   // Context for regeneration
   aspectRatio?: AspectRatio;

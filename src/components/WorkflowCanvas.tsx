@@ -25,11 +25,12 @@ import { GenerationBar, GenerationBarRef } from './GenerationBar';
 import { Assistant, AssistantRef } from './Assistant';
 import { generateImage, analyzeImageForPrompt, type ImageAnalysisTemplate, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
 import { ImageStorage } from '../lib/storage';
-import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard, LocateFixed } from 'lucide-react';
+import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard, LocateFixed, Maximize2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
 import { allocatePasteBatchOrigin, getBatchImportPosition, processImageFiles } from '../lib/uploadProcessing';
+import { advanceGenerationGrid, findDerivedNodePosition, findFreeGenerationPosition, findFreeGridPosition, WORKFLOW_LAYOUT } from '../lib/workflowLayout';
 
 const nodeTypes = {
   imageNode: ImageNode,
@@ -159,8 +160,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const assistantRef = useRef<AssistantRef>(null);
   const rfInstance = useRef<ReactFlowInstance | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const layoutCursorRef = useRef<{ nextX: number; nextY: number; rowStartX: number; column: number } | null>(null);
-  const fitViewClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const layoutCursorRef = useRef<{ nextX: number; nextY: number } | null>(null);
+  const placementReservationsRef = useRef<Map<string, { position: { x: number; y: number } }>>(new Map());
 
   // Load projects on mount
   useEffect(() => {
@@ -392,17 +393,18 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setNodes(hydratedNodes);
     setEdges(project.edges || []);
     setLastNodeId(project.lastNodeId || null);
-    const savedLastNode =
-      hydratedNodes.find(node => node.id === project.lastNodeId) ||
-      [...hydratedNodes].reverse().find(node => (node.data as ImageNodeData).type === "generated");
-    layoutCursorRef.current = savedLastNode
-      ? {
-          nextX: savedLastNode.position.x + 400,
-          nextY: savedLastNode.position.y,
-          rowStartX: savedLastNode.position.x,
-          column: 1,
-        }
-      : null;
+    placementReservationsRef.current.clear();
+    const lastGridNode = [...hydratedNodes].reverse().find(node => {
+      const data = node.data as ImageNodeData;
+      const legacyReference = data.layoutMode === undefined && Boolean(data.originalImages?.length);
+      return data.type === 'generated' && data.layoutMode !== 'reference' && !legacyReference;
+    });
+    if (lastGridNode) {
+      const next = advanceGenerationGrid((lastGridNode.data as ImageNodeData).layoutSlot || lastGridNode.position);
+      layoutCursorRef.current = { nextX: next.x, nextY: next.y };
+    } else {
+      layoutCursorRef.current = null;
+    }
     setShowProjectMenu(false);
   };
 
@@ -598,24 +600,14 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, []);
 
   const advanceLayoutCursor = useCallback((position: { x: number; y: number }) => {
-    const cursor = layoutCursorRef.current;
-    const rowStartX = cursor?.rowStartX ?? position.x;
-    const nextColumn = (cursor?.column ?? 0) + 1;
-    layoutCursorRef.current = nextColumn >= 8
-      ? { nextX: rowStartX, nextY: position.y + 450, rowStartX, column: 0 }
-      : { nextX: position.x + 400, nextY: position.y, rowStartX, column: nextColumn };
+    const next = advanceGenerationGrid(position);
+    layoutCursorRef.current = { nextX: next.x, nextY: next.y };
   }, []);
 
   const handleNodeDragStop: NodeMouseHandler = useCallback((_event, node) => {
     const nodeData = node.data as ImageNodeData;
     if (nodeData.type !== "generated") return;
     setLastNodeId(node.id);
-    layoutCursorRef.current = {
-      nextX: node.position.x + 400,
-      nextY: node.position.y,
-      rowStartX: node.position.x,
-      column: 1,
-    };
   }, []);
 
   const fitAllNodes = useCallback(() => {
@@ -639,59 +631,20 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     });
   }, [fitAllNodes, lastNodeId]);
 
-  const handleOverviewClick = useCallback(() => {
-    if (fitViewClickTimerRef.current) clearTimeout(fitViewClickTimerRef.current);
-    fitViewClickTimerRef.current = setTimeout(() => {
-      fitAllNodes();
-      fitViewClickTimerRef.current = null;
-    }, 220);
-  }, [fitAllNodes]);
+  const focusNode = useCallback((nodeId: string) => {
+    window.setTimeout(() => {
+      const node = nodesRef.current.find(item => item.id === nodeId);
+      if (!node) return;
+      rfInstance.current?.fitView({ nodes: [node], padding: 0.35, maxZoom: 1, duration: 450 });
+    }, 80);
+  }, []);
 
-  const handleOverviewDoubleClick = useCallback((event: React.MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (fitViewClickTimerRef.current) {
-      clearTimeout(fitViewClickTimerRef.current);
-      fitViewClickTimerRef.current = null;
-    }
-    focusLatestNode();
-  }, [focusLatestNode]);
-
-  const findSafePosition = (x: number, y: number, currentNodes: Node[]) => {
-    const finalX = x;
-    let finalY = y;
-    let collision = true;
-    let attempts = 0;
-    
-    while (collision && attempts < 20) {
-      collision = currentNodes.some(n => 
-        Math.abs(n.position.x - finalX) < 350 && 
-        Math.abs(n.position.y - finalY) < 400
-      );
-      if (collision) {
-        finalY += 450;
-      }
-      attempts++;
-    }
-    return { x: finalX, y: finalY };
+  const findSafePosition = (x: number, y: number, currentNodes: Array<{ position: { x: number; y: number } }>) => {
+    return findFreeGridPosition({ x, y }, currentNodes);
   };
 
-  const findSafePositionToRight = useCallback((x: number, y: number, currentNodes: Node[]) => {
-    let finalX = x;
-    const finalY = y;
-    let attempts = 0;
-
-    while (attempts < 30) {
-      const collision = currentNodes.some(node =>
-        Math.abs(node.position.x - finalX) < 350 &&
-        Math.abs(node.position.y - finalY) < 400
-      );
-      if (!collision) break;
-      finalX += 400;
-      attempts++;
-    }
-
-    return { x: finalX, y: finalY };
+  const findSafePositionToRight = useCallback((x: number, y: number, currentNodes: Array<{ position: { x: number; y: number } }>) => {
+    return findDerivedNodePosition({ x: x - WORKFLOW_LAYOUT.horizontalGap, y }, currentNodes);
   }, []);
 
   const attachNodeActions = useCallback((node: Node): Node => {
@@ -1075,6 +1028,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         ...n,
         data: { ...n.data, isLoading: true, error: undefined }
       } : n));
+      setLastNodeId(targetNodeId);
+      focusNode(targetNodeId);
 
       console.log(`[Workflow] Starting regeneration for node ${targetNodeId}`, { prompt, aspectRatio, imageSize, model, imagesCount: images?.length });
 
@@ -1108,7 +1063,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       return;
     }
 
-    const newNodeId = `node-${Date.now()}`;
+    const newNodeId = `node-${crypto.randomUUID()}`;
     
     // Separate images into those from existing nodes and those that are new uploads
     const existingSourceIds = (images || [])
@@ -1118,6 +1073,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     const newUploads = (images || []).filter(img => !img.sourceNodeId);
     
     const currentNodes = nodesRef.current;
+    const occupiedNodes = [...currentNodes, ...placementReservationsRef.current.values()];
 
     // Create source nodes ONLY for new uploads
     const newSourceNodes: Node<ImageNodeData>[] = newUploads.map((img, i) => {
@@ -1138,7 +1094,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         basePosY = lastNode.position.y + 400;
       }
       
-      const pos = findSafePosition(basePosX, basePosY + i * 400, currentNodes);
+      const pos = findSafePosition(basePosX, basePosY + i * 400, occupiedNodes);
       
       return {
         id: `upload-${newNodeId}-${i}`,
@@ -1157,7 +1113,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     });
 
     // Reference-based generations form a horizontal chain to the right of their sources.
-    // Generations without references continue on the predictable 8-column grid.
+    // Generations without references continue on the predictable shared grid.
     let posX = layoutCursorRef.current?.nextX ?? 100;
     let posY = layoutCursorRef.current?.nextY ?? 100;
     const sourceNodesInCanvas = currentNodes.filter(node => existingSourceIds.includes(node.id));
@@ -1173,40 +1129,39 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       const referenceSafePos = findSafePositionToRight(
         posX,
         posY,
-        [...currentNodes, ...newSourceNodes]
+        [...occupiedNodes, ...newSourceNodes]
       );
       posX = referenceSafePos.x;
       posY = referenceSafePos.y;
     } else if (!layoutCursorRef.current && currentNodes.length > 0) {
       const lastGenerated =
-        currentNodes.find(node => node.id === lastNodeId) ||
-        [...currentNodes].reverse().find(node => (node.data as ImageNodeData).type === "generated");
+        currentNodes.find(node => {
+          const data = node.data as ImageNodeData;
+          const legacyReference = data.layoutMode === undefined && Boolean(data.originalImages?.length);
+          return node.id === lastNodeId && data.type === 'generated' && data.layoutMode !== 'reference' && !legacyReference;
+        }) ||
+        [...currentNodes].reverse().find(node => {
+          const data = node.data as ImageNodeData;
+          const legacyReference = data.layoutMode === undefined && Boolean(data.originalImages?.length);
+          return data.type === 'generated' && data.layoutMode !== 'reference' && !legacyReference;
+        });
       if (lastGenerated) {
-        posX = lastGenerated.position.x + 400;
-        posY = lastGenerated.position.y;
-        layoutCursorRef.current = {
-          nextX: posX,
-          nextY: posY,
-          rowStartX: lastGenerated.position.x,
-          column: 1,
-        };
+        const next = advanceGenerationGrid((lastGenerated.data as ImageNodeData).layoutSlot || lastGenerated.position);
+        posX = next.x;
+        posY = next.y;
+        layoutCursorRef.current = { nextX: posX, nextY: posY };
       }
     }
 
     if (!hasReferences) {
-      const safePos = findSafePosition(posX, posY, [...currentNodes, ...newSourceNodes]);
+      const safePos = findFreeGenerationPosition(
+        { x: posX, y: posY },
+        [...occupiedNodes, ...newSourceNodes],
+      );
       posX = safePos.x;
       posY = safePos.y;
     }
-    if (hasReferences) {
-      layoutCursorRef.current = {
-        nextX: posX,
-        nextY: posY,
-        rowStartX: posX,
-        column: 0,
-      };
-    }
-    advanceLayoutCursor({ x: posX, y: posY });
+    if (!hasReferences) advanceLayoutCursor({ x: posX, y: posY });
 
     const newNode = attachNodeActions({
       id: newNodeId,
@@ -1216,6 +1171,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         prompt,
         isLoading: true,
         type: 'generated',
+        layoutMode: hasReferences ? 'reference' : 'grid',
+        layoutSlot: { x: posX, y: posY },
         refImages: images?.map(img => `data:${img.mimeType};base64,${img.data}`),
         originalImages: images,
         aspectRatio,
@@ -1233,7 +1190,13 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       },
     }) as Node<ImageNodeData>;
 
+    [...newSourceNodes, newNode].forEach(node => placementReservationsRef.current.set(node.id, { position: node.position }));
+    window.setTimeout(() => {
+      [...newSourceNodes, newNode].forEach(node => placementReservationsRef.current.delete(node.id));
+    }, 1000);
+
     setNodes((nds) => [...nds, ...newSourceNodes, newNode]);
+    focusNode(newNodeId);
 
     // Create edges from ALL sources (existing and new)
     const newEdges: Edge[] = [
@@ -1311,7 +1274,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         })
       );
     }
-  }, [user, userApiKey, onDeductCredit, findSafePosition, findSafePositionToRight, attachNodeActions, advanceLayoutCursor, lastNodeId]);
+  }, [user, userApiKey, onDeductCredit, findSafePosition, findSafePositionToRight, attachNodeActions, advanceLayoutCursor, focusNode, lastNodeId]);
 
   const handleGenerateRef = useRef(handleGenerate);
   useEffect(() => {
@@ -1349,10 +1312,16 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.5} color="#333" />
         <Controls showFitView={false}>
           <ControlButton
-            onClick={handleOverviewClick}
-            onDoubleClick={handleOverviewDoubleClick}
-            title="单击查看全局，双击定位最新图片"
-            aria-label="单击查看全局，双击定位最新图片"
+            onClick={fitAllNodes}
+            title="查看全部节点"
+            aria-label="查看全部节点"
+          >
+            <Maximize2 size={14} />
+          </ControlButton>
+          <ControlButton
+            onClick={focusLatestNode}
+            title="定位最新生成图片"
+            aria-label="定位最新生成图片"
           >
             <LocateFixed size={14} />
           </ControlButton>
