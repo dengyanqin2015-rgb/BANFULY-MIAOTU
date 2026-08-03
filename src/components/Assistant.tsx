@@ -1,12 +1,13 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
 import { motion, AnimatePresence, useDragControls, PanInfo } from 'motion/react';
-import { MessageSquare, X, Send, Loader2, Copy, Check, Sparkles, BrainCircuit, FileText } from 'lucide-react';
+import { MessageSquare, X, Send, Loader2, Copy, Check, Sparkles, BrainCircuit, FileText, Square } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import * as XLSX from 'xlsx';
 import { cn } from '../lib/utils';
 import { chatWithAssistant } from '../lib/gemini';
 import { User } from '../types';
 import { assertImageUsage, DOCUMENT_UPLOAD_LIMITS, processImageFiles, readFileAsArrayBuffer, readFileAsDataUrl, validateDocumentFiles } from '../lib/uploadProcessing';
+import { ASSISTANT_DEEP_TIMEOUT_MS, ASSISTANT_NORMAL_TIMEOUT_MS, AssistantTaskCoordinator, getAssistantErrorMessage, pruneAssistantPreviews, trimAssistantHistory } from '../lib/assistantRuntime';
 
 export interface AssistantRef {
   open: () => void;
@@ -25,6 +26,7 @@ interface Message {
   images?: string[];
   files?: { name: string; mimeType: string; preview?: string }[];
   timestamp: number;
+  includeInHistory?: boolean;
 }
 
 interface AssistantProps {
@@ -43,6 +45,9 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   const imageUsageRef = useRef({ count: 0, originalBytes: 0, analysisBytes: 0 });
   const documentUsageRef = useRef({ count: 0, bytes: 0 });
   const attachmentQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const assistantTaskRef = useRef(new AssistantTaskCoordinator());
+  const sendLockRef = useRef(false);
+  const autoSendTimersRef = useRef(new Set<number>());
   const syncAttachmentUsage = (items: typeof pendingImages) => {
     imageUsageRef.current = items.filter(item => Boolean(item.preview)).reduce((usage, item) => ({
       count: usage.count + 1,
@@ -59,6 +64,12 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragControls = useDragControls();
+
+  useEffect(() => () => {
+    assistantTaskRef.current.cancel();
+    autoSendTimersRef.current.forEach(timer => window.clearTimeout(timer));
+    autoSendTimersRef.current.clear();
+  }, []);
 
   useLayoutEffect(() => {
     if (textareaRef.current) {
@@ -84,9 +95,11 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       
       if (autoSend) {
         // We need to wait for the state to update or use the values directly
-        setTimeout(() => {
+        const timer = window.setTimeout(() => {
+          autoSendTimersRef.current.delete(timer);
           handleSendWithParams("请分析这张图片并提供生图建议。", [newImage]);
         }, 100);
+        autoSendTimersRef.current.add(timer);
       } else {
         setInput("请分析这张图片并提供生图建议。");
       }
@@ -95,7 +108,8 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   }));
 
   const handleSendWithParams = async (text: string, images: { data: string; mimeType: string; preview: string; name?: string }[]) => {
-    if (isLoading) return;
+    if (isLoading || sendLockRef.current) return;
+    sendLockRef.current = true;
 
     // Calculate cost
     const cost = (mode === 'deep' ? ASSISTANT_COSTS.deep : ASSISTANT_COSTS.normal) + (images.length * ASSISTANT_COSTS.perImage);
@@ -104,8 +118,10 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       setMessages(prev => [...prev, {
         role: 'model',
         content: `抱歉，点数不足。本次分析需要 ${cost.toFixed(2)} 点，当前剩余 ${user.credits.toFixed(2)} 点。`,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        includeInHistory: false,
       }]);
+      sendLockRef.current = false;
       return;
     }
 
@@ -124,26 +140,30 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       timestamp: Date.now()
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    setMessages(prev => pruneAssistantPreviews([...prev, userMessage]));
     setIsLoading(true);
+    const task = assistantTaskRef.current.start(mode === 'deep' ? ASSISTANT_DEEP_TIMEOUT_MS : ASSISTANT_NORMAL_TIMEOUT_MS);
 
     try {
-      const history = messages.map(msg => ({
+      const history = trimAssistantHistory(messages.filter(msg => msg.includeInHistory !== false).map(msg => ({
         role: msg.role,
         parts: [{ text: msg.content }]
-      }));
+      })));
 
       const response = await chatWithAssistant({
         message: text,
         images: images.map(img => ({ data: img.data, mimeType: img.mimeType })),
         mode,
         history,
-        apiKey: userApiKey
+        apiKey: userApiKey,
+        signal: task.signal,
       });
+      if (!assistantTaskRef.current.isCurrent(task)) return;
 
       if (onDeductCredit) {
         await onDeductCredit(cost);
       }
+      if (!assistantTaskRef.current.isCurrent(task)) return;
 
       setMessages(prev => [...prev, {
         role: 'model',
@@ -151,15 +171,21 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
         timestamp: Date.now()
       }]);
     } catch (error: unknown) {
+      if (!assistantTaskRef.current.isCurrent(task)) return;
       const err = error as Error;
       console.error("Assistant error:", err);
       setMessages(prev => [...prev, {
         role: 'model',
-        content: `抱歉，出错了：${err.message || '未知错误'}`,
-        timestamp: Date.now()
+        content: `抱歉，出错了：${getAssistantErrorMessage(err, task.signal)}`,
+        timestamp: Date.now(),
+        includeInHistory: false,
       }]);
     } finally {
-      setIsLoading(false);
+      if (assistantTaskRef.current.isCurrent(task)) {
+        assistantTaskRef.current.finish(task);
+        sendLockRef.current = false;
+        setIsLoading(false);
+      }
     }
   };
 
@@ -185,7 +211,8 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   }, [messages, isLoading]);
 
   const handleSend = async () => {
-    if ((!input.trim() && pendingImages.length === 0) || isLoading) return;
+    if ((!input.trim() && pendingImages.length === 0) || isLoading || sendLockRef.current) return;
+    sendLockRef.current = true;
 
     // Calculate cost
     const cost = (mode === 'deep' ? ASSISTANT_COSTS.deep : ASSISTANT_COSTS.normal) + (pendingImages.length * ASSISTANT_COSTS.perImage);
@@ -194,8 +221,10 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       setMessages(prev => [...prev, {
         role: 'model',
         content: `抱歉，点数不足。本次分析需要 ${cost.toFixed(2)} 点，当前剩余 ${user.credits.toFixed(2)} 点。`,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        includeInHistory: false,
       }]);
+      sendLockRef.current = false;
       return;
     }
 
@@ -207,7 +236,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       timestamp: Date.now()
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    setMessages(prev => pruneAssistantPreviews([...prev, userMessage]));
     const currentInput = input;
     const currentImages = [...pendingImages];
     
@@ -215,24 +244,28 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     setPendingImages([]);
     syncAttachmentUsage([]);
     setIsLoading(true);
+    const task = assistantTaskRef.current.start(mode === 'deep' ? ASSISTANT_DEEP_TIMEOUT_MS : ASSISTANT_NORMAL_TIMEOUT_MS);
 
     try {
-      const history = messages.map(msg => ({
+      const history = trimAssistantHistory(messages.filter(msg => msg.includeInHistory !== false).map(msg => ({
         role: msg.role,
         parts: [{ text: msg.content }]
-      }));
+      })));
 
       const response = await chatWithAssistant({
         message: currentInput || "请分析这些图片",
         images: currentImages.map(img => ({ data: img.data, mimeType: img.mimeType })),
         mode,
         history,
-        apiKey: userApiKey
+        apiKey: userApiKey,
+        signal: task.signal,
       });
+      if (!assistantTaskRef.current.isCurrent(task)) return;
 
       if (onDeductCredit) {
         await onDeductCredit(cost);
       }
+      if (!assistantTaskRef.current.isCurrent(task)) return;
 
       setMessages(prev => [...prev, {
         role: 'model',
@@ -240,16 +273,34 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
         timestamp: Date.now()
       }]);
     } catch (error: unknown) {
+      if (!assistantTaskRef.current.isCurrent(task)) return;
       const err = error as Error;
       console.error("Assistant error:", err);
       setMessages(prev => [...prev, {
         role: 'model',
-        content: `抱歉，出错了：${err.message || '未知错误'}`,
-        timestamp: Date.now()
+        content: `抱歉，出错了：${getAssistantErrorMessage(err, task.signal)}`,
+        timestamp: Date.now(),
+        includeInHistory: false,
       }]);
     } finally {
-      setIsLoading(false);
+      if (assistantTaskRef.current.isCurrent(task)) {
+        assistantTaskRef.current.finish(task);
+        sendLockRef.current = false;
+        setIsLoading(false);
+      }
     }
+  };
+
+  const handleStop = () => {
+    assistantTaskRef.current.cancel();
+    sendLockRef.current = false;
+    setIsLoading(false);
+    setMessages(prev => [...prev, {
+      role: 'model',
+      content: '已停止等待本次回答。你可以修改问题后重新发送。',
+      timestamp: Date.now(),
+      includeInHistory: false,
+    }]);
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -288,7 +339,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       documentUsageRef.current = documentFiles.reduce((usage, file) => ({ count: usage.count + 1, bytes: usage.bytes + file.size }), documentUsageRef.current);
       setPendingImages(prev => [...prev, ...additions]);
     } catch (error) {
-      setMessages(prev => [...prev, { role: 'model', content: `附件添加失败：${(error as Error).message}`, timestamp: Date.now() }]);
+      setMessages(prev => [...prev, { role: 'model', content: `附件添加失败：${(error as Error).message}`, timestamp: Date.now(), includeInHistory: false }]);
     }
     });
     await attachmentQueueRef.current;
@@ -326,7 +377,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       const copied = document.execCommand('copy');
       document.body.removeChild(textarea);
       if (!copied) {
-        setMessages(prev => [...prev, { role: 'model', content: '复制失败，请选中提示词后按 Ctrl+C。', timestamp: Date.now() }]);
+        setMessages(prev => [...prev, { role: 'model', content: '复制失败，请选中提示词后按 Ctrl+C。', timestamp: Date.now(), includeInHistory: false }]);
         return;
       }
     }
@@ -665,16 +716,19 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                 />
 
                 <button
-                  onClick={handleSend}
-                  disabled={(!input.trim() && pendingImages.length === 0) || isLoading}
+                  onClick={isLoading ? handleStop : handleSend}
+                  disabled={!isLoading && !input.trim() && pendingImages.length === 0}
+                  title={isLoading ? '停止回答' : '发送消息'}
                   className={cn(
                     "p-3 rounded-xl transition-all",
-                    (!input.trim() && pendingImages.length === 0) || isLoading
+                    isLoading
+                      ? "bg-red-600 text-white hover:bg-red-500"
+                      : (!input.trim() && pendingImages.length === 0)
                       ? "bg-[#222] text-gray-600"
                       : "bg-red-600 text-white hover:scale-105 active:scale-95 shadow-lg shadow-red-600/20"
                   )}
                 >
-                  <Send size={20} />
+                  {isLoading ? <Square size={18} fill="currentColor" /> : <Send size={20} />}
                 </button>
               </div>
             </div>

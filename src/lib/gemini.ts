@@ -23,6 +23,7 @@ export interface ChatParams {
   mode: 'normal' | 'deep';
   history?: { role: 'user' | 'model'; parts: { text: string }[] }[];
   apiKey?: string;
+  signal?: AbortSignal;
 }
 
 export interface ImageAnalysisTemplate {
@@ -102,7 +103,7 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
     });
   }
 
-  const config: { systemInstruction: string; thinkingConfig?: { thinkingLevel: ThinkingLevel } } = {
+  const config: { systemInstruction: string; thinkingConfig?: { thinkingLevel: ThinkingLevel }; abortSignal?: AbortSignal } = {
     systemInstruction: `你是 BANFULY 的中文电商视觉策略助手，核心任务是分析市场商品、竞品、消费者痛点、购买动机，并产出可落地的主图策划、详情页策划和高质量生图提示词。
 
 必须遵守：
@@ -112,6 +113,7 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
 4. 每一段可直接用于生图的提示词必须完整独立，并放在单独的 \`\`\`prompt 代码块中；一个代码块只放一套完整中文提示词，不添加解释或标题。
 5. 生图提示词应准确包含主体、外观结构、动作或摆放、环境、构图、镜头、光影、色彩、材质、清晰度、文字区域及禁止元素。
 6. 普通交流保持简洁；市场分析、主图和详情策划使用清晰的小标题与可执行结论。`,
+    abortSignal: params.signal,
   };
 
   if (params.mode === 'deep') {

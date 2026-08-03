@@ -16,7 +16,8 @@
     "test:layout": "tsx tests/workflowLayout.test.ts",
     "test:generation": "tsx tests/generationTasks.test.ts",
     "test:persistence": "tsx tests/projectPersistence.test.ts",
-    "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:persistence && npm run typecheck && npm run lint && npm run build",
+    "test:assistant": "tsx tests/assistantRuntime.test.ts",
+    "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:persistence && npm run test:assistant && npm run typecheck && npm run lint && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {
