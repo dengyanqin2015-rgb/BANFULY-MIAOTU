@@ -32,6 +32,7 @@ import { User } from '../types';
 import { allocatePasteBatchOrigin, getBatchImportPosition, processImageFiles } from '../lib/uploadProcessing';
 import { advanceGenerationGrid, findDerivedNodePosition, findFreeGenerationPosition, findFreeGridPosition, WORKFLOW_LAYOUT } from '../lib/workflowLayout';
 import { GenerationTaskCoordinator, getGenerationErrorMessage } from '../lib/generationTasks';
+import { ImageWriteCache, SerialTaskQueue, createProjectFingerprint, stripRuntimeGraphState } from '../lib/projectPersistence';
 
 const nodeTypes = {
   imageNode: ImageNode,
@@ -128,6 +129,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   isActive = true,
 }) => {
   const [projects, setProjects] = useState<Project[]>([]);
+  const projectsRef = useRef<Project[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   
@@ -164,8 +166,14 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const layoutCursorRef = useRef<{ nextX: number; nextY: number } | null>(null);
   const placementReservationsRef = useRef<Map<string, { position: { x: number; y: number } }>>(new Map());
   const generationTasksRef = useRef(new GenerationTaskCoordinator());
+  const saveQueueRef = useRef(new SerialTaskQueue());
+  const saveCurrentProjectRef = useRef<() => Promise<Project | null>>(async () => null);
+  const imageWriteCacheRef = useRef(new ImageWriteCache());
+  const saveFingerprintRef = useRef(new Map<string, string>());
+  const loadEpochRef = useRef(0);
 
   useEffect(() => () => generationTasksRef.current.cancelAll(), []);
+  useEffect(() => { projectsRef.current = projects; }, [projects]);
 
   // Load projects on mount
   useEffect(() => {
@@ -232,6 +240,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             localStorage.setItem(STORAGE_KEY, JSON.stringify(finalProjects));
           }
 
+          projectsRef.current = finalProjects;
           setProjects(finalProjects);
           if (finalProjects.length > 0) {
             await loadProject(finalProjects[0]);
@@ -260,11 +269,11 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     if (!currentProjectId) return;
     
     const timer = setTimeout(() => {
-      saveCurrentProject();
+      void saveCurrentProject().catch(error => console.error('Auto-save failed', error));
     }, 1000);
 
     return () => clearTimeout(timer);
-  }, [nodes, edges, lastNodeId]);
+  }, [nodes, edges, lastNodeId, currentProjectId]);
 
   const createNewProject = (name: string = `新项目 ${Date.now().toString().slice(-4)}`) => {
     const newProject: Project = {
@@ -277,7 +286,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       version: 1,
     };
     
-    const updatedProjects = [newProject, ...projects];
+    const updatedProjects = [newProject, ...projectsRef.current];
+    projectsRef.current = updatedProjects;
     setProjects(updatedProjects);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedProjects));
@@ -298,11 +308,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     if (!renamingProject) return;
     const trimmedName = renamingProject.name.trim();
     if (trimmedName) {
-      setProjects(prev => {
-        const updated = prev.map(p => p.id === renamingProject.id ? { ...p, name: trimmedName, updatedAt: Date.now() } : p);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        return updated;
-      });
+      const updated = projectsRef.current.map(p => p.id === renamingProject.id ? { ...p, name: trimmedName, updatedAt: Date.now() } : p);
+      projectsRef.current = updated;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      setProjects(updated);
     }
     setRenamingProject(null);
   };
@@ -346,8 +355,9 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   };
 
   const loadProject = async (project: Project) => {
+    const loadEpoch = ++loadEpochRef.current;
+    const hydratedImageValues = new Map<string, string>();
     generationTasksRef.current.cancelAll();
-    setCurrentProjectId(project.id);
     
     // Hydrate nodes with images from IndexedDB
     const hydratedNodes = await Promise.all((project.nodes || []).map(async (node) => {
@@ -368,6 +378,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           const imageId = nodeData.imageUrl.replace('db://', '');
           const realUrl = await ImageStorage.get(imageId);
           newNodeData.imageUrl = realUrl || undefined;
+          if (realUrl) hydratedImageValues.set(imageId, realUrl);
         }
 
         // Hydrate originalImages
@@ -376,6 +387,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             if (img.data?.startsWith('db://')) {
               const imageId = img.data.replace('db://', '');
               const realData = await ImageStorage.get(imageId);
+              if (realData) hydratedImageValues.set(imageId, realData);
               return { ...img, data: realData || '' };
             }
             return img;
@@ -399,6 +411,14 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }
     }));
 
+    if (loadEpoch !== loadEpochRef.current) return;
+
+    imageWriteCacheRef.current.replace(hydratedImageValues);
+    saveFingerprintRef.current.set(
+      project.id,
+      createProjectFingerprint(project.nodes || [], project.edges || [], project.lastNodeId || null),
+    );
+    setCurrentProjectId(project.id);
     setNodes(hydratedNodes);
     setEdges(project.edges || []);
     setLastNodeId(project.lastNodeId || null);
@@ -417,17 +437,22 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setShowProjectMenu(false);
   };
 
-  const saveCurrentProject = async () => {
-    if (!currentProjectId) return;
-    
-    // Extract images to IndexedDB and store references in localStorage
-    const nodesToSave = await Promise.all(nodes.map(async (node) => {
+  const saveCurrentProject = (): Promise<Project | null> => {
+    const projectId = currentProjectId;
+    if (!projectId) return Promise.resolve(null);
+    const nodeSnapshot = nodes.map(node => ({ ...node, data: { ...node.data } }));
+    const edgeSnapshot = edges.map(edge => ({ ...edge }));
+    const lastNodeSnapshot = lastNodeId;
+
+    return saveQueueRef.current.enqueue(async () => {
+      const imageWrites: Array<{ key: string; value: string }> = [];
+      const nodesToSave = nodeSnapshot.map((node) => {
       if (node.type === 'noteNode') {
         const nodeData = node.data as NoteNodeData;
         const newNodeData = { ...nodeData };
         delete newNodeData.onDelete;
         delete newNodeData.onChange;
-        return { ...node, data: newNodeData };
+        return stripRuntimeGraphState({ ...node, data: newNodeData } as unknown as Record<string, unknown>) as unknown as Node;
       }
 
       const nodeData = node.data as ImageNodeData;
@@ -450,60 +475,116 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
       // Extract imageUrl
       if (nodeData.imageUrl && !nodeData.imageUrl?.startsWith('db://')) {
-        const imageId = `img-${node.id}`;
-        await ImageStorage.set(imageId, nodeData.imageUrl);
+        const imageId = `img-${projectId}-${node.id}`;
+        if (!imageWriteCacheRef.current.matches(imageId, nodeData.imageUrl)) {
+          imageWrites.push({ key: imageId, value: nodeData.imageUrl });
+        }
         newNodeData.imageUrl = `db://${imageId}`;
       }
 
       // Extract originalImages data
       if (nodeData.originalImages) {
-        newNodeData.originalImages = await Promise.all(nodeData.originalImages.map(async (img, idx) => {
+        newNodeData.originalImages = nodeData.originalImages.map((img, idx) => {
           if (img.data && !img.data?.startsWith('db://')) {
-            const imageId = `orig-${node.id}-${idx}`;
-            await ImageStorage.set(imageId, img.data);
+            const imageId = `orig-${projectId}-${node.id}-${idx}`;
+            if (!imageWriteCacheRef.current.matches(imageId, img.data)) {
+              imageWrites.push({ key: imageId, value: img.data });
+            }
             return { ...img, data: `db://${imageId}` };
           }
           return img;
-        }));
+        });
       }
 
       // Remove refImages as it's redundant and large
       delete newNodeData.refImages;
 
-      return {
+      return stripRuntimeGraphState({
         ...node,
         data: newNodeData
-      };
-    }));
-
-    setProjects(prev => {
-      const updated = prev.map(p => {
-        if (p.id === currentProjectId) {
-          // Increment version on modification
-          const currentVersion = p.version || 0;
-          return {
-            ...p,
-            nodes: nodesToSave,
-            edges,
-            lastNodeId,
-            updatedAt: Date.now(),
-            version: currentVersion + 1
-          };
-        }
-        return p;
+      } as unknown as Record<string, unknown>) as unknown as Node;
       });
+      const edgesToSave = edgeSnapshot.map(edge =>
+        stripRuntimeGraphState(edge as unknown as Record<string, unknown>) as unknown as Edge
+      );
+      const fingerprint = createProjectFingerprint(nodesToSave, edgesToSave, lastNodeSnapshot);
+      const currentProject = projectsRef.current.find(project => project.id === projectId);
+      if (!currentProject) return null;
+      if (saveFingerprintRef.current.get(projectId) === fingerprint) return currentProject;
+
+      for (const write of imageWrites) {
+        await ImageStorage.set(write.key, write.value);
+        imageWriteCacheRef.current.remember(write.key, write.value);
+      }
+
+      const savedProject: Project = {
+        ...currentProject,
+        nodes: nodesToSave,
+        edges: edgesToSave,
+        lastNodeId: lastNodeSnapshot,
+        updatedAt: Date.now(),
+        version: (currentProject.version || 0) + 1,
+      };
+      const updated = projectsRef.current.map(project => project.id === projectId ? savedProject : project);
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
       } catch (e) {
         console.error('Failed to save current project to localStorage', e);
+        throw e;
       }
-      return updated;
+      projectsRef.current = updated;
+      saveFingerprintRef.current.set(projectId, fingerprint);
+      setProjects(updated);
+      return savedProject;
     });
+  };
+  saveCurrentProjectRef.current = saveCurrentProject;
+
+  useEffect(() => {
+    const flush = () => {
+      void saveCurrentProjectRef.current().catch(error => console.error('Final project save failed', error));
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  const switchProject = async (project: Project) => {
+    if (project.id === currentProjectId) {
+      setShowProjectMenu(false);
+      return;
+    }
+    try {
+      await saveCurrentProject();
+      const latestProject = projectsRef.current.find(item => item.id === project.id);
+      if (latestProject) await loadProject(latestProject);
+    } catch (error) {
+      console.error('Project switch cancelled because save failed', error);
+      alert('当前项目保存失败，暂未切换项目，请重试');
+    }
+  };
+
+  const createProjectAfterSave = async () => {
+    try {
+      await saveCurrentProject();
+      createNewProject();
+    } catch (error) {
+      console.error('Project creation cancelled because save failed', error);
+      alert('当前项目保存失败，暂未创建新项目，请重试');
+    }
   };
 
   const deleteProject = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const updated = projects.filter(p => p.id !== id);
+    const updated = projectsRef.current.filter(p => p.id !== id);
+    projectsRef.current = updated;
+    saveFingerprintRef.current.delete(id);
     setProjects(updated);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
@@ -522,23 +603,29 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   const exportProject = async (project: Project) => {
     try {
-      // Ensure we have the latest data saved
-      await saveCurrentProject();
+      const latestProject = project.id === currentProjectId
+        ? (await saveCurrentProject()) || project
+        : projectsRef.current.find(item => item.id === project.id) || project;
       
       const images: Record<string, string> = {};
-      for (const node of project.nodes) {
+      const includeStoredImage = async (reference?: string) => {
+        if (!reference?.startsWith('db://')) return;
+        const imageId = reference.replace('db://', '');
+        const data = await ImageStorage.get(imageId);
+        if (data) images[imageId] = data;
+      };
+      for (const node of latestProject.nodes) {
         const nodeData = node.data as ImageNodeData;
-        if (nodeData.imageUrl?.startsWith('db://')) {
-          const imageId = nodeData.imageUrl.replace('db://', '');
-          const data = await ImageStorage.get(imageId);
-          if (data) images[imageId] = data;
+        await includeStoredImage(nodeData.imageUrl);
+        for (const original of nodeData.originalImages || []) {
+          await includeStoredImage(original.data);
         }
       }
 
       const bundle = {
         version: '1.0',
         project: {
-          ...project,
+          ...latestProject,
           id: `exported-${Date.now()}`, 
         },
         images
@@ -548,7 +635,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `BANFULY_Workflow_${project.name}_${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `BANFULY_Workflow_${latestProject.name}_${new Date().toISOString().split('T')[0]}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -579,7 +666,9 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           updatedAt: Date.now()
         };
 
-        const updatedProjects = [newProject, ...projects];
+        await saveCurrentProject();
+        const updatedProjects = [newProject, ...projectsRef.current];
+        projectsRef.current = updatedProjects;
         setProjects(updatedProjects);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedProjects));
         loadProject(newProject);
@@ -1494,7 +1583,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                           <Upload size={14} />
                         </button>
                         <button 
-                          onClick={() => createNewProject()}
+                          onClick={() => void createProjectAfterSave()}
                           className="p-1.5 bg-red-600 text-white rounded-lg hover:scale-110 transition-transform"
                           title="新建项目"
                         >
@@ -1515,7 +1604,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                       {projects.map(p => (
                         <div 
                           key={p.id}
-                          onClick={() => loadProject(p)}
+                          onClick={() => void switchProject(p)}
                           className={cn(
                             "flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all group",
                             currentProjectId === p.id ? "bg-red-600/10 text-red-600" : "hover:bg-[#222] text-gray-400"
