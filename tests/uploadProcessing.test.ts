@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { assertImageUsage, DOCUMENT_UPLOAD_LIMITS, getBatchImportPosition, IMAGE_UPLOAD_LIMITS, processImageFiles, validateDocumentFiles } from '../src/lib/uploadProcessing';
+import { allocatePasteBatchOrigin, assertImageUsage, DOCUMENT_UPLOAD_LIMITS, getBatchImportPosition, IMAGE_UPLOAD_LIMITS, processImageFiles, reserveImageUsage, validateDocumentFiles } from '../src/lib/uploadProcessing';
 
 const fakeFile = (name: string, size: number, type: string) => ({ name, size, type } as File);
 
@@ -22,6 +22,10 @@ await assert.rejects(() => processImageFiles([fakeFile('next.jpg', 2, 'image/jpe
 await assert.rejects(() => processImageFiles([fakeFile('ninth.jpg', 1, 'image/jpeg')], { count: 8, originalBytes: 8, analysisBytes: 8 }), /最多 8 张/);
 assert.throws(() => assertImageUsage({ count: 7, originalBytes: 0, analysisBytes: 0 }, { count: 2, originalBytes: 0, analysisBytes: 0 }), /最多 8 张/);
 assert.throws(() => assertImageUsage({ count: 1, originalBytes: 1, analysisBytes: IMAGE_UPLOAD_LIMITS.maxAnalysisBytes }, { count: 1, originalBytes: 1, analysisBytes: 1 }), /12MB/);
+const reservedSeven = reserveImageUsage({ count: 0, originalBytes: 0, analysisBytes: 0 }, { count: 7, originalBytes: 7, analysisBytes: 7 });
+const reservedEight = reserveImageUsage(reservedSeven, { count: 1, originalBytes: 1, analysisBytes: 1 });
+assert.deepEqual(reservedEight, { count: 8, originalBytes: 8, analysisBytes: 8 });
+assert.throws(() => reserveImageUsage(reservedEight, { count: 1, originalBytes: 1, analysisBytes: 1 }), /最多 8 张/, '串行预占后不得被并发入口突破');
 
 let activeReads = 0;
 let maxActiveReads = 0;
@@ -68,5 +72,9 @@ assert.deepEqual([0, 1, 2, 3, 4].map(index => getBatchImportPosition({ x: 100, y
   { x: 100, y: 200 }, { x: 450, y: 200 }, { x: 800, y: 200 },
   { x: 100, y: 650 }, { x: 450, y: 650 },
 ]);
+const firstPasteLayout = allocatePasteBatchOrigin({ x: 100, y: 100 }, [550, 1000], null, 4);
+const secondPasteLayout = allocatePasteBatchOrigin({ x: 100, y: 100 }, [550, 1000], firstPasteLayout.nextCursor, 2);
+assert.deepEqual(firstPasteLayout.origin, { x: 100, y: 1000 });
+assert.deepEqual(secondPasteLayout.origin, { x: 100, y: 1900 }, '连续粘贴批次不得复用同一原点');
 
 console.log('uploadProcessing limits regression passed');

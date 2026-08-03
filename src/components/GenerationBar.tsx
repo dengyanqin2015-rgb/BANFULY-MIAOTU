@@ -194,6 +194,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
 
   useImperativeHandle(ref, () => ({
     addImage: (data, mimeType, preview, sourceNodeId, usage) => {
+      uploadQueueRef.current = uploadQueueRef.current.then(async () => {
         if (imageDataRef.current.has(data)) return;
         const bytes = Math.ceil(data.length * 3 / 4);
         const originalBytes = usage?.originalBytes ?? bytes;
@@ -220,6 +221,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
         img.src = preview;
         
         setImages(prev => [...prev, { data, mimeType, preview, sourceNodeId, originalBytes, analysisBytes }]);
+      });
     },
     setParams: (p, ar, is, m, imgs) => {
       setPrompt(p);
@@ -227,6 +229,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       setImageSize(is);
       setModel(m);
       if (imgs) {
+        uploadQueueRef.current = uploadQueueRef.current.then(async () => {
         const next = imgs.map(img => {
           const bytes = Math.ceil(img.data.length * 3 / 4);
           return { ...img, originalBytes: bytes, analysisBytes: bytes };
@@ -238,6 +241,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
           imageDataRef.current = new Set(next.map(image => image.data));
           setImages(next);
         } catch (error) { alert((error as Error).message); }
+        });
       }
       setShowOptions(true);
     }

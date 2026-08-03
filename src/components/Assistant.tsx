@@ -70,6 +70,8 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   useImperativeHandle(ref, () => ({
     open: () => setIsOpen(true),
     sendImage: (data, mimeType, preview, autoSend = false, usage) => {
+      setIsOpen(true);
+      attachmentQueueRef.current = attachmentQueueRef.current.then(async () => {
       const bytes = Math.ceil(data.length * 3 / 4);
       const originalBytes = usage?.originalBytes ?? bytes;
       const analysisBytes = usage?.analysisBytes ?? bytes;
@@ -77,7 +79,6 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
         assertImageUsage(imageUsageRef.current, { count: 1, originalBytes, analysisBytes });
       } catch (error) { alert((error as Error).message); return; }
       imageUsageRef.current = { count: imageUsageRef.current.count + 1, originalBytes: imageUsageRef.current.originalBytes + originalBytes, analysisBytes: imageUsageRef.current.analysisBytes + analysisBytes };
-      setIsOpen(true);
       const newImage = { data, mimeType, preview, originalBytes, analysisBytes };
       setPendingImages(prev => [...prev, newImage]);
       
@@ -89,6 +90,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       } else {
         setInput("请分析这张图片并提供生图建议。");
       }
+      });
     }
   }));
 

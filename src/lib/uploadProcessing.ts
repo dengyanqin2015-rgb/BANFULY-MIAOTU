@@ -40,6 +40,15 @@ export function assertImageUsage(existing: ExistingImageUsage, additions: Requir
   if ((existing.analysisBytes || 0) + additions.analysisBytes > IMAGE_UPLOAD_LIMITS.maxAnalysisBytes) throw new Error('模型分析副本总量超过 12MB，请减少图片或降低图片尺寸');
 }
 
+export function reserveImageUsage(existing: Required<ExistingImageUsage>, additions: Required<ExistingImageUsage>): Required<ExistingImageUsage> {
+  assertImageUsage(existing, additions);
+  return {
+    count: existing.count + additions.count,
+    originalBytes: existing.originalBytes + additions.originalBytes,
+    analysisBytes: existing.analysisBytes + additions.analysisBytes,
+  };
+}
+
 const readFile = (file: File, mode: 'dataUrl' | 'arrayBuffer'): Promise<string | ArrayBuffer> => new Promise((resolve, reject) => {
   const reader = new FileReader();
   reader.onerror = () => reject(new Error(`读取“${file.name}”失败`));
@@ -128,3 +137,14 @@ export const getBatchImportPosition = (origin: { x: number; y: number }, index: 
   x: origin.x + (index % 3) * 350,
   y: origin.y + Math.floor(index / 3) * 450,
 });
+
+export function allocatePasteBatchOrigin(
+  center: { x: number; y: number },
+  existingNodeBottoms: number[],
+  cursor: { x: number; y: number } | null,
+  imageCount: number,
+) {
+  const nextFreeY = existingNodeBottoms.reduce((maxY, bottom) => Math.max(maxY, bottom), center.y);
+  const origin = { x: cursor?.x ?? center.x, y: Math.max(cursor?.y ?? center.y, nextFreeY) };
+  return { origin, nextCursor: { x: origin.x, y: origin.y + Math.ceil(imageCount / 3) * 450 } };
+}

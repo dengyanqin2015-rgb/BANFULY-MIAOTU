@@ -29,7 +29,7 @@ import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
-import { getBatchImportPosition, processImageFiles } from '../lib/uploadProcessing';
+import { allocatePasteBatchOrigin, getBatchImportPosition, processImageFiles } from '../lib/uploadProcessing';
 
 const nodeTypes = {
   imageNode: ImageNode,
@@ -130,6 +130,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const nodesRef = useRef<Node[]>([]);
+  const pasteLayoutCursorRef = useRef<{ x: number; y: number } | null>(null);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [hasApiKey, setHasApiKey] = useState(true);
   const [lastNodeId, setLastNodeId] = useState<string | null>(null);
@@ -141,6 +143,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const uploadIdCounterRef = useRef(0);
   const nextUploadBatchId = useCallback((prefix: string) => `${prefix}-${crypto.randomUUID?.() || `${Date.now()}-${++uploadIdCounterRef.current}`}`, []);
   useEffect(() => {
+    nodesRef.current = nodes;
     uploadUsageRef.current = nodes.reduce((usage, node) => {
       const data = node.data as ImageNodeData;
       const originalBytes = typeof data.uploadOriginalBytes === 'number' ? data.uploadOriginalBytes : 0;
@@ -158,11 +161,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const layoutCursorRef = useRef<{ nextX: number; nextY: number; rowStartX: number; column: number } | null>(null);
   const fitViewClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const nodesRef = useRef<Node[]>([]);
-  useEffect(() => {
-    nodesRef.current = nodes;
-  }, [nodes]);
 
   // Load projects on mount
   useEffect(() => {
@@ -1017,7 +1015,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         try {
           const images = await processImageFiles(files, uploadUsageRef.current);
           uploadUsageRef.current = images.reduce((usage, image) => ({ count: usage.count + 1, originalBytes: usage.originalBytes + image.originalBytes, analysisBytes: usage.analysisBytes + image.analysisBytes }), uploadUsageRef.current);
-          const origin = rfInstance.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) || { x: 0, y: 0 };
+          const center = rfInstance.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) || { x: 0, y: 0 };
+          const layout = allocatePasteBatchOrigin(center, nodesRef.current.map(node => node.position.y + 450), pasteLayoutCursorRef.current, images.length);
+          const origin = layout.origin;
+          pasteLayoutCursorRef.current = layout.nextCursor;
           const batchId = nextUploadBatchId('paste');
           const pastedNodes = images.map((image, index) => attachNodeActions({
                 id: `${batchId}-${index}`,
