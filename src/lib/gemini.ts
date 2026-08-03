@@ -1,4 +1,5 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { buildStructuredAssistantMessage, ensureRequiredCopyInPromptBlocks, IMAGE_ANALYSIS_SYSTEM_INSTRUCTION, VISUAL_PROMPT_STRUCTURE_INSTRUCTION } from './visualPromptStructure';
 
 export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "gpt-image-2";
 export type ChatModel = "gemini-3-flash-preview" | "gemini-3.1-pro-preview";
@@ -53,7 +54,7 @@ export async function analyzeImageForPrompt(
       ]
     },
     config: {
-      systemInstruction: "你是专业的视觉复刻提示词工程师。只输出一段可以直接用于文生图的中文提示词，不要输出标题、分析过程、Markdown或解释。必须忠实描述可见画面，不猜测不可见信息。"
+      systemInstruction: IMAGE_ANALYSIS_SYSTEM_INSTRUCTION
     }
   });
   const text = response.text?.trim();
@@ -91,7 +92,8 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
   
   const modelName = params.mode === 'deep' ? 'gemini-3.1-pro-preview' : 'gemini-3-flash-preview';
   
-  const parts: { text?: string; inlineData?: { data: string; mimeType: string } }[] = [{ text: params.message }];
+  const structuredMessage = buildStructuredAssistantMessage(params.message, Boolean(params.images?.length));
+  const parts: { text?: string; inlineData?: { data: string; mimeType: string } }[] = [{ text: structuredMessage }];
   if (params.images && params.images.length > 0) {
     params.images.forEach(img => {
       parts.push({
@@ -112,7 +114,9 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
 3. 策划必须围绕商品核心卖点、目标人群、使用场景、视觉层级、构图、光影、色彩、材质和文案区域。
 4. 每一段可直接用于生图的提示词必须完整独立，并放在单独的 \`\`\`prompt 代码块中；一个代码块只放一套完整中文提示词，不添加解释或标题。
 5. 生图提示词应准确包含主体、外观结构、动作或摆放、环境、构图、镜头、光影、色彩、材质、清晰度、文字区域及禁止元素。
-6. 普通交流保持简洁；市场分析、主图和详情策划使用清晰的小标题与可执行结论。`,
+6. ${VISUAL_PROMPT_STRUCTURE_INSTRUCTION}
+7. 当用户给出具体文案时，最终提示词必须逐字包含该文案，并说明实际排版方式；不能只描述场景，也不能只写“预留文字区域”。
+8. 普通交流保持简洁；市场分析、主图和详情策划使用清晰的小标题与可执行结论。`,
     abortSignal: params.signal,
   };
 
@@ -128,11 +132,11 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
     });
     try {
       const response = await request(modelName);
-      return response.text || "抱歉，我无法生成回复。";
+      return ensureRequiredCopyInPromptBlocks(response.text || "抱歉，我无法生成回复。", params.message);
     } catch (deepError) {
       if (params.mode !== 'deep') throw deepError;
       const fallback = await request('gemini-3-flash-preview');
-      return `> 深度模型当前不可用，已自动使用 Flash 高思考模式完成本次任务。\n\n${fallback.text || "抱歉，我无法生成回复。"}`;
+      return ensureRequiredCopyInPromptBlocks(`> 深度模型当前不可用，已自动使用 Flash 高思考模式完成本次任务。\n\n${fallback.text || "抱歉，我无法生成回复。"}`, params.message);
     }
   } catch (err: unknown) {
     const error = err as Error;

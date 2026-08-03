@@ -6,6 +6,12 @@ import {
   pruneAssistantPreviews,
   trimAssistantHistory,
 } from '../src/lib/assistantRuntime';
+import {
+  buildStructuredAssistantMessage,
+  ensureRequiredCopyInPromptBlocks,
+  extractRequiredCopy,
+  isVisualPromptTask,
+} from '../src/lib/visualPromptStructure';
 
 const history = Array.from({ length: 30 }, (_, index) => ({
   role: index % 2 === 0 ? 'user' as const : 'model' as const,
@@ -54,5 +60,29 @@ const cancelled = coordinator.start(1000);
 coordinator.cancel();
 assert.equal(cancelled.signal.aborted, true);
 assert.equal(getAssistantErrorMessage(cancelled.signal.reason, cancelled.signal), '已停止等待本次回答');
+
+assert.equal(isVisualPromptTask('帮我写一段普通邮件'), false);
+assert.equal(isVisualPromptTask('做一张产品主图'), true);
+assert.equal(isVisualPromptTask('分析附件', true), true);
+assert.deepEqual(extractRequiredCopy('主标题：“轻盈一夏”，副标题：清凉不黏腻。'), ['轻盈一夏', '清凉不黏腻']);
+assert.deepEqual(extractRequiredCopy('请写上“新品上市”'), ['新品上市']);
+
+const structuredPrompt = buildStructuredAssistantMessage('做一张主图，文案：“轻盈一夏”');
+assert.match(structuredPrompt, /核心主体及准确外观特征/);
+assert.match(structuredPrompt, /逐字保留的画面文案：“轻盈一夏”/);
+
+const repairedPrompt = ensureRequiredCopyInPromptBlocks(
+  '方案\n```prompt\n清爽夏日场景，产品居中。\n```',
+  '主标题：“轻盈一夏”',
+);
+assert.match(repairedPrompt, /清爽夏日场景/);
+assert.match(repairedPrompt, /逐字准确显示“轻盈一夏”/);
+assert.equal((repairedPrompt.match(/轻盈一夏/g) || []).length, 1);
+
+const preservedPrompt = ensureRequiredCopyInPromptBlocks(
+  '```prompt\n画面标题为“轻盈一夏”。\n```',
+  '文案：“轻盈一夏”',
+);
+assert.equal((preservedPrompt.match(/轻盈一夏/g) || []).length, 1);
 
 console.log('assistant runtime tests passed');

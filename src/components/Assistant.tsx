@@ -97,11 +97,11 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
         // We need to wait for the state to update or use the values directly
         const timer = window.setTimeout(() => {
           autoSendTimersRef.current.delete(timer);
-          handleSendWithParams("请分析这张图片并提供生图建议。", [newImage]);
+          handleSendWithParams("请按照卡片‘一键解析关键词’的完整结构分析这张图片，输出可直接用于生图的中文提示词；必须包含主体、构图、镜头、光影、色彩、材质以及画面中可见文字和版式，不能只描述场景。", [newImage]);
         }, 100);
         autoSendTimersRef.current.add(timer);
       } else {
-        setInput("请分析这张图片并提供生图建议。");
+        setInput("请按照卡片‘一键解析关键词’的完整结构分析这张图片，输出可直接用于生图的中文提示词；必须包含主体、构图、镜头、光影、色彩、材质以及画面中可见文字和版式，不能只描述场景。");
       }
       });
     }
@@ -253,7 +253,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
       })));
 
       const response = await chatWithAssistant({
-        message: currentInput || "请分析这些图片",
+        message: currentInput || "请按照卡片‘一键解析关键词’的完整结构分析这些图片，并输出可直接用于生图的完整中文提示词。",
         images: currentImages.map(img => ({ data: img.data, mimeType: img.mimeType })),
         mode,
         history,
