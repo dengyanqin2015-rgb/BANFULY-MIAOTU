@@ -18,6 +18,7 @@ export interface ImageNodeData extends Record<string, unknown> {
   generationDetail?: string;
   error?: string;
   onDelete?: () => void;
+  onCancel?: () => void;
   onRegenerate?: () => void;
   onAdjust?: (mode?: 'reference' | 'text') => void;
   onAnalyze?: () => void;
@@ -166,6 +167,11 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
               <Loader2 className="animate-spin text-red-600" size={32} />
               <span className="text-[10px] text-gray-300 font-bold tracking-wider">{data.generationStatus || '正在生成'}</span>
               {data.generationDetail && <span className="max-w-[250px] text-center text-[9px] leading-relaxed text-gray-500">{data.generationDetail}</span>}
+              {data.onCancel && (
+                <button type="button" onClick={(event) => { event.stopPropagation(); data.onCancel?.(); }} className="nodrag rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-[10px] font-bold text-red-300 hover:bg-red-500/20">
+                  停止生成
+                </button>
+              )}
             </div>
           ) : data.imageUrl ? (
             <>
@@ -180,6 +186,11 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
                   <Loader2 className="animate-spin text-red-500" size={32} />
                   <span className="text-[10px] font-bold tracking-wider text-white">{data.generationStatus || '正在重新生成'}</span>
                   {data.generationDetail && <span className="max-w-[250px] text-center text-[9px] leading-relaxed text-gray-300">{data.generationDetail}</span>}
+                  {data.onCancel && (
+                    <button type="button" onClick={(event) => { event.stopPropagation(); data.onCancel?.(); }} className="nodrag rounded-md border border-red-400/50 bg-black/40 px-3 py-1.5 text-[10px] font-bold text-red-200 hover:bg-black/60">
+                      停止生成
+                    </button>
+                  )}
                 </div>
               ) : (
               <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-4">

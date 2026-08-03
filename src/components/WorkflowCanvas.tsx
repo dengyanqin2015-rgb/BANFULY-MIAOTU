@@ -509,6 +509,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       
       // Remove functions and other non-serializable data
       delete newNodeData.onDelete;
+      delete newNodeData.onCancel;
       delete newNodeData.onRegenerate;
       delete newNodeData.onAdjust;
       delete newNodeData.onAnalyze;
@@ -867,11 +868,26 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       ...node,
       data: {
         ...nodeData,
-        onDelete: () => {
-          generationTasksRef.current.cancel(node.id);
-          setNodes((nds) => nds.filter((n) => n.id !== node.id));
-          setEdges((eds) => eds.filter((e) => e.source !== node.id && e.target !== node.id));
-        },
+          onDelete: () => {
+            generationTasksRef.current.cancel(node.id);
+            stopGenerationProgress(node.id);
+            setNodes((nds) => nds.filter((n) => n.id !== node.id));
+            setEdges((eds) => eds.filter((e) => e.source !== node.id && e.target !== node.id));
+          },
+          onCancel: nodeData.isLoading ? () => {
+            generationTasksRef.current.cancel(node.id);
+            stopGenerationProgress(node.id);
+            setNodes(current => current.map(item => item.id === node.id ? attachNodeActions({
+              ...item,
+              data: {
+                ...item.data,
+                isLoading: false,
+                error: '已停止本次生成，不会由本站自动重新提交',
+                generationStatus: undefined,
+                generationDetail: undefined,
+              },
+            }) : item));
+          } : undefined,
         onRegenerate: nodeData.type === 'generated' ? () => {
           console.log(`[Workflow] Regenerating node ${node.id}`);
           handleGenerateRef.current(
@@ -1023,7 +1039,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         } : undefined
       }
     };
-  }, [setNodes, setEdges, userApiKey, findSafePositionToRight]);
+  }, [setNodes, setEdges, userApiKey, findSafePositionToRight, stopGenerationProgress]);
 
   const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -1173,10 +1189,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     if (targetNodeId) {
       const task = generationTasksRef.current.start(targetNodeId);
       // Update existing node to loading state
-      setNodes((nds) => nds.map(n => n.id === targetNodeId ? {
+      setNodes((nds) => nds.map(n => n.id === targetNodeId ? attachNodeActions({
         ...n,
         data: { ...n.data, isLoading: true, error: undefined }
-      } : n));
+      }) : n));
       startGenerationProgress(targetNodeId, task, model, images?.length || 0);
       setLastNodeId(targetNodeId);
       focusNode(targetNodeId);
