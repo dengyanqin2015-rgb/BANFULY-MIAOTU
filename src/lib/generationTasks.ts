@@ -1,5 +1,34 @@
 export const GENERATION_TIMEOUT_MS = 4 * 60 * 1000;
 
+export interface GenerationProgress {
+  label: string;
+  detail: string;
+}
+
+export function getGenerationProgress(
+  model: string,
+  elapsedSeconds: number,
+  referenceImageCount = 0,
+): GenerationProgress {
+  const elapsed = Math.max(0, Math.floor(elapsedSeconds));
+  if (model !== 'gpt-image-2') {
+    return { label: '正在生成', detail: `已等待 ${elapsed} 秒` };
+  }
+  if (elapsed < 8) {
+    return {
+      label: referenceImageCount > 0 ? '正在上传参考图' : '正在提交 OpenAI',
+      detail: `任务已锁定，避免重复提交 · ${elapsed} 秒`,
+    };
+  }
+  if (elapsed < 60) {
+    return { label: 'OpenAI 正在生成整张图片', detail: `官方接口不返回中间进度 · ${elapsed} 秒` };
+  }
+  if (elapsed < 120) {
+    return { label: '仍在生成，请耐心等待', detail: `参考图或高分辨率通常需要更久 · ${elapsed} 秒` };
+  }
+  return { label: '生成时间较长', detail: `不会在后台自动重复生成，可随时停止等待 · ${elapsed} 秒` };
+}
+
 export class GenerationTimeoutError extends Error {
   constructor(public readonly timeoutMs: number) {
     super(`Generation timed out after ${timeoutMs}ms`);

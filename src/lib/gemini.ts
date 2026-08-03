@@ -16,6 +16,7 @@ export interface GenerationParams {
   apiKey?: string;
   quality?: "low" | "medium" | "high";
   signal?: AbortSignal;
+  requestId?: string;
 }
 
 export interface ChatParams {
@@ -170,7 +171,7 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
       },
-      body: JSON.stringify({ apiKey, prompt: params.prompt, size, quality, images: params.images || [], mask: params.mask }),
+      body: JSON.stringify({ apiKey, prompt: params.prompt, size, quality, images: params.images || [], mask: params.mask, requestId: params.requestId }),
       signal: params.signal,
     });
     const result = await response.json().catch(() => ({}));

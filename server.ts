@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import cors from "cors";
 import pg from "pg";
+import { ImageRequestDeduplicator, OPENAI_IMAGE_TOTAL_TIMEOUT_MS, normalizeImageRequestId } from "./src/lib/openAiImageRuntime";
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? "" : "banfuly-local-dev-secret-change-me");
@@ -22,6 +23,7 @@ const DB_FILE = path.resolve(process.env.DB_PATH || "data/db.json");
 const IMAGE_ANALYSIS_TEMPLATES_FILE = path.resolve(process.env.IMAGE_ANALYSIS_TEMPLATES_PATH || "data/image-analysis-templates.json");
 const REQUEST_LOG_FILE = path.resolve(process.env.REQUEST_LOG_PATH || "data/request-logs.jsonl");
 const DATABASE_URL = process.env.DATABASE_URL;
+const openAiImageRequestDeduplicator = new ImageRequestDeduplicator();
 
 interface RequestLogEntry {
   id: string;
@@ -1101,14 +1103,17 @@ const compileGptImagePrompt = (originalPrompt: string): PromptSafetyCompilation 
 };
 
 app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, res: Response) => {
-  const { prompt, size, quality: rawQuality, images = [], mask: rawMask, apiKey: rawApiKey } = req.body;
+  const { prompt, size, quality: rawQuality, images = [], mask: rawMask, apiKey: rawApiKey, requestId: rawRequestId } = req.body;
   const diagnosticId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const requestId = normalizeImageRequestId(rawRequestId, diagnosticId);
+  const requestStartedAt = Date.now();
   const apiKey = String(rawApiKey || process.env.OPENAI_API_KEY || "").trim().replace(/^Bearer\s+/i, "");
   const quality = rawQuality === "medium" || rawQuality === "high" ? rawQuality : "low";
   const outputFormat = quality === "high" ? "png" : "jpeg";
   const outputCompression = quality === "low" ? "85" : "92";
   console.log("[ImageDiagnostic]", JSON.stringify({
     diagnosticId,
+    requestId,
     event: "request_started",
     provider: "openai",
     model: "gpt-image-2",
@@ -1176,12 +1181,6 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
   // original prompt here would reintroduce the exact wording the compiler
   // removed and could cause an otherwise-corrected request to be blocked.
   const enhancedPrompt = `执行指令：\n${safetyCompilation.optimized_prompt}\n\n${isEditRequest ? `局部编辑规范：\n${editGuidance}` : `生成规范：\n${promptGuidance}`}`;
-  const retryPrompt = isEditRequest
-    ? `${enhancedPrompt}\n若原指令表述不够清晰，只对其做安全、保守的同义理解，仍不得扩大遮罩范围或改变遮罩外内容。`
-    : safetyCompilation.risk_reason.some(reason => reason.includes("泳装") || reason.includes("内衣"))
-      ? `执行指令：\n${safetyCompilation.optimized_prompt}\n\n安全重绘要求：\n保持用户要求的泳装商品主题与款式不变。改用专业服装目录画面：仅呈现明确成年的时尚模特，平视全身构图，自然站立，双臂放松，表情自然；泳装面料完整不透，画面重点是服装版型、颜色、材质和穿着效果。避免低角度、身体局部特写、夸张曲线、挑逗姿态和任何性暗示。背景简洁明亮，整体适合大众电商平台展示。`
-      : `${enhancedPrompt}\n请重新构思一个同样满足用户要求、表达更清晰稳妥的版本，保持主体和目标不变。`;
-
   const preparedImages: { mimeType: string; bytes: Uint8Array; extension: string; index: number }[] = [];
   for (const [index, image] of images.entries()) {
     const mimeType = String(image?.mimeType || "image/png");
@@ -1203,9 +1202,37 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
     preparedMask = { mimeType, bytes: new Uint8Array(buffer), extension: mimeType.includes("webp") ? "webp" : "png" };
   }
 
+  const dedupeKey = `${req.user?.id || "unknown"}:${requestId}`;
+  const beginResult = openAiImageRequestDeduplicator.begin(dedupeKey, diagnosticId);
+  if (!beginResult.accepted) {
+    return res.status(409).json({
+      code: beginResult.state === "running" ? "IMAGE_REQUEST_IN_PROGRESS" : "IMAGE_REQUEST_ALREADY_FINISHED",
+      message: beginResult.state === "running"
+        ? "同一生图任务仍在处理中，请等待原任务完成，不要重复提交"
+        : "该生图任务已经处理过。为避免重复生成和重复费用，请新建任务后再试",
+      requestId,
+      diagnosticId: beginResult.diagnosticId,
+    });
+  }
+  res.setHeader("X-Image-Request-Id", requestId);
+  res.setHeader("X-Image-Diagnostic-Id", diagnosticId);
+  const clientDisconnectController = new AbortController();
+  const handleClientDisconnect = () => {
+    if (!res.writableEnded && !clientDisconnectController.signal.aborted) {
+      clientDisconnectController.abort(new Error("Client disconnected"));
+    }
+  };
+  res.once("close", handleClientDisconnect);
+
   try {
+    // One deadline and one provider attempt per user action. We deliberately do
+    // not replay ambiguous network/5xx failures because the provider may have
+    // already processed and billed the first request.
+    const upstreamSignal = AbortSignal.any([
+      AbortSignal.timeout(OPENAI_IMAGE_TOTAL_TIMEOUT_MS),
+      clientDisconnectController.signal,
+    ]);
     const requestOpenAiImage = async (requestPrompt: string) => {
-      const upstreamSignal = AbortSignal.timeout(210_000);
       if (preparedImages.length > 0) {
         const form = new FormData();
         form.append("model", "gpt-image-2");
@@ -1248,21 +1275,10 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
       });
     };
 
-    let attempt = 1;
-    let openAiResponse: globalThis.Response;
-    try {
-      openAiResponse = await requestOpenAiImage(enhancedPrompt);
-    } catch (requestError: unknown) {
-      if (requestError instanceof Error && (requestError.name === 'TimeoutError' || requestError.name === 'AbortError')) {
-        throw requestError;
-      }
-      attempt += 1;
-      console.log("[ImageDiagnostic]", JSON.stringify({ diagnosticId, event: "network_retry_started", attempt }));
-      await sleep(1500);
-      openAiResponse = await requestOpenAiImage(enhancedPrompt);
-    }
-    let payload: any = await openAiResponse.json().catch(() => ({}));
-    let moderationDetails = payload?.error?.moderation_details || null;
+    const attempt = 1;
+    const openAiResponse = await requestOpenAiImage(enhancedPrompt);
+    const payload: any = await openAiResponse.json().catch(() => ({}));
+    const moderationDetails = payload?.error?.moderation_details || null;
 
     const logProviderResponse = () => console.log("[ImageDiagnostic]", JSON.stringify({
         diagnosticId,
@@ -1279,39 +1295,19 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
       }));
     logProviderResponse();
 
-    if (!openAiResponse.ok && (openAiResponse.status === 429 || openAiResponse.status >= 500)) {
-      attempt += 1;
-      console.log("[ImageDiagnostic]", JSON.stringify({
-        diagnosticId,
-        event: "transient_retry_started",
-        attempt,
-        previousStatus: openAiResponse.status
-      }));
-      await sleep(1500);
-      openAiResponse = await requestOpenAiImage(enhancedPrompt);
-      payload = await openAiResponse.json().catch(() => ({}));
-      moderationDetails = payload?.error?.moderation_details || null;
-      logProviderResponse();
-    }
-
-    if (
-      !openAiResponse.ok &&
-      payload?.error?.code === "moderation_blocked" &&
-      moderationDetails?.moderation_stage === "output"
-    ) {
-      attempt += 1;
-      console.log("[ImageDiagnostic]", JSON.stringify({
-        diagnosticId,
-        event: "safety_retry_started",
-        attempt
-      }));
-      openAiResponse = await requestOpenAiImage(retryPrompt);
-      payload = await openAiResponse.json().catch(() => ({}));
-      moderationDetails = payload?.error?.moderation_details || null;
-      logProviderResponse();
-    }
-
     if (!openAiResponse.ok) {
+      if (openAiResponse.status === 429) {
+        const retryAfter = openAiResponse.headers.get("retry-after");
+        return res.status(429).json({
+          code: "OPENAI_RATE_LIMITED",
+          message: retryAfter
+            ? `OpenAI 当前请求过多，请等待约 ${retryAfter} 秒后手动重试`
+            : "OpenAI 当前请求过多，请稍后手动重试",
+          requestId,
+          diagnosticId,
+          retryAfter: retryAfter || undefined,
+        });
+      }
       if (payload?.error?.code === "moderation_blocked") {
         const stage = moderationDetails?.moderation_stage;
         const message = stage === "input"
@@ -1330,6 +1326,7 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
       const message = payload?.error?.message || payload?.message || openAiResponse.statusText;
       return res.status(openAiResponse.status).json({
         message: `OpenAI 生图失败：${message}`,
+        requestId,
         diagnosticId
       });
     }
@@ -1339,7 +1336,11 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
     const mimeType = outputFormat === "png" ? "image/png" : "image/jpeg";
     return res.json({
       images: [{ url: `data:${mimeType};base64,${base64}` }],
-      promptSafety: safetyCompilation
+      promptSafety: safetyCompilation,
+      requestId,
+      diagnosticId,
+      elapsedMs: Date.now() - requestStartedAt,
+      providerRequestId: openAiResponse.headers.get("x-request-id"),
     });
   } catch (err: unknown) {
     const error = err as Error & { cause?: { message?: string; code?: string } };
@@ -1350,10 +1351,14 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
       cause: error.cause?.message || null,
       code: error.cause?.code || null
     }));
+    if (clientDisconnectController.signal.aborted || res.destroyed) return;
     if (error.name === 'TimeoutError' || error.name === 'AbortError') {
-      return res.status(504).json({ code: 'UPSTREAM_TIMEOUT', message: "OpenAI 图像服务响应超时，请稍后重新生成", diagnosticId });
+      return res.status(504).json({ code: 'UPSTREAM_TIMEOUT', message: "OpenAI 图像服务超过 3 分 30 秒仍未完成，本次不会自动重复生成，请稍后手动重试", requestId, diagnosticId });
     }
-    return res.status(502).json({ message: "无法连接 OpenAI 官方图像服务", error: error.message });
+    return res.status(502).json({ code: "OPENAI_NETWORK_ERROR", message: "无法连接 OpenAI 官方图像服务，本次不会自动重复生成，请手动重试", requestId, diagnosticId, error: error.message });
+  } finally {
+    res.off("close", handleClientDisconnect);
+    openAiImageRequestDeduplicator.finish(dedupeKey);
   }
 });
 

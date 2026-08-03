@@ -14,6 +14,8 @@ export interface ImageNodeData extends Record<string, unknown> {
   uploadAnalysisBytes?: number;
   prompt: string;
   isLoading?: boolean;
+  generationStatus?: string;
+  generationDetail?: string;
   error?: string;
   onDelete?: () => void;
   onRegenerate?: () => void;
@@ -162,7 +164,8 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
           {data.isLoading && !data.imageUrl ? (
             <div className="flex flex-col items-center gap-3 py-20">
               <Loader2 className="animate-spin text-red-600" size={32} />
-              <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Generating</span>
+              <span className="text-[10px] text-gray-300 font-bold tracking-wider">{data.generationStatus || '正在生成'}</span>
+              {data.generationDetail && <span className="max-w-[250px] text-center text-[9px] leading-relaxed text-gray-500">{data.generationDetail}</span>}
             </div>
           ) : data.imageUrl ? (
             <>
@@ -175,7 +178,8 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
               {data.isLoading ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/65 backdrop-blur-[1px]">
                   <Loader2 className="animate-spin text-red-500" size={32} />
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-white">Regenerating</span>
+                  <span className="text-[10px] font-bold tracking-wider text-white">{data.generationStatus || '正在重新生成'}</span>
+                  {data.generationDetail && <span className="max-w-[250px] text-center text-[9px] leading-relaxed text-gray-300">{data.generationDetail}</span>}
                 </div>
               ) : (
               <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-4">
