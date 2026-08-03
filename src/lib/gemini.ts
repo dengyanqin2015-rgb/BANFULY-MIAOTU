@@ -14,6 +14,7 @@ export interface GenerationParams {
   mask?: { data: string; mimeType: string };
   apiKey?: string;
   quality?: "low" | "medium" | "high";
+  signal?: AbortSignal;
 }
 
 export interface ChatParams {
@@ -163,7 +164,8 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
       },
-      body: JSON.stringify({ apiKey, prompt: params.prompt, size, quality, images: params.images || [], mask: params.mask })
+      body: JSON.stringify({ apiKey, prompt: params.prompt, size, quality, images: params.images || [], mask: params.mask }),
+      signal: params.signal,
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(`${result.message || response.statusText}${result.diagnosticId ? `（诊断编号：${result.diagnosticId}）` : ''}`);
@@ -186,6 +188,7 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
+        signal: params.signal,
         body: JSON.stringify({
           apiKey: doubaoApiKey,
           endpoint: doubaoEndpoint,
@@ -240,10 +243,11 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
       });
     }
 
-    const config: { imageConfig: { aspectRatio: string; imageSize?: string } } = {
+    const config: { imageConfig: { aspectRatio: string; imageSize?: string }; abortSignal?: AbortSignal } = {
       imageConfig: {
         aspectRatio: params.aspectRatio === "AUTO" ? "1:1" : params.aspectRatio,
       },
+      abortSignal: params.signal,
     };
 
     // Only 3.1 and 3 Pro support imageSize

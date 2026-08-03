@@ -1205,6 +1205,7 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
 
   try {
     const requestOpenAiImage = async (requestPrompt: string) => {
+      const upstreamSignal = AbortSignal.timeout(210_000);
       if (preparedImages.length > 0) {
         const form = new FormData();
         form.append("model", "gpt-image-2");
@@ -1225,7 +1226,8 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
         return fetch("https://api.openai.com/v1/images/edits", {
           method: "POST",
           headers,
-          body: form
+          body: form,
+          signal: upstreamSignal,
         });
       }
 
@@ -1241,7 +1243,8 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
           output_format: outputFormat,
           ...(outputFormat !== "png" ? { output_compression: Number(outputCompression) } : {}),
           n: 1
-        })
+        }),
+        signal: upstreamSignal,
       });
     };
 
@@ -1249,7 +1252,10 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
     let openAiResponse: globalThis.Response;
     try {
       openAiResponse = await requestOpenAiImage(enhancedPrompt);
-    } catch {
+    } catch (requestError: unknown) {
+      if (requestError instanceof Error && (requestError.name === 'TimeoutError' || requestError.name === 'AbortError')) {
+        throw requestError;
+      }
       attempt += 1;
       console.log("[ImageDiagnostic]", JSON.stringify({ diagnosticId, event: "network_retry_started", attempt }));
       await sleep(1500);
@@ -1344,6 +1350,9 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
       cause: error.cause?.message || null,
       code: error.cause?.code || null
     }));
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+      return res.status(504).json({ code: 'UPSTREAM_TIMEOUT', message: "OpenAI 图像服务响应超时，请稍后重新生成", diagnosticId });
+    }
     return res.status(502).json({ message: "无法连接 OpenAI 官方图像服务", error: error.message });
   }
 });

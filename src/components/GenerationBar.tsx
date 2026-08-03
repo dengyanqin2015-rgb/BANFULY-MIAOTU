@@ -163,6 +163,13 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const uploadUsageRef = useRef({ count: 0, originalBytes: 0, analysisBytes: 0 });
   const uploadQueueRef = useRef<Promise<void>>(Promise.resolve());
   const imageDataRef = useRef(new Set<string>());
+  const submitLockRef = useRef(false);
+  const submitUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isSubmitLocked, setIsSubmitLocked] = useState(false);
+
+  useEffect(() => () => {
+    if (submitUnlockTimerRef.current) clearTimeout(submitUnlockTimerRef.current);
+  }, []);
 
   useLayoutEffect(() => {
     if (textareaRef.current) {
@@ -343,7 +350,14 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || submitLockRef.current) return;
+    submitLockRef.current = true;
+    setIsSubmitLocked(true);
+    submitUnlockTimerRef.current = setTimeout(() => {
+      submitLockRef.current = false;
+      setIsSubmitLocked(false);
+      submitUnlockTimerRef.current = null;
+    }, 800);
     
     let finalAspectRatio = aspectRatio;
     let finalImageSize = imageSize;
@@ -513,10 +527,10 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
               ) : (
                 <button
                   type="submit"
-                  disabled={!prompt.trim()}
+                  disabled={!prompt.trim() || isSubmitLocked}
                   className={cn(
                     "p-2 rounded-xl transition-all flex items-center justify-center min-w-[44px]",
-                    !prompt.trim()
+                    !prompt.trim() || isSubmitLocked
                       ? "bg-[#333] text-gray-600 cursor-not-allowed" 
                       : "bg-red-600 text-white hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(220,38,38,0.3)]"
                   )}

@@ -31,6 +31,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
 import { allocatePasteBatchOrigin, getBatchImportPosition, processImageFiles } from '../lib/uploadProcessing';
 import { advanceGenerationGrid, findDerivedNodePosition, findFreeGenerationPosition, findFreeGridPosition, WORKFLOW_LAYOUT } from '../lib/workflowLayout';
+import { GenerationTaskCoordinator, getGenerationErrorMessage } from '../lib/generationTasks';
 
 const nodeTypes = {
   imageNode: ImageNode,
@@ -162,6 +163,9 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const layoutCursorRef = useRef<{ nextX: number; nextY: number } | null>(null);
   const placementReservationsRef = useRef<Map<string, { position: { x: number; y: number } }>>(new Map());
+  const generationTasksRef = useRef(new GenerationTaskCoordinator());
+
+  useEffect(() => () => generationTasksRef.current.cancelAll(), []);
 
   // Load projects on mount
   useEffect(() => {
@@ -342,6 +346,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   };
 
   const loadProject = async (project: Project) => {
+    generationTasksRef.current.cancelAll();
     setCurrentProjectId(project.id);
     
     // Hydrate nodes with images from IndexedDB
@@ -353,6 +358,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
         const nodeData = node.data as ImageNodeData;
         const newNodeData = { ...nodeData };
+        if (newNodeData.isLoading) {
+          newNodeData.isLoading = false;
+          newNodeData.error = '上次生成任务已中断，请重新生成';
+        }
 
         // Hydrate imageUrl
         if (nodeData.imageUrl?.startsWith('db://')) {
@@ -423,6 +432,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
       const nodeData = node.data as ImageNodeData;
       const newNodeData = { ...nodeData };
+      if (newNodeData.isLoading) {
+        newNodeData.isLoading = false;
+        newNodeData.error = '生成任务在页面关闭前尚未完成，请重新生成';
+      }
       
       // Remove functions and other non-serializable data
       delete newNodeData.onDelete;
@@ -721,6 +734,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       data: {
         ...nodeData,
         onDelete: () => {
+          generationTasksRef.current.cancel(node.id);
           setNodes((nds) => nds.filter((n) => n.id !== node.id));
           setEdges((eds) => eds.filter((e) => e.source !== node.id && e.target !== node.id));
         },
@@ -1023,6 +1037,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
 
     if (targetNodeId) {
+      const task = generationTasksRef.current.start(targetNodeId);
       // Update existing node to loading state
       setNodes((nds) => nds.map(n => n.id === targetNodeId ? {
         ...n,
@@ -1040,25 +1055,31 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           imageSize, 
           model, 
           images: images?.map(img => ({ data: img.data, mimeType: img.mimeType })),
-          apiKey: userApiKey
+          apiKey: userApiKey,
+          signal: task.signal,
         });
+        if (!generationTasksRef.current.isCurrent(task)) return;
         console.log(`[Workflow] Regeneration success for node ${targetNodeId}`, { url: urls[0] });
         
         if (onDeductCredit) {
           await onDeductCredit(cost);
         }
+        if (!generationTasksRef.current.isCurrent(task)) return;
 
         setNodes((nds) => nds.map(n => n.id === targetNodeId ? attachNodeActions({
           ...n,
           data: { ...n.data, isLoading: false, imageUrl: urls[0] }
         }) : n));
       } catch (err: unknown) {
+        if (!generationTasksRef.current.isCurrent(task)) return;
         const error = err as Error;
         console.error(`[Workflow] Regeneration failed for node ${targetNodeId}:`, error);
         setNodes((nds) => nds.map(n => n.id === targetNodeId ? {
           ...n,
-          data: { ...n.data, isLoading: false, error: error.message }
+          data: { ...n.data, isLoading: false, error: getGenerationErrorMessage(error, task.signal) }
         } : n));
+      } finally {
+        generationTasksRef.current.finish(task);
       }
       return;
     }
@@ -1217,6 +1238,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
 
     setLastNodeId(newNodeId);
+    const task = generationTasksRef.current.start(newNodeId);
     console.log(`[Workflow] Starting generation for node ${newNodeId}`, { prompt, aspectRatio, imageSize, model, imagesCount: images?.length });
 
     try {
@@ -1226,14 +1248,17 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         imageSize, 
         model, 
         images: images?.map(img => ({ data: img.data, mimeType: img.mimeType })),
-        apiKey: userApiKey
+        apiKey: userApiKey,
+        signal: task.signal,
       });
+      if (!generationTasksRef.current.isCurrent(task)) return;
       console.log(`[Workflow] Generation success for node ${newNodeId}`, { url: urls[0] });
       
       // Deduct credit on success
       if (onDeductCredit) {
         await onDeductCredit(cost);
       }
+      if (!generationTasksRef.current.isCurrent(task)) return;
 
       setNodes((nds) =>
         nds.map((node) => {
@@ -1251,6 +1276,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         })
       );
     } catch (err: unknown) {
+      if (!generationTasksRef.current.isCurrent(task)) return;
       const error = err as Error;
       console.error(`[Workflow] Generation failed for node ${newNodeId}:`, error);
       const isKeyError = error.message === "API_KEY_REQUIRED";
@@ -1266,13 +1292,15 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               data: {
                 ...node.data,
                 isLoading: false,
-                error: isKeyError ? "API Key required" : error.message,
+                error: isKeyError ? "API Key required" : getGenerationErrorMessage(error, task.signal),
               },
             };
           }
           return node;
         })
       );
+    } finally {
+      generationTasksRef.current.finish(task);
     }
   }, [user, userApiKey, onDeductCredit, findSafePosition, findSafePositionToRight, attachNodeActions, advanceLayoutCursor, focusNode, lastNodeId]);
 

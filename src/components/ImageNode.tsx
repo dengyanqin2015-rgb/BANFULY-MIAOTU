@@ -159,14 +159,10 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
         
         <div className="overflow-hidden rounded-lg">
         <div className="relative w-full bg-[#0a0a0a] flex items-center justify-center group cursor-pointer">
-          {data.isLoading ? (
+          {data.isLoading && !data.imageUrl ? (
             <div className="flex flex-col items-center gap-3 py-20">
               <Loader2 className="animate-spin text-red-600" size={32} />
               <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Generating</span>
-            </div>
-          ) : data.error ? (
-            <div className="p-8 text-center">
-              <span className="text-xs text-red-400 font-medium">{data.error}</span>
             </div>
           ) : data.imageUrl ? (
             <>
@@ -176,6 +172,12 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
                 className="w-full h-auto object-contain"
                 referrerPolicy="no-referrer"
               />
+              {data.isLoading ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/65 backdrop-blur-[1px]">
+                  <Loader2 className="animate-spin text-red-500" size={32} />
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-white">Regenerating</span>
+                </div>
+              ) : (
               <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-4">
                 <div className="flex items-center gap-3">
                   <button 
@@ -204,7 +206,17 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
                   Double click to reuse
                 </span>
               </div>
+              )}
+              {data.error && !data.isLoading && (
+                <div className="absolute inset-x-2 bottom-2 rounded-md border border-red-500/40 bg-black/85 px-3 py-2 text-center text-[10px] font-medium text-red-300">
+                  {data.error}
+                </div>
+              )}
             </>
+          ) : data.error ? (
+            <div className="p-8 text-center">
+              <span className="text-xs text-red-400 font-medium">{data.error}</span>
+            </div>
           ) : null}
         </div>
         </div>
