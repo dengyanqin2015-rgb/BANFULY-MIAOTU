@@ -3,10 +3,10 @@ import { Send, ChevronDown, Key, Image as ImageIcon, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { cn } from '../lib/utils';
-import { processImageFiles } from '../lib/uploadProcessing';
+import { assertImageUsage, processImageFiles } from '../lib/uploadProcessing';
 
 export interface GenerationBarRef {
-  addImage: (data: string, mimeType: string, preview: string, sourceNodeId?: string) => void;
+  addImage: (data: string, mimeType: string, preview: string, sourceNodeId?: string, usage?: { originalBytes: number; analysisBytes: number }) => void;
   setParams: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; preview: string; sourceNodeId?: string }[]) => void;
 }
 
@@ -156,10 +156,13 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
     return saved === "medium" || saved === "high" ? saved : "low";
   });
   const [showOptions, setShowOptions] = useState(false);
-  const [images, setImages] = useState<{ data: string; mimeType: string; preview: string; width?: number; height?: number; sourceNodeId?: string }[]>([]);
+  const [images, setImages] = useState<{ data: string; mimeType: string; preview: string; width?: number; height?: number; sourceNodeId?: string; originalBytes?: number; analysisBytes?: number }[]>([]);
   const availableAspectRatios = model === "gpt-image-2" ? GPT_ASPECT_RATIOS : GOOGLE_ASPECT_RATIOS;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const uploadUsageRef = useRef({ count: 0, originalBytes: 0, analysisBytes: 0 });
+  const uploadQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const imageDataRef = useRef(new Set<string>());
 
   useLayoutEffect(() => {
     if (textareaRef.current) {
@@ -190,10 +193,23 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   }, [gptQuality]);
 
   useImperativeHandle(ref, () => ({
-    addImage: (data, mimeType, preview, sourceNodeId) => {
-      setImages(prev => {
-        if (prev.some(img => img.data === data)) return prev;
-        
+    addImage: (data, mimeType, preview, sourceNodeId, usage) => {
+        if (imageDataRef.current.has(data)) return;
+        const bytes = Math.ceil(data.length * 3 / 4);
+        const originalBytes = usage?.originalBytes ?? bytes;
+        const analysisBytes = usage?.analysisBytes ?? bytes;
+        try {
+          assertImageUsage(uploadUsageRef.current, { count: 1, originalBytes, analysisBytes });
+        } catch (error) {
+          alert((error as Error).message);
+          return;
+        }
+        uploadUsageRef.current = {
+          count: uploadUsageRef.current.count + 1,
+          originalBytes: uploadUsageRef.current.originalBytes + originalBytes,
+          analysisBytes: uploadUsageRef.current.analysisBytes + analysisBytes,
+        };
+        imageDataRef.current.add(data);
         // Try to get dimensions
         const img = new Image();
         img.onload = () => {
@@ -203,8 +219,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
         };
         img.src = preview;
         
-        return [...prev, { data, mimeType, preview, sourceNodeId }];
-      });
+        setImages(prev => [...prev, { data, mimeType, preview, sourceNodeId, originalBytes, analysisBytes }]);
     },
     setParams: (p, ar, is, m, imgs) => {
       setPrompt(p);
@@ -212,7 +227,17 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       setImageSize(is);
       setModel(m);
       if (imgs) {
-        setImages(imgs.map(img => ({ ...img })));
+        const next = imgs.map(img => {
+          const bytes = Math.ceil(img.data.length * 3 / 4);
+          return { ...img, originalBytes: bytes, analysisBytes: bytes };
+        });
+        const usage = next.reduce((sum, image) => ({ count: sum.count + 1, originalBytes: sum.originalBytes + image.originalBytes, analysisBytes: sum.analysisBytes + image.analysisBytes }), { count: 0, originalBytes: 0, analysisBytes: 0 });
+        try {
+          assertImageUsage({}, usage);
+          uploadUsageRef.current = usage;
+          imageDataRef.current = new Set(next.map(image => image.data));
+          setImages(next);
+        } catch (error) { alert((error as Error).message); }
       }
       setShowOptions(true);
     }
@@ -221,20 +246,24 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
-    try {
-      const existingBytes = images.reduce((sum, image) => sum + Math.ceil(image.data.length * 3 / 4), 0);
-      const processed = await processImageFiles(files, images.length, existingBytes);
-      setImages(prev => [...prev, ...processed.map(image => ({
-        data: image.data,
-        mimeType: image.mimeType,
-        preview: image.dataUrl,
+    uploadQueueRef.current = uploadQueueRef.current.then(async () => {
+      try {
+        const processed = await processImageFiles(files, uploadUsageRef.current);
+        uploadUsageRef.current = processed.reduce((usage, image) => ({ count: usage.count + 1, originalBytes: usage.originalBytes + image.originalBytes, analysisBytes: usage.analysisBytes + image.analysisBytes }), uploadUsageRef.current);
+        processed.forEach(image => imageDataRef.current.add(image.originalData));
+        setImages(prev => [...prev, ...processed.map(image => ({
+        data: image.originalData,
+        mimeType: image.originalMimeType,
+        preview: image.originalDataUrl,
         width: image.width,
         height: image.height,
+        originalBytes: image.originalBytes,
+        analysisBytes: image.analysisBytes,
       }))]);
-      setShowOptions(true);
-    } catch (error) {
-      alert((error as Error).message);
-    }
+        setShowOptions(true);
+      } catch (error) { alert((error as Error).message); }
+    });
+    await uploadQueueRef.current;
     
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -242,7 +271,16 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   };
 
   const removeImage = (index: number) => {
-    setImages(prev => prev.filter((_, i) => i !== index));
+    setImages(prev => {
+      const removed = prev[index];
+      if (removed) uploadUsageRef.current = {
+        count: Math.max(0, uploadUsageRef.current.count - 1),
+        originalBytes: Math.max(0, uploadUsageRef.current.originalBytes - (removed.originalBytes || 0)),
+        analysisBytes: Math.max(0, uploadUsageRef.current.analysisBytes - (removed.analysisBytes || 0)),
+      };
+      if (removed) imageDataRef.current.delete(removed.data);
+      return prev.filter((_, i) => i !== index);
+    });
   };
 
   /*
@@ -361,6 +399,8 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
     })));
     setPrompt('');
     setImages([]);
+    uploadUsageRef.current = { count: 0, originalBytes: 0, analysisBytes: 0 };
+    imageDataRef.current.clear();
     // Auto collapse options after sending
     setShowOptions(false);
   };

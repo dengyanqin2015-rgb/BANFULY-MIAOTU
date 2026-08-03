@@ -116,12 +116,14 @@ interface WorkflowCanvasProps {
   userApiKey?: string;
   user?: User | null;
   onDeductCredit?: (amount: number) => Promise<boolean>;
+  isActive?: boolean;
 }
 
 export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ 
   userApiKey,
   user,
-  onDeductCredit
+  onDeductCredit,
+  isActive = true,
 }) => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
@@ -134,6 +136,19 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [renamingProject, setRenamingProject] = useState<{ id: string, name: string } | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
+  const uploadUsageRef = useRef({ count: 0, originalBytes: 0, analysisBytes: 0 });
+  const uploadQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const uploadIdCounterRef = useRef(0);
+  const nextUploadBatchId = useCallback((prefix: string) => `${prefix}-${crypto.randomUUID?.() || `${Date.now()}-${++uploadIdCounterRef.current}`}`, []);
+  useEffect(() => {
+    uploadUsageRef.current = nodes.reduce((usage, node) => {
+      const data = node.data as ImageNodeData;
+      const originalBytes = typeof data.uploadOriginalBytes === 'number' ? data.uploadOriginalBytes : 0;
+      const analysisBytes = typeof data.uploadAnalysisBytes === 'number' ? data.uploadAnalysisBytes : 0;
+      if (!originalBytes && !analysisBytes) return usage;
+      return { count: usage.count + 1, originalBytes: usage.originalBytes + originalBytes, analysisBytes: usage.analysisBytes + analysisBytes };
+    }, { count: 0, originalBytes: 0, analysisBytes: 0 });
+  }, [nodes]);
   const [paneMenu, setPaneMenu] = useState<{ show: boolean; x: number; y: number } | null>(null);
   const selectedNodes = nodes.filter(n => n.selected);
   
@@ -318,7 +333,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           const data = parts[1];
           const mimePart = nodeData.imageUrl.split(';')[0];
           const mimeType = mimePart.includes(':') ? mimePart.split(':')[1] : 'image/png';
-          genBarRef.current?.addImage(data, mimeType, nodeData.imageUrl, node.id);
+          genBarRef.current?.addImage(data, mimeType, nodeData.imageUrl, node.id,
+            typeof nodeData.uploadOriginalBytes === 'number' && typeof nodeData.uploadAnalysisBytes === 'number'
+              ? { originalBytes: nodeData.uploadOriginalBytes, analysisBytes: nodeData.uploadAnalysisBytes }
+              : undefined);
         }
       }
     });
@@ -574,7 +592,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     if (nodeData.imageUrl && genBarRef.current) {
       const data = nodeData.imageUrl.split(',')[1];
       const mimeType = nodeData.imageUrl.split(';')[0].split(':')[1];
-      genBarRef.current.addImage(data, mimeType, nodeData.imageUrl, node.id);
+      genBarRef.current.addImage(data, mimeType, nodeData.imageUrl, node.id,
+        typeof nodeData.uploadOriginalBytes === 'number' && typeof nodeData.uploadAnalysisBytes === 'number'
+          ? { originalBytes: nodeData.uploadOriginalBytes, analysisBytes: nodeData.uploadAnalysisBytes }
+          : undefined);
     }
   }, []);
 
@@ -794,7 +815,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             if (!response.ok) throw new Error((templates as unknown as { message?: string }).message || '无法读取解析模板');
             const template = templates.find(item => item.isDefault) || templates[0];
             if (!template) throw new Error('后台尚未配置图片解析模板');
-            const analysisPrompt = await analyzeImageForPrompt(nodeData.imageUrl!, template, userApiKey);
+            const analysisPrompt = await analyzeImageForPrompt((nodeData.analysisImageUrl as string | undefined) || nodeData.imageUrl!, template, userApiKey);
             setNodes(nds => nds.map(n => n.id === node.id ? attachNodeActions({
               ...n,
               data: {
@@ -889,9 +910,13 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         } : undefined,
         onSendToAssistant: nodeData.imageUrl ? () => {
           if (assistantRef.current) {
-            const match = nodeData.imageUrl!.match(/^data:([^;]+);base64,(.+)$/);
+            const analysisUrl = (nodeData.analysisImageUrl as string | undefined) || nodeData.imageUrl!;
+            const match = analysisUrl.match(/^data:([^;]+);base64,(.+)$/);
             if (match) {
-              assistantRef.current.sendImage(match[2], match[1], nodeData.imageUrl!);
+              assistantRef.current.sendImage(match[2], match[1], nodeData.imageUrl!, false,
+                typeof nodeData.uploadOriginalBytes === 'number' && typeof nodeData.uploadAnalysisBytes === 'number'
+                  ? { originalBytes: nodeData.uploadOriginalBytes, analysisBytes: nodeData.uploadAnalysisBytes }
+                  : undefined);
             } else {
               assistantRef.current.open();
             }
@@ -946,18 +971,24 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         y: paneMenu.y,
       }) : { x: 100, y: 100 };
 
+      uploadQueueRef.current = uploadQueueRef.current.then(async () => {
       try {
-        const images = await processImageFiles(files);
+        const images = await processImageFiles(files, uploadUsageRef.current);
+        uploadUsageRef.current = images.reduce((usage, image) => ({ count: usage.count + 1, originalBytes: usage.originalBytes + image.originalBytes, analysisBytes: usage.analysisBytes + image.analysisBytes }), uploadUsageRef.current);
+        const batchId = nextUploadBatchId('import');
         const importedNodes = images.map((image, i) => {
-          const newNodeId = `import-${Date.now()}-${i}`;
+          const newNodeId = `${batchId}-${i}`;
           return attachNodeActions({
             id: newNodeId,
             type: 'imageNode',
             position: getBatchImportPosition({ x: position?.x || 100, y: position?.y || 100 }, i),
             data: {
               prompt: image.file.name,
-              imageUrl: image.dataUrl,
+              imageUrl: image.originalDataUrl,
               type: 'source',
+              uploadOriginalBytes: image.originalBytes,
+              uploadAnalysisBytes: image.analysisBytes,
+              analysisImageUrl: image.analysisDataUrl,
             },
           });
         });
@@ -965,48 +996,51 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       } catch (error) {
         alert((error as Error).message);
       }
+      });
+      await uploadQueueRef.current;
       setPaneMenu(null);
     };
     input.click();
-  }, [paneMenu, attachNodeActions, setNodes]);
+  }, [paneMenu, attachNodeActions, setNodes, nextUploadBatchId]);
 
   useEffect(() => {
     const handlePaste = async (event: ClipboardEvent) => {
+      const target = event.target;
+      const isEditing = target instanceof Element && Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
+      if (!isActive || document.hidden || event.defaultPrevented || isEditing) return;
       const items = event.clipboardData?.items;
       if (!items) return;
-
-      for (const item of items) {
-        if (item.type.indexOf('image') !== -1) {
-          const file = item.getAsFile();
-          if (file) {
-            void processImageFiles([file]).then(([image]) => {
-              const position = rfInstance.current?.screenToFlowPosition({
-                x: window.innerWidth / 2,
-                y: window.innerHeight / 2,
-              }) || { x: 0, y: 0 };
-              
-              const newNodeId = `paste-${Date.now()}`;
-              const newNode = attachNodeActions({
-                id: newNodeId,
+      const files = Array.from(items).filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => Boolean(file));
+      if (!files.length) return;
+      event.preventDefault();
+      uploadQueueRef.current = uploadQueueRef.current.then(async () => {
+        try {
+          const images = await processImageFiles(files, uploadUsageRef.current);
+          uploadUsageRef.current = images.reduce((usage, image) => ({ count: usage.count + 1, originalBytes: usage.originalBytes + image.originalBytes, analysisBytes: usage.analysisBytes + image.analysisBytes }), uploadUsageRef.current);
+          const origin = rfInstance.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) || { x: 0, y: 0 };
+          const batchId = nextUploadBatchId('paste');
+          const pastedNodes = images.map((image, index) => attachNodeActions({
+                id: `${batchId}-${index}`,
                 type: 'imageNode',
-                position,
+                position: getBatchImportPosition(origin, index),
                 data: {
-                  prompt: 'Pasted Image',
-                  imageUrl: image.dataUrl,
+                  prompt: image.file.name || `粘贴图片 ${index + 1}`,
+                  imageUrl: image.originalDataUrl,
                   type: 'source',
+                  uploadOriginalBytes: image.originalBytes,
+                  uploadAnalysisBytes: image.analysisBytes,
+                  analysisImageUrl: image.analysisDataUrl,
                 },
-              });
-              
-              setNodes((nds) => [...nds, newNode]);
-            }).catch(error => alert((error as Error).message));
-          }
-        }
-      }
+              }));
+          setNodes(nds => [...nds, ...pastedNodes]);
+        } catch (error) { alert((error as Error).message); }
+      });
+      await uploadQueueRef.current;
     };
 
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [attachNodeActions, setNodes]);
+  }, [attachNodeActions, isActive, nextUploadBatchId, setNodes]);
 
   useEffect(() => {
     const handleClickOutside = () => setPaneMenu(null);

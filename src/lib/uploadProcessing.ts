@@ -16,12 +16,28 @@ export const DOCUMENT_UPLOAD_LIMITS = {
 
 export interface ProcessedImage {
   file: File;
-  dataUrl: string;
-  data: string;
-  mimeType: string;
+  originalDataUrl: string;
+  originalData: string;
+  originalMimeType: string;
+  originalBytes: number;
+  analysisDataUrl: string;
+  analysisData: string;
+  analysisMimeType: string;
   width: number;
   height: number;
   analysisBytes: number;
+}
+
+export interface ExistingImageUsage {
+  count?: number;
+  originalBytes?: number;
+  analysisBytes?: number;
+}
+
+export function assertImageUsage(existing: ExistingImageUsage, additions: Required<ExistingImageUsage>): void {
+  if ((existing.count || 0) + additions.count > IMAGE_UPLOAD_LIMITS.maxFiles) throw new Error(`图片最多 ${IMAGE_UPLOAD_LIMITS.maxFiles} 张`);
+  if ((existing.originalBytes || 0) + additions.originalBytes > IMAGE_UPLOAD_LIMITS.maxOriginalBytes) throw new Error('图片原始总量超过 40MB');
+  if ((existing.analysisBytes || 0) + additions.analysisBytes > IMAGE_UPLOAD_LIMITS.maxAnalysisBytes) throw new Error('模型分析副本总量超过 12MB，请减少图片或降低图片尺寸');
 }
 
 const readFile = (file: File, mode: 'dataUrl' | 'arrayBuffer'): Promise<string | ArrayBuffer> => new Promise((resolve, reject) => {
@@ -45,13 +61,18 @@ const dataUrlBytes = (value: string) => {
   return Math.ceil(payload.length * 3 / 4);
 };
 
-async function makeAnalysisCopy(file: File, dataUrl: string): Promise<Omit<ProcessedImage, 'file'>> {
-  const image = await loadImage(dataUrl, file.name);
+async function makeAnalysisCopy(file: File, originalDataUrl: string): Promise<Omit<ProcessedImage, 'file'>> {
+  const image = await loadImage(originalDataUrl, file.name);
   const scale = Math.min(1, IMAGE_UPLOAD_LIMITS.maxLongEdge / Math.max(image.naturalWidth, image.naturalHeight));
   const width = Math.max(1, Math.round(image.naturalWidth * scale));
   const height = Math.max(1, Math.round(image.naturalHeight * scale));
-  if (scale === 1 && dataUrlBytes(dataUrl) <= IMAGE_UPLOAD_LIMITS.maxAnalysisBytes) {
-    return { dataUrl, data: dataUrl.split(',')[1], mimeType: file.type, width, height, analysisBytes: dataUrlBytes(dataUrl) };
+  const originalData = originalDataUrl.split(',')[1];
+  if (scale === 1 && dataUrlBytes(originalDataUrl) <= IMAGE_UPLOAD_LIMITS.maxAnalysisBytes) {
+    return {
+      originalDataUrl, originalData, originalMimeType: file.type, originalBytes: file.size,
+      analysisDataUrl: originalDataUrl, analysisData: originalData, analysisMimeType: file.type,
+      width, height, analysisBytes: dataUrlBytes(originalDataUrl),
+    };
   }
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -61,22 +82,26 @@ async function makeAnalysisCopy(file: File, dataUrl: string): Promise<Omit<Proce
   context.drawImage(image, 0, 0, width, height);
   const mimeType = file.type === 'image/png' && file.size < 2 * 1024 * 1024 ? 'image/png' : 'image/jpeg';
   const compressed = canvas.toDataURL(mimeType, mimeType === 'image/jpeg' ? 0.82 : undefined);
-  return { dataUrl: compressed, data: compressed.split(',')[1], mimeType, width, height, analysisBytes: dataUrlBytes(compressed) };
+  return {
+    originalDataUrl, originalData, originalMimeType: file.type, originalBytes: file.size,
+    analysisDataUrl: compressed, analysisData: compressed.split(',')[1], analysisMimeType: mimeType,
+    width, height, analysisBytes: dataUrlBytes(compressed),
+  };
 }
 
-export async function processImageFiles(files: Iterable<File>, existingCount = 0, existingAnalysisBytes = 0): Promise<ProcessedImage[]> {
+export async function processImageFiles(files: Iterable<File>, existing: ExistingImageUsage = {}): Promise<ProcessedImage[]> {
   const list = Array.from(files);
   if (!list.length) return [];
-  if (existingCount + list.length > IMAGE_UPLOAD_LIMITS.maxFiles) throw new Error(`图片最多 ${IMAGE_UPLOAD_LIMITS.maxFiles} 张`);
+  assertImageUsage(existing, { count: list.length, originalBytes: 0, analysisBytes: 0 });
   const invalidType = list.find(file => !file.type.startsWith('image/'));
   if (invalidType) throw new Error(`“${invalidType.name}”不是图片文件`);
   const oversized = list.find(file => file.size > IMAGE_UPLOAD_LIMITS.maxFileBytes);
   if (oversized) throw new Error(`“${oversized.name}”超过单张 8MB 限制`);
   const originalBytes = list.reduce((sum, file) => sum + file.size, 0);
-  if (originalBytes > IMAGE_UPLOAD_LIMITS.maxOriginalBytes) throw new Error('本次图片原始总量超过 40MB');
+  assertImageUsage(existing, { count: 0, originalBytes, analysisBytes: 0 });
 
   const results: ProcessedImage[] = [];
-  let analysisBytes = existingAnalysisBytes;
+  let analysisBytes = existing.analysisBytes || 0;
   for (const file of list) {
     const original = await readFile(file, 'dataUrl') as string;
     const copy = await makeAnalysisCopy(file, original);

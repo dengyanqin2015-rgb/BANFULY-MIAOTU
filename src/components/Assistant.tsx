@@ -6,11 +6,11 @@ import * as XLSX from 'xlsx';
 import { cn } from '../lib/utils';
 import { chatWithAssistant } from '../lib/gemini';
 import { User } from '../types';
-import { DOCUMENT_UPLOAD_LIMITS, processImageFiles, readFileAsArrayBuffer, readFileAsDataUrl, validateDocumentFiles } from '../lib/uploadProcessing';
+import { assertImageUsage, DOCUMENT_UPLOAD_LIMITS, processImageFiles, readFileAsArrayBuffer, readFileAsDataUrl, validateDocumentFiles } from '../lib/uploadProcessing';
 
 export interface AssistantRef {
   open: () => void;
-  sendImage: (data: string, mimeType: string, preview: string, autoSend?: boolean) => void;
+  sendImage: (data: string, mimeType: string, preview: string, autoSend?: boolean, usage?: { originalBytes: number; analysisBytes: number }) => void;
 }
 
 const ASSISTANT_COSTS = {
@@ -39,7 +39,18 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [mode, setMode] = useState<'normal' | 'deep'>('normal');
-  const [pendingImages, setPendingImages] = useState<{ data: string; mimeType: string; preview: string; name?: string; originalBytes?: number }[]>([]);
+  const [pendingImages, setPendingImages] = useState<{ data: string; mimeType: string; preview: string; name?: string; originalBytes?: number; analysisBytes?: number }[]>([]);
+  const imageUsageRef = useRef({ count: 0, originalBytes: 0, analysisBytes: 0 });
+  const documentUsageRef = useRef({ count: 0, bytes: 0 });
+  const attachmentQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const syncAttachmentUsage = (items: typeof pendingImages) => {
+    imageUsageRef.current = items.filter(item => Boolean(item.preview)).reduce((usage, item) => ({
+      count: usage.count + 1,
+      originalBytes: usage.originalBytes + (item.originalBytes || Math.ceil(item.data.length * 3 / 4)),
+      analysisBytes: usage.analysisBytes + (item.analysisBytes || Math.ceil(item.data.length * 3 / 4)),
+    }), { count: 0, originalBytes: 0, analysisBytes: 0 });
+    documentUsageRef.current = items.filter(item => !item.preview).reduce((usage, item) => ({ count: usage.count + 1, bytes: usage.bytes + (item.originalBytes || 0) }), { count: 0, bytes: 0 });
+  };
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 450, height: 650 });
   const [position, setPosition] = useState({ x: window.innerWidth - 500, y: 100 });
@@ -58,9 +69,16 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
 
   useImperativeHandle(ref, () => ({
     open: () => setIsOpen(true),
-    sendImage: (data, mimeType, preview, autoSend = false) => {
+    sendImage: (data, mimeType, preview, autoSend = false, usage) => {
+      const bytes = Math.ceil(data.length * 3 / 4);
+      const originalBytes = usage?.originalBytes ?? bytes;
+      const analysisBytes = usage?.analysisBytes ?? bytes;
+      try {
+        assertImageUsage(imageUsageRef.current, { count: 1, originalBytes, analysisBytes });
+      } catch (error) { alert((error as Error).message); return; }
+      imageUsageRef.current = { count: imageUsageRef.current.count + 1, originalBytes: imageUsageRef.current.originalBytes + originalBytes, analysisBytes: imageUsageRef.current.analysisBytes + analysisBytes };
       setIsOpen(true);
-      const newImage = { data, mimeType, preview };
+      const newImage = { data, mimeType, preview, originalBytes, analysisBytes };
       setPendingImages(prev => [...prev, newImage]);
       
       if (autoSend) {
@@ -90,7 +108,11 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     }
 
     // Clear these specific images from pending
-    setPendingImages(prev => prev.filter(p => !images.some(img => img.preview === p.preview)));
+    setPendingImages(prev => {
+      const next = prev.filter(p => !images.some(img => img.preview === p.preview));
+      syncAttachmentUsage(next);
+      return next;
+    });
 
     const userMessage: Message = {
       role: 'user',
@@ -189,6 +211,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     
     setInput('');
     setPendingImages([]);
+    syncAttachmentUsage([]);
     setIsLoading(true);
 
     try {
@@ -231,13 +254,12 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
     const files = Array.from(e.target.files || []);
     if (fileInputRef.current) fileInputRef.current.value = '';
     if (!files.length) return;
+    attachmentQueueRef.current = attachmentQueueRef.current.then(async () => {
     try {
       const imageFiles = files.filter(file => file.type.startsWith('image/'));
-      const existingDocuments = pendingImages.filter(file => !file.preview);
-      const existingImages = pendingImages.filter(file => Boolean(file.preview));
-      const documentFiles = validateDocumentFiles(files.filter(file => !file.type.startsWith('image/')), existingDocuments.length, existingDocuments.reduce((sum, file) => sum + (file.originalBytes ?? Math.ceil(file.data.length * 3 / 4)), 0));
-      const images = await processImageFiles(imageFiles, existingImages.length, existingImages.reduce((sum, file) => sum + Math.ceil(file.data.length * 3 / 4), 0));
-      const additions = images.map(image => ({ data: image.data, mimeType: image.mimeType, preview: image.dataUrl, name: image.file.name, originalBytes: image.file.size }));
+      const documentFiles = validateDocumentFiles(files.filter(file => !file.type.startsWith('image/')), documentUsageRef.current.count, documentUsageRef.current.bytes);
+      const images = await processImageFiles(imageFiles, imageUsageRef.current);
+      const additions = images.map(image => ({ data: image.analysisData, mimeType: image.analysisMimeType, preview: image.originalDataUrl, name: image.file.name, originalBytes: image.originalBytes, analysisBytes: image.analysisBytes }));
       for (const file of documentFiles) {
         if (/\.xlsx?$/i.test(file.name)) {
           const workbook = XLSX.read(await readFileAsArrayBuffer(file), { type: 'array', sheetRows: DOCUMENT_UPLOAD_LIMITS.maxExcelRows + 1 });
@@ -254,16 +276,28 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
           const bytes = new TextEncoder().encode(parts.join('\n\n'));
           let binary = '';
           for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-          additions.push({ data: btoa(binary), mimeType: 'text/csv', preview: '', name: file.name, originalBytes: file.size });
+          additions.push({ data: btoa(binary), mimeType: 'text/csv', preview: '', name: file.name, originalBytes: file.size, analysisBytes: 0 });
         } else {
           const dataUrl = await readFileAsDataUrl(file);
-          additions.push({ data: dataUrl.split(',')[1], mimeType: file.type || 'text/plain', preview: '', name: file.name, originalBytes: file.size });
+          additions.push({ data: dataUrl.split(',')[1], mimeType: file.type || 'text/plain', preview: '', name: file.name, originalBytes: file.size, analysisBytes: 0 });
         }
       }
+      imageUsageRef.current = images.reduce((usage, image) => ({ count: usage.count + 1, originalBytes: usage.originalBytes + image.originalBytes, analysisBytes: usage.analysisBytes + image.analysisBytes }), imageUsageRef.current);
+      documentUsageRef.current = documentFiles.reduce((usage, file) => ({ count: usage.count + 1, bytes: usage.bytes + file.size }), documentUsageRef.current);
       setPendingImages(prev => [...prev, ...additions]);
     } catch (error) {
       setMessages(prev => [...prev, { role: 'model', content: `附件添加失败：${(error as Error).message}`, timestamp: Date.now() }]);
     }
+    });
+    await attachmentQueueRef.current;
+  };
+
+  const removePendingImage = (index: number) => {
+    setPendingImages(prev => {
+      const next = prev.filter((_, itemIndex) => itemIndex !== index);
+      syncAttachmentUsage(next);
+      return next;
+    });
   };
 
   const handleCopy = async (text: string, id: string, event?: React.MouseEvent) => {
@@ -586,7 +620,7 @@ export const Assistant = forwardRef<AssistantRef, AssistantProps>(({ userApiKey,
                       <div key={i} className="relative group flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-[#333] bg-[#222]">
                         {img.preview ? <img src={img.preview} className="w-full h-full object-cover" alt="pending" /> : <div className="flex flex-col items-center gap-1 p-1 text-center"><FileText size={18} className="text-blue-400" /><span className="line-clamp-2 text-[8px] text-gray-400">{img.name}</span></div>}
                         <button 
-                          onClick={() => setPendingImages(prev => prev.filter((_, idx) => idx !== i))}
+                          onClick={() => removePendingImage(i)}
                           className="absolute top-1 right-1 p-1 bg-black/60 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
                         >
                           <X size={10} />

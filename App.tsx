@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 declare global {
   interface Window {
@@ -276,6 +276,10 @@ const App: React.FC = () => {
   const [styleImage, setStyleImage] = useState<string | null>(null);
   const [constitution, setConstitution] = useState<VisualConstitution | null>(null);
   const [productImages, setProductImages] = useState<string[]>([]);
+  const [productAnalysisImages, setProductAnalysisImages] = useState<string[]>([]);
+  const [productImageBytes, setProductImageBytes] = useState<{ original: number; analysis: number }[]>([]);
+  const productUploadUsageRef = useRef({ count: 0, originalBytes: 0, analysisBytes: 0 });
+  const productUploadQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [sellingPoints, setSellingPoints] = useState('');
   const [allowedElements, setAllowedElements] = useState('');
   const [prohibitedElements, setProhibitedElements] = useState('');
@@ -722,7 +726,7 @@ const App: React.FC = () => {
     if (!file) return;
     try {
       const [image] = await processImageFiles([file]);
-      setter(image.dataUrl);
+      setter(image.originalDataUrl);
     } catch (error) {
       alert((error as Error).message);
     }
@@ -731,13 +735,20 @@ const App: React.FC = () => {
   const handleMultipleFilesChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
-    try {
-      const existingBytes = productImages.reduce((sum, image) => sum + Math.ceil((image.split(',')[1] || '').length * 3 / 4), 0);
-      const images = await processImageFiles(files, productImages.length, existingBytes);
-      setProductImages(prev => [...prev, ...images.map(image => image.dataUrl)]);
-    } catch (error) {
-      alert((error as Error).message);
-    }
+    productUploadQueueRef.current = productUploadQueueRef.current.then(async () => {
+      try {
+        const images = await processImageFiles(files, productUploadUsageRef.current);
+        productUploadUsageRef.current = images.reduce((usage, image) => ({
+          count: usage.count + 1,
+          originalBytes: usage.originalBytes + image.originalBytes,
+          analysisBytes: usage.analysisBytes + image.analysisBytes,
+        }), productUploadUsageRef.current);
+        setProductImages(prev => [...prev, ...images.map(image => image.originalDataUrl)]);
+        setProductAnalysisImages(prev => [...prev, ...images.map(image => image.analysisDataUrl)]);
+        setProductImageBytes(prev => [...prev, ...images.map(image => ({ original: image.originalBytes, analysis: image.analysisBytes }))]);
+      } catch (error) { alert((error as Error).message); }
+    });
+    await productUploadQueueRef.current;
   };
 
   const handleCardRefImage = async (e: React.ChangeEvent<HTMLInputElement>, cardId: string) => {
@@ -746,7 +757,7 @@ const App: React.FC = () => {
     if (!file) return;
     try {
       const [image] = await processImageFiles([file]);
-      setCardRefImages(prev => ({ ...prev, [cardId]: image.dataUrl }));
+      setCardRefImages(prev => ({ ...prev, [cardId]: image.originalDataUrl }));
     } catch (error) { alert((error as Error).message); }
   };
 
@@ -757,7 +768,7 @@ const App: React.FC = () => {
     if (file) {
       try {
         const [image] = await processImageFiles([file]);
-        const b64 = image.dataUrl;
+        const b64 = image.originalDataUrl;
         setBulkRefImage(b64);
         
         // 核心同步逻辑：将全案参考图同步到每一个分镜卡片
@@ -862,7 +873,18 @@ ${p.prompt}
     setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
   };
 
-  const removeProductImage = (index: number) => setProductImages(prev => prev.filter((_, i) => i !== index));
+  const removeProductImage = (index: number) => {
+    const originalBytes = productImageBytes[index]?.original || 0;
+    const analysisBytes = productImageBytes[index]?.analysis || 0;
+    productUploadUsageRef.current = {
+      count: Math.max(0, productUploadUsageRef.current.count - 1),
+      originalBytes: Math.max(0, productUploadUsageRef.current.originalBytes - originalBytes),
+      analysisBytes: Math.max(0, productUploadUsageRef.current.analysisBytes - analysisBytes),
+    };
+    setProductImages(prev => prev.filter((_, i) => i !== index));
+    setProductAnalysisImages(prev => prev.filter((_, i) => i !== index));
+    setProductImageBytes(prev => prev.filter((_, i) => i !== index));
+  };
 
   const updateStoryboard = (id: string, field: keyof Storyboard, value: string) => {
     setAnalysis(prev => {
@@ -897,7 +919,7 @@ ${p.prompt}
     }
     setDetailLoading(true);
     try {
-      const res = await detailAssistantStep1(productImages, productKeywords, model, userApiKey);
+      const res = await detailAssistantStep1(productAnalysisImages, productKeywords, model, userApiKey);
       setDetailProductAnalysis(res);
       setDetailStep(2);
     } catch (err: unknown) {
@@ -1065,7 +1087,7 @@ ${p.prompt}
     if (!file) return;
     try {
       const [image] = await processImageFiles([file]);
-      setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, refImage: image.dataUrl } : s));
+      setDetailStoryboards(prev => prev.map(s => s.id === id ? { ...s, refImage: image.originalDataUrl } : s));
     } catch (error) { alert((error as Error).message); }
   };
 
@@ -1083,7 +1105,7 @@ ${p.prompt}
     setAnalysis(null);
     const combinedInfo = `卖点:${sellingPoints}, 允许:${allowedElements}, 禁止:${prohibitedElements}`;
     try {
-      const res = await analyzeProduct(productImages, combinedInfo, strategyType, model, compositionRefImage, userApiKey);
+      const res = await analyzeProduct(productAnalysisImages, combinedInfo, strategyType, model, compositionRefImage, userApiKey);
       setAnalysis({ ...res, selling_points: sellingPoints, allowed_elements: allowedElements, prohibited_elements: prohibitedElements });
       
       // 方案融合：将视觉风格与策划分镜结合，生成最终生图指令
@@ -3533,6 +3555,7 @@ ${p.prompt}
             userApiKey={userApiKey} 
             user={auth.user}
             onDeductCredit={deductCredit}
+            isActive={step === AppStep.WORKFLOW}
           />
         </div>
 

@@ -9,6 +9,9 @@ import { ImageSliceEditor } from './ImageSliceEditor';
 
 export interface ImageNodeData extends Record<string, unknown> {
   imageUrl?: string;
+  analysisImageUrl?: string;
+  uploadOriginalBytes?: number;
+  uploadAnalysisBytes?: number;
   prompt: string;
   isLoading?: boolean;
   error?: string;
