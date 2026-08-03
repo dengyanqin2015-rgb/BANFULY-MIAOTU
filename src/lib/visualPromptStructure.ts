@@ -42,13 +42,20 @@ export function extractRequiredCopy(message: string): string[] {
   return values;
 }
 
-export function buildStructuredAssistantMessage(message: string, hasImages = false): string {
+export function buildStructuredAssistantMessage(
+  message: string,
+  hasImages = false,
+  analysisTemplate?: { name: string; prompt: string },
+): string {
   if (!isVisualPromptTask(message, hasImages)) return message;
   const requiredCopy = extractRequiredCopy(message);
   const copyContract = requiredCopy.length
     ? `\n本次必须逐字保留的画面文案：${requiredCopy.map(item => `“${item}”`).join('、')}。这些文字必须实际出现在最终生图提示词中。`
     : '';
-  return `${message}\n\n执行要求：\n${VISUAL_PROMPT_STRUCTURE_INSTRUCTION}${copyContract}\n如果输出可直接用于生图的内容，必须把每套完整提示词分别放入独立的 \`\`\`prompt 代码块。`;
+  const templateContract = analysisTemplate
+    ? `\n后台当前默认解析模板“${analysisTemplate.name}”的脚本如下，图片分析和提示词生成必须实际执行这套脚本：\n${analysisTemplate.prompt}\n`
+    : '';
+  return `${message}\n\n执行要求：\n${VISUAL_PROMPT_STRUCTURE_INSTRUCTION}${templateContract}${copyContract}\n如果输出可直接用于生图的内容，必须把每套完整提示词分别放入独立的 \`\`\`prompt 代码块。`;
 }
 
 export function ensureRequiredCopyInPromptBlocks(response: string, sourceMessage: string): string {

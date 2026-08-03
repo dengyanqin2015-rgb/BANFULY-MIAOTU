@@ -71,6 +71,13 @@ const structuredPrompt = buildStructuredAssistantMessage('做一张主图，文�
 assert.match(structuredPrompt, /核心主体及准确外观特征/);
 assert.match(structuredPrompt, /逐字保留的画面文案：“轻盈一夏”/);
 
+const templateLinkedPrompt = buildStructuredAssistantMessage('分析这张产品图', true, {
+  name: '电商产品图',
+  prompt: '重点提取产品外形、卖点和商业光影。',
+});
+assert.match(templateLinkedPrompt, /后台当前默认解析模板“电商产品图”/);
+assert.match(templateLinkedPrompt, /重点提取产品外形、卖点和商业光影/);
+
 const repairedPrompt = ensureRequiredCopyInPromptBlocks(
   '方案\n```prompt\n清爽夏日场景，产品居中。\n```',
   '主标题：“轻盈一夏”',

@@ -8,6 +8,7 @@ import path from "path";
 import cors from "cors";
 import pg from "pg";
 import { ImageRequestDeduplicator, OPENAI_IMAGE_TOTAL_TIMEOUT_MS, normalizeImageRequestId } from "./src/lib/openAiImageRuntime";
+import { aggregateGenerationTrend, type GenerationTrendBucket, type GenerationTrendGranularity } from "./src/lib/generationStats";
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? "" : "banfuly-local-dev-secret-change-me");
@@ -555,6 +556,64 @@ class DatabaseService {
     return { items: sorted.slice(offset, offset + pageSize), total: sorted.length, page, pageSize };
   }
 
+  async getGenerationTrend(options: LogPageOptions, granularity: GenerationTrendGranularity): Promise<GenerationTrendBucket[]> {
+    const { userId, username, from, to } = options;
+    if (this.pool) {
+      const clauses: string[] = [];
+      const filterParams: Array<string | number> = [];
+      if (userId) { filterParams.push(userId); clauses.push(`user_id = $${filterParams.length}`); }
+      if (username) { filterParams.push(username); clauses.push(`username = $${filterParams.length}`); }
+      if (from !== undefined) { filterParams.push(from); clauses.push(`timestamp >= $${filterParams.length}`); }
+      if (to !== undefined) { filterParams.push(to); clauses.push(`timestamp < $${filterParams.length}`); }
+      const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+      const bucketExpression = granularity === 'day'
+        ? `to_char(to_timestamp(timestamp / 1000.0) AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')`
+        : `to_char(to_timestamp(timestamp / 1000.0) AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM')`;
+      const result = await this.pool.query(
+        `SELECT ${bucketExpression} AS key, COUNT(*)::int AS value FROM generation_logs${where} GROUP BY 1 ORDER BY 1`,
+        filterParams,
+      );
+      return result.rows.map(row => ({ key: String(row.key), value: Number(row.value || 0) }));
+    }
+    const logs = this.fileData!.generationLogs.filter(log =>
+      (!userId || log.userId === userId) &&
+      (!username || log.username === username) &&
+      (from === undefined || log.timestamp >= from) &&
+      (to === undefined || log.timestamp < to)
+    );
+    return aggregateGenerationTrend(logs, granularity);
+  }
+
+  async getGenerationLogsForExport(options: LogPageOptions, maxRows = 100_000) {
+    const { userId, username, from, to } = options;
+    if (this.pool) {
+      const clauses: string[] = [];
+      const filterParams: Array<string | number> = [];
+      if (userId) { filterParams.push(userId); clauses.push(`user_id = $${filterParams.length}`); }
+      if (username) { filterParams.push(username); clauses.push(`username = $${filterParams.length}`); }
+      if (from !== undefined) { filterParams.push(from); clauses.push(`timestamp >= $${filterParams.length}`); }
+      if (to !== undefined) { filterParams.push(to); clauses.push(`timestamp < $${filterParams.length}`); }
+      const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+      const limitIndex = filterParams.length + 1;
+      const [countResult, rowsResult] = await Promise.all([
+        this.pool.query(`SELECT COUNT(*)::int AS total FROM generation_logs${where}`, filterParams),
+        this.pool.query(
+          `SELECT id, user_id as "userId", username, timestamp FROM generation_logs${where} ORDER BY timestamp DESC LIMIT $${limitIndex}`,
+          [...filterParams, maxRows],
+        ),
+      ]);
+      const total = Number(countResult.rows[0]?.total || 0);
+      return { items: rowsResult.rows, total, truncated: total > maxRows };
+    }
+    const logs = this.fileData!.generationLogs.filter(log =>
+      (!userId || log.userId === userId) &&
+      (!username || log.username === username) &&
+      (from === undefined || log.timestamp >= from) &&
+      (to === undefined || log.timestamp < to)
+    ).sort((a, b) => b.timestamp - a.timestamp);
+    return { items: logs.slice(0, maxRows), total: logs.length, truncated: logs.length > maxRows };
+  }
+
   async addImageHistory(history: ImageHistory) {
     if (this.pool) {
       await this.pool.query(
@@ -901,7 +960,17 @@ app.get("/api/admin/recharge-logs", authenticateToken, isAdmin, async (req: Auth
 });
 
 app.get("/api/admin/generation-logs", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
-  res.json(await db.getGenerationLogs(parseLogPage(req)));
+  const options = parseLogPage(req);
+  const granularity: GenerationTrendGranularity = req.query.granularity === 'month' ? 'month' : 'day';
+  const [pageResult, trend] = await Promise.all([
+    db.getGenerationLogs(options),
+    db.getGenerationTrend(options, granularity),
+  ]);
+  res.json({ ...pageResult, trend });
+});
+
+app.get("/api/admin/generation-logs/export", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {
+  res.json(await db.getGenerationLogsForExport(parseLogPage(req)));
 });
 
 app.post("/api/admin/users/:id/role", authenticateToken, isAdmin, async (req: AuthRequest, res: Response) => {

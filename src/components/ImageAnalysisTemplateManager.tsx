@@ -55,7 +55,7 @@ export const ImageAnalysisTemplateManager: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-black text-black">图片反推关键词模板</h2>
-          <p className="mt-1 text-xs text-[#86868b]">默认模板用于每张图片的一键解析，可维护多套解析文案脚本。</p>
+          <p className="mt-1 text-xs text-[#86868b]">默认模板同时用于卡片“一键解析”和 AI 助理的视觉分析，保存后下一次分析立即生效。</p>
         </div>
         <div className="flex gap-2">
           <button onClick={addTemplate} className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-xs font-bold"><CopyPlus size={15} />新增模板</button>

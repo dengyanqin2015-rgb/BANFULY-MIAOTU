@@ -23,7 +23,7 @@ import { MaskEditNode, type MaskEditNodeData } from './MaskEditNode';
 import { NoteNode, NoteNodeData } from './NoteNode';
 import { GenerationBar, GenerationBarRef } from './GenerationBar';
 import { Assistant, AssistantRef } from './Assistant';
-import { generateImage, analyzeImageForPrompt, type ImageAnalysisTemplate, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
+import { generateImage, analyzeImageForPrompt, getDefaultImageAnalysisTemplate, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
 import { ImageStorage } from '../lib/storage';
 import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard, LocateFixed, Maximize2 } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -922,14 +922,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             data: { ...n.data, isAnalyzing: true, analysisError: undefined }
           } : n));
           try {
-            const token = localStorage.getItem('auth_token');
-            const response = await fetch('/api/image-analysis-templates', {
-              headers: token ? { Authorization: `Bearer ${token}` } : {}
-            });
-            const templates = await response.json() as ImageAnalysisTemplate[];
-            if (!response.ok) throw new Error((templates as unknown as { message?: string }).message || '无法读取解析模板');
-            const template = templates.find(item => item.isDefault) || templates[0];
-            if (!template) throw new Error('后台尚未配置图片解析模板');
+            const template = await getDefaultImageAnalysisTemplate();
             const analysisPrompt = await analyzeImageForPrompt((nodeData.analysisImageUrl as string | undefined) || nodeData.imageUrl!, template, userApiKey);
             setNodes(nds => nds.map(n => n.id === node.id ? attachNodeActions({
               ...n,

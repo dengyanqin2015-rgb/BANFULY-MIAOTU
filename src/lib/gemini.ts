@@ -1,5 +1,5 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
-import { buildStructuredAssistantMessage, ensureRequiredCopyInPromptBlocks, IMAGE_ANALYSIS_SYSTEM_INSTRUCTION, VISUAL_PROMPT_STRUCTURE_INSTRUCTION } from './visualPromptStructure';
+import { buildStructuredAssistantMessage, ensureRequiredCopyInPromptBlocks, IMAGE_ANALYSIS_SYSTEM_INSTRUCTION, isVisualPromptTask, VISUAL_PROMPT_STRUCTURE_INSTRUCTION } from './visualPromptStructure';
 
 export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "gpt-image-2";
 export type ChatModel = "gemini-3-flash-preview" | "gemini-3.1-pro-preview";
@@ -34,6 +34,19 @@ export interface ImageAnalysisTemplate {
   description?: string;
   prompt: string;
   isDefault: boolean;
+}
+
+export async function getDefaultImageAnalysisTemplate(): Promise<ImageAnalysisTemplate> {
+  const token = localStorage.getItem('auth_token');
+  const response = await fetch('/api/image-analysis-templates', {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  const result = await response.json() as ImageAnalysisTemplate[] | { message?: string };
+  if (!response.ok) throw new Error(!Array.isArray(result) && result.message ? result.message : '无法读取解析模板');
+  const templates = Array.isArray(result) ? result : [];
+  const template = templates.find(item => item.isDefault) || templates[0];
+  if (!template) throw new Error('后台尚未配置图片解析模板');
+  return template;
 }
 
 export async function analyzeImageForPrompt(
@@ -93,7 +106,16 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
   
   const modelName = params.mode === 'deep' ? 'gemini-3.1-pro-preview' : 'gemini-3-flash-preview';
   
-  const structuredMessage = buildStructuredAssistantMessage(params.message, Boolean(params.images?.length));
+  const hasImages = Boolean(params.images?.length);
+  let analysisTemplate: ImageAnalysisTemplate | undefined;
+  if (isVisualPromptTask(params.message, hasImages)) {
+    try {
+      analysisTemplate = await getDefaultImageAnalysisTemplate();
+    } catch (error) {
+      console.warn('Assistant could not load the current image analysis template:', error);
+    }
+  }
+  const structuredMessage = buildStructuredAssistantMessage(params.message, hasImages, analysisTemplate);
   const parts: { text?: string; inlineData?: { data: string; mimeType: string } }[] = [{ text: structuredMessage }];
   if (params.images && params.images.length > 0) {
     params.images.forEach(img => {

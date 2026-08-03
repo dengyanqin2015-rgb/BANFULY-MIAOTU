@@ -19,6 +19,7 @@ import { ImageAnalysisTemplateManager } from './src/components/ImageAnalysisTemp
 import { RequestLogPanel } from './src/components/RequestLogPanel';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { processImageFiles } from './src/lib/uploadProcessing';
+import { buildGenerationTrendSeries, type GenerationTrendBucket } from './src/lib/generationStats';
 
 const BBOX_COLORS = [
   'border-blue-400 bg-blue-400/20',
@@ -107,6 +108,7 @@ const App: React.FC = () => {
   const [adminUsers, setAdminUsers] = useState<User[]>([]);
   const [rechargeLogs, setRechargeLogs] = useState<RechargeLog[]>([]);
   const [generationLogs, setGenerationLogs] = useState<GenerationLog[]>([]);
+  const [generationTrendBuckets, setGenerationTrendBuckets] = useState<GenerationTrendBucket[]>([]);
   const [adminTab, setAdminTab] = useState<'users' | 'recharge' | 'stats' | 'analysisTemplates' | 'requestLogs'>('users');
   const [adminLoading, setAdminLoading] = useState(false);
 
@@ -140,6 +142,7 @@ const App: React.FC = () => {
   const [userRechargeTotal, setUserRechargeTotal] = useState(0);
   const [userGenerationTotal, setUserGenerationTotal] = useState(0);
   const profilePageSize = 20;
+  const adminGenerationFetchEpochRef = useRef(0);
 
   // 充值流水和生图统计走势图
   const rechargeTrendData = React.useMemo(() => {
@@ -196,57 +199,10 @@ const App: React.FC = () => {
   }, [rechargeLogs, filterYear, filterMonth, filterUser]);
 
   const generationTrendData = React.useMemo(() => {
-    const year = filterYear ? parseInt(filterYear) : new Date().getFullYear();
+    const year = filterYear ? parseInt(filterYear) : 0;
     const monthNum = filterMonth ? parseInt(filterMonth) : 0;
-
-    if (monthNum > 0) {
-      // 展示选定月份的每天
-      const logsForChart = generationLogs.filter(log => {
-        const d = new Date(Number(log.timestamp));
-        const matchYear = d.getFullYear() === year;
-        const matchMonth = (d.getMonth() + 1) === monthNum;
-        const matchUser = filterUser === 'all' || log.userId === filterUser;
-        return matchYear && matchMonth && matchUser;
-      });
-
-      const daysInMonth = new Date(year, monthNum, 0).getDate();
-      const dataMap: Record<number, number> = {};
-      for (let i = 1; i <= daysInMonth; i++) dataMap[i] = 0;
-
-      logsForChart.forEach(log => {
-        const day = new Date(Number(log.timestamp)).getDate();
-        if (day >= 1 && day <= daysInMonth) {
-          dataMap[day] += 1;
-        }
-      });
-
-      return Object.keys(dataMap).map(key => ({
-        name: `${key}日`,
-        value: dataMap[Number(key)],
-      }));
-    } else {
-      // 展示全年的 12 个月
-      const logsForChart = generationLogs.filter(log => {
-        const d = new Date(Number(log.timestamp));
-        const matchYear = d.getFullYear() === year;
-        const matchUser = filterUser === 'all' || log.userId === filterUser;
-        return matchYear && matchUser;
-      });
-
-      const dataMap: Record<number, number> = {};
-      for (let i = 1; i <= 12; i++) dataMap[i] = 0;
-
-      logsForChart.forEach(log => {
-        const monthNum = new Date(Number(log.timestamp)).getMonth() + 1;
-        dataMap[monthNum] += 1;
-      });
-
-      return Object.keys(dataMap).map(key => ({
-        name: `${key}月`,
-        value: dataMap[Number(key)],
-      }));
-    }
-  }, [generationLogs, filterYear, filterMonth, filterUser]);
+    return buildGenerationTrendSeries(year, monthNum, generationTrendBuckets);
+  }, [generationTrendBuckets, filterYear, filterMonth]);
 
   // 缓存筛选和分页后的列表
   const filteredRechargeLogs = React.useMemo(() => {
@@ -590,16 +546,43 @@ const App: React.FC = () => {
   };
 
   const fetchGenerationLogs = async () => {
+    const fetchEpoch = ++adminGenerationFetchEpochRef.current;
     setAdminLoading(true);
     try {
-      const res = await fetch(`/api/admin/generation-logs?${buildAdminLogQuery('generation')}`);
+      const params = buildAdminLogQuery('generation');
+      params.set('granularity', filterMonth ? 'day' : 'month');
+      const res = await fetch(`/api/admin/generation-logs?${params}`);
       if (res.ok) {
         const data = await res.json();
+        if (fetchEpoch !== adminGenerationFetchEpochRef.current) return;
         setGenerationLogs(data.items || []);
+        setGenerationTrendBuckets(data.trend || []);
         setAdminGenerationTotal(Number(data.total || 0));
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      if (fetchEpoch === adminGenerationFetchEpochRef.current) setAdminLoading(false);
+    }
+  };
+
+  const exportGenerationLogs = async () => {
+    setAdminLoading(true);
+    try {
+      const params = buildAdminLogQuery('generation');
+      params.delete('page');
+      params.delete('pageSize');
+      const response = await fetch(`/api/admin/generation-logs/export?${params}`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || '导出失败');
+      if (result.truncated) throw new Error(`数据超过导出上限，仅允许导出前 ${result.items.length} 条，请缩小筛选范围`);
+      exportToExcel((result.items || []).map((log: GenerationLog) => ({
+        '时间': new Date(Number(log.timestamp)).toLocaleString(),
+        '用户': log.username,
+        '操作': '生图渲染',
+      })), `全平台生图统计_${new Date().getTime()}`);
+    } catch (error) {
+      alert((error as Error).message);
     } finally {
       setAdminLoading(false);
     }
@@ -3394,7 +3377,7 @@ ${p.prompt}
                         <div>
                           <h3 className="text-base font-black text-black">生图渲染频次趋势走势图</h3>
                           <p className="text-[11px] text-[#86868b] mt-0.5">
-                            {filterMonth ? `${filterYear}年${filterMonth}月` : `${filterYear}年全部月份`} • 
+                            {filterMonth ? `${filterYear}年${filterMonth}月` : filterYear ? `${filterYear}年全部月份` : '全部年份'} •
                             {filterUser === 'all' ? ' 所有人' : ` 用户ID: ${filterUser}`}
                           </p>
                         </div>
@@ -3431,21 +3414,21 @@ ${p.prompt}
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">年份</span>
-                        <select value={filterYear} onChange={(e) => { setFilterYear(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterYear} onChange={(e) => { const value = e.target.value; setFilterYear(value); if (!value) { setFilterMonth(''); setFilterDay(''); } setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
                           <option value="">全部</option>
                           {[2024, 2025, 2026].map(y => <option key={y} value={y}>{y}年</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">月份</span>
-                        <select value={filterMonth} onChange={(e) => { setFilterMonth(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterMonth} disabled={!filterYear} onChange={(e) => { setFilterMonth(e.target.value); setFilterDay(''); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm disabled:opacity-40">
                           <option value="">全部</option>
                           {Array.from({length: 12}, (_, i) => i + 1).map(m => <option key={m} value={m}>{m}月</option>)}
                         </select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-black opacity-40 uppercase">日期</span>
-                        <select value={filterDay} onChange={(e) => { setFilterDay(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm">
+                        <select value={filterDay} disabled={!filterYear || !filterMonth} onChange={(e) => { setFilterDay(e.target.value); setAdminPage(1); }} className="bg-white border-none rounded-lg px-3 py-1.5 text-[12px] font-bold outline-none shadow-sm disabled:opacity-40">
                           <option value="">全部</option>
                           {Array.from({length: 31}, (_, i) => i + 1).map(d => <option key={d} value={d}>{d}日</option>)}
                         </select>
@@ -3458,9 +3441,7 @@ ${p.prompt}
                           </span>
                         </div>
                         <button 
-                          onClick={() => {
-                            exportToExcel(filteredGenerationLogs.map(l => ({ '时间': new Date(Number(l.timestamp)).toLocaleString(), '用户': l.username, '操作': '生图渲染' })), `全平台生图统计_${new Date().getTime()}`);
-                          }}
+                          onClick={() => void exportGenerationLogs()}
                           className="bg-black text-white px-6 py-2 rounded-xl text-[12px] font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                         >
                           导出 Excel
