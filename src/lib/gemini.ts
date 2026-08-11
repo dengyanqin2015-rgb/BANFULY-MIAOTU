@@ -1,6 +1,5 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { buildStructuredAssistantMessage, ensureRequiredCopyInPromptBlocks, IMAGE_ANALYSIS_SYSTEM_INSTRUCTION, isVisualPromptTask, VISUAL_PROMPT_STRUCTURE_INSTRUCTION } from './visualPromptStructure';
-import { compileImagePrompt, type PromptSafetyOperation } from './promptSafety';
 
 export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "gpt-image-2";
 export type ChatModel = "gemini-3-flash-preview" | "gemini-3.1-pro-preview";
@@ -18,8 +17,6 @@ export interface GenerationParams {
   quality?: "low" | "medium" | "high";
   signal?: AbortSignal;
   requestId?: string;
-  operation?: PromptSafetyOperation;
-  lockedTexts?: string[];
 }
 
 export interface ChatParams {
@@ -175,10 +172,6 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
 }
 
 export async function generateImage(params: GenerationParams): Promise<string[]> {
-  const operation: PromptSafetyOperation = params.operation
-    ?? (params.mask
-      ? (params.lockedTexts?.length ? 'mask_text_edit' : 'mask_content_edit')
-      : params.images?.length ? 'image_to_image' : 'text_to_image');
   if (params.model === 'gpt-image-2') {
     const apiKey = localStorage.getItem('user_openai_api_key');
     const savedQuality = localStorage.getItem('user_openai_image_quality');
@@ -200,17 +193,7 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
       },
-      body: JSON.stringify({
-        apiKey,
-        prompt: params.prompt,
-        size,
-        quality,
-        images: params.images || [],
-        mask: params.mask,
-        requestId: params.requestId,
-        operation,
-        lockedTexts: params.lockedTexts || [],
-      }),
+      body: JSON.stringify({ apiKey, prompt: params.prompt, size, quality, images: params.images || [], mask: params.mask, requestId: params.requestId }),
       signal: params.signal,
     });
     const result = await response.json().catch(() => ({}));
@@ -274,25 +257,6 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
   const apiKey = localPaidKey || params.apiKey || localStorage.getItem('user_gemini_api_key');
   
   const ai = new GoogleGenAI({ apiKey: apiKey as string });
-  const promptSafetyShadow = compileImagePrompt(params.prompt, {
-    provider: 'google',
-    operation,
-    mode: 'observe',
-    lockedTexts: params.lockedTexts,
-  });
-  if (promptSafetyShadow.rule_ids.length > 0 || promptSafetyShadow.review_recommended) {
-    console.info('[PromptSafetyShadow]', {
-      ruleVersion: promptSafetyShadow.rule_version,
-      provider: promptSafetyShadow.provider,
-      operation: promptSafetyShadow.operation,
-      decision: promptSafetyShadow.decision,
-      candidateDecision: promptSafetyShadow.candidate_decision,
-      applied: promptSafetyShadow.applied,
-      riskLevel: promptSafetyShadow.risk_level,
-      ruleIds: promptSafetyShadow.rule_ids,
-      blocked: promptSafetyShadow.blocked,
-    });
-  }
   
   try {
     const parts: { text?: string; inlineData?: { data: string; mimeType: string } }[] = [{ text: params.prompt }];

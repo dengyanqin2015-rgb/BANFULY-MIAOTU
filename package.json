@@ -18,8 +18,7 @@
     "test:persistence": "tsx tests/projectPersistence.test.ts",
     "test:assistant": "tsx tests/assistantRuntime.test.ts",
     "test:stats": "tsx tests/generationStats.test.ts",
-    "test:safety": "tsx tests/promptSafety.test.ts",
-    "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run test:safety && npm run typecheck && npm run lint && npm run build",
+    "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run typecheck && npm run lint && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {

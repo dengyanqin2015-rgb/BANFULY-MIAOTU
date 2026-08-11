@@ -9,7 +9,6 @@ import cors from "cors";
 import pg from "pg";
 import { ImageRequestDeduplicator, OPENAI_IMAGE_TOTAL_TIMEOUT_MS, normalizeImageRequestId } from "./src/lib/openAiImageRuntime";
 import { aggregateGenerationTrend, type GenerationTrendBucket, type GenerationTrendGranularity } from "./src/lib/generationStats";
-import { compileImagePrompt } from "./src/lib/promptSafety";
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? "" : "banfuly-local-dev-secret-change-me");
@@ -1060,19 +1059,120 @@ const extractLinkAiImage = (payload: any): string | undefined => {
   return item?.url || item?.b64_json || payload?.result?.url || payload?.url;
 };
 
+interface PromptSafetyChange {
+  before: string;
+  after: string;
+  reason: string;
+}
+
+interface PromptSafetyCompilation {
+  risk_level: "low" | "medium" | "high";
+  risk_reason: string[];
+  original_prompt: string;
+  optimized_prompt: string;
+  changes: PromptSafetyChange[];
+  blocked: boolean;
+}
+
+const compileGptImagePrompt = (originalPrompt: string): PromptSafetyCompilation => {
+  let optimized = originalPrompt.trim();
+  const reasons: string[] = [];
+  const changes: PromptSafetyChange[] = [];
+  let riskLevel: PromptSafetyCompilation["risk_level"] = "low";
+  let blocked = false;
+
+  const hasMinor = /(儿童|孩子|小孩|幼童|少年|少女|未成年|小学生|中学生|校服|child|kid|minor|teen(?:ager)?)/i.test(optimized);
+  const hasSexualizedContent = /(性感|色情|情色|性暗示|挑逗|诱惑姿势|私密部位|裸(?:体|露)|全裸|半裸|透视|丁字裤|sex(?:ual)?|erotic|nude|naked|seductive|lingerie|bikini)/i.test(optimized);
+  if (hasMinor && hasSexualizedContent) {
+    reasons.push("检测到未成年人语义与性化、裸露或成人服饰语义组合");
+    riskLevel = "high";
+    blocked = true;
+  }
+
+  const replace = (pattern: RegExp, after: string, reason: string) => {
+    const match = optimized.match(pattern);
+    if (!match) return;
+    const before = match[0];
+    optimized = optimized.replace(pattern, after);
+    changes.push({ before, after, reason });
+  };
+
+  if (!blocked) {
+    const isSwimwearOrLingerie = /(比基尼|泳装|泳衣|内衣|lingerie|bikini|swimwear)/i.test(optimized);
+    const hasAdultMarker = /(成年|成人|年满18|adult|over 18)/i.test(optimized);
+    if (isSwimwearOrLingerie) {
+      riskLevel = "medium";
+      reasons.push("成人泳装或内衣商品展示需要明确成年身份和商业展示语境");
+      replace(/比基尼美女/g, "成年女性时尚模特展示两件式泳装", "明确成年身份，并把模糊人物描述改为商品展示语境");
+      replace(/美女穿比基尼/g, "成年女性时尚模特穿着两件式泳装", "保持泳装主题，减少性化歧义");
+      replace(/比基尼/g, "两件式泳装", "使用中性的商品品类名称，保持服装款式目标不变");
+      replace(/性感美女/g, "成年女性时尚模特", "去除模糊性化措辞，明确成年身份并保留女性模特主体");
+      replace(/性感帅哥/g, "成年男性时尚模特", "去除模糊性化措辞，明确成年身份并保留男性模特主体");
+      replace(/色情|情色|挑逗(?:性)?|诱惑姿势/g, "自然自信的时尚展示姿态", "改为非露骨的商业时尚表达");
+      replace(/(?:突出|强调|聚焦)(?:胸部|臀部|私密部位|敏感部位)/g, "突出服装版型、面料和剪裁细节", "将镜头重点恢复到商品展示");
+      if (!hasAdultMarker && !/(成年女性|成年男性|成年模特)/.test(optimized)) {
+        const before = optimized;
+        optimized = `成年时尚模特，${optimized}`;
+        changes.push({ before, after: optimized, reason: "补充成年身份，避免年龄歧义" });
+      }
+      optimized += "\n商业电商泳装目录摄影，成年模特自然站立，采用平视全身构图，双臂自然放松，服装面料完整不透，镜头以商品版型、面料、剪裁和穿着效果为重点；不使用挑逗姿势，不使用胸部或臀部特写，不聚焦身体敏感部位。";
+      changes.push({
+        before: "",
+        after: "商业电商服饰展示与非露骨镜头限定",
+        reason: "明确合法商品展示目的，同时保持泳装或内衣主题不变"
+      });
+    }
+
+    if (/(全裸|明确裸露私密部位|性行为|性交|口交|自慰|explicit sex|sexual act)/i.test(optimized)) {
+      reasons.push("核心需求包含无法通过最小修正安全保留的明确裸露或性行为");
+      riskLevel = "high";
+      blocked = true;
+    }
+
+    if (/(血肉模糊|肢解|断肢|内脏|喷血|极度血腥|gore|dismember)/i.test(optimized)) {
+      riskLevel = "medium";
+      reasons.push("包含写实血腥或极端暴力细节");
+      replace(/血肉模糊|肢解|断肢|内脏|喷血|极度血腥|gore|dismember/gi, "非血腥的电影化冲突效果", "保留动作或战争氛围，降低真实残酷细节");
+    }
+
+    const privacyPatterns: Array<[RegExp, string]> = [
+      [/\b1[3-9]\d{9}\b/g, "[已隐藏电话号码]"],
+      [/\b\d{15,18}[0-9Xx]\b/g, "[已隐藏身份证信息]"],
+      [/\b(?:\d[ -]*?){13,19}\b/g, "[已隐藏银行卡信息]"]
+    ];
+    for (const [pattern, replacement] of privacyPatterns) {
+      if (pattern.test(optimized)) {
+        pattern.lastIndex = 0;
+        const before = optimized;
+        optimized = optimized.replace(pattern, replacement);
+        changes.push({ before, after: optimized, reason: "移除可识别的敏感个人信息" });
+        reasons.push("包含敏感个人信息");
+        riskLevel = "medium";
+      }
+    }
+
+    const hasRealPerson = /(总统|总理|国家领导人|政治人物|明星|名人|真实人物|真人|president|prime minister|celebrity)/i.test(optimized);
+    const hasDeceptiveEvent = /(死亡|被捕|犯罪|丑闻|战争现场|新闻现场|真实新闻|突发新闻|dead|arrested|scandal|breaking news)/i.test(optimized);
+    if (hasRealPerson && hasDeceptiveEvent) {
+      riskLevel = "medium";
+      reasons.push("真实人物与可能误导公众的虚假事件组合");
+      optimized += "\n明确呈现为虚构电影概念设计或艺术化场景，不作为真实新闻、历史证据或现实事件记录。";
+      changes.push({ before: "", after: "虚构概念设计与非新闻限定", reason: "降低真实人物虚假事件的误导风险" });
+    }
+  }
+
+  return {
+    risk_level: riskLevel,
+    risk_reason: reasons,
+    original_prompt: originalPrompt,
+    optimized_prompt: optimized,
+    changes,
+    blocked
+  };
+};
 
 app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, res: Response) => {
-  const {
-    prompt,
-    size,
-    quality: rawQuality,
-    images = [],
-    mask: rawMask,
-    apiKey: rawApiKey,
-    requestId: rawRequestId,
-    operation: rawOperation,
-    lockedTexts: rawLockedTexts = [],
-  } = req.body;
+  const { prompt, size, quality: rawQuality, images = [], mask: rawMask, apiKey: rawApiKey, requestId: rawRequestId } = req.body;
   const diagnosticId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const requestId = normalizeImageRequestId(rawRequestId, diagnosticId);
   const requestStartedAt = Date.now();
@@ -1100,49 +1200,16 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
   if (!Array.isArray(images) || images.length > 10) {
     return res.status(400).json({ message: "参考图格式不正确或数量超过 10 张" });
   }
-  if (!Array.isArray(rawLockedTexts) || rawLockedTexts.length > 20) {
-    return res.status(400).json({ message: "受保护文案格式不正确或数量超过 20 条" });
-  }
-  const lockedTexts = rawLockedTexts
-    .map(value => String(value || "").trim().slice(0, 500))
-    .filter(Boolean);
-  const isEditRequest = images.length > 0;
-  const operation = ["text_to_image", "image_to_image", "mask_text_edit", "mask_content_edit", "mixed_mask_edit"].includes(String(rawOperation))
-    ? String(rawOperation) as "text_to_image" | "image_to_image" | "mask_text_edit" | "mask_content_edit" | "mixed_mask_edit"
-    : isEditRequest ? "image_to_image" : "text_to_image";
-  const isMaskOperation = operation === "mask_text_edit" || operation === "mask_content_edit" || operation === "mixed_mask_edit";
-  if ((isMaskOperation || lockedTexts.length > 0) && (!isEditRequest || !rawMask?.data)) {
-    return res.status(400).json({ message: "局部编辑或受保护文案必须随原图和遮罩一起提交" });
-  }
-  if (lockedTexts.length > 0 && operation !== "mask_text_edit" && operation !== "mixed_mask_edit") {
-    return res.status(400).json({ message: "受保护文案只允许用于文字遮罩编辑任务" });
-  }
-  const promptSafetyMode = process.env.PROMPT_SAFETY_OPENAI_MODE === "enforce" ? "enforce" : "observe";
-  const safetyCompilation = compileImagePrompt(prompt, {
-    provider: "openai",
-    operation,
-    mode: promptSafetyMode,
-    lockedTexts,
-  });
+  const safetyCompilation = compileGptImagePrompt(prompt);
   console.log("[ImageDiagnostic]", JSON.stringify({
     diagnosticId,
     event: "prompt_safety_compiled",
-    ruleVersion: safetyCompilation.rule_version,
-    mode: safetyCompilation.mode,
-    decision: safetyCompilation.decision,
-    candidateDecision: safetyCompilation.candidate_decision,
-    applied: safetyCompilation.applied,
-    operation: safetyCompilation.operation,
     riskLevel: safetyCompilation.risk_level,
     riskReasons: safetyCompilation.risk_reason,
-    riskTags: safetyCompilation.risk_tags,
-    ruleIds: safetyCompilation.rule_ids,
     changeCount: safetyCompilation.changes.length,
-    candidateChangeCount: safetyCompilation.candidate_changes.length,
-    blocked: safetyCompilation.blocked,
-    reviewRecommended: safetyCompilation.review_recommended,
+    blocked: safetyCompilation.blocked
   }));
-  if (safetyCompilation.mode === "enforce" && safetyCompilation.blocked) {
+  if (safetyCompilation.blocked) {
     return res.status(400).json({
       code: "PROMPT_SAFETY_BLOCKED",
       message: "该需求包含无法在保持原目标的前提下安全修正的内容，请移除未成年人性化、明确性行为或露骨裸露描述后重试。",
@@ -1165,6 +1232,7 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
   }
   const targetSize = requestedSize;
   const headers = { "Authorization": `Bearer ${apiKey}` };
+  const isEditRequest = images.length > 0;
   const promptGuidance = [
     "请准确理解并执行用户意图；如果指令较简短或存在未说明的视觉细节，请采用合理、保守且专业的商业视觉默认值补全，不要反问。",
     images.length > 0
@@ -1311,7 +1379,6 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
       }
       if (payload?.error?.code === "moderation_blocked") {
         const stage = moderationDetails?.moderation_stage;
-        const providerRequestId = openAiResponse.headers.get("x-request-id");
         const message = stage === "input"
           ? "OpenAI 安全审核未通过：提示词或参考图可能包含敏感内容，请调整后重试。"
           : stage === "output"
@@ -1320,21 +1387,16 @@ app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, re
         return res.status(400).json({
           code: "MODERATION_BLOCKED",
           message,
-          requestId,
           diagnosticId,
-          providerRequestId,
           moderationStage: stage || "unknown",
-          moderationCategories: moderationDetails?.categories || [],
-          promptSafety: safetyCompilation,
+          moderationCategories: moderationDetails?.categories || []
         });
       }
       const message = payload?.error?.message || payload?.message || openAiResponse.statusText;
       return res.status(openAiResponse.status).json({
         message: `OpenAI 生图失败：${message}`,
         requestId,
-        diagnosticId,
-        providerRequestId: openAiResponse.headers.get("x-request-id"),
-        promptSafety: safetyCompilation,
+        diagnosticId
       });
     }
 

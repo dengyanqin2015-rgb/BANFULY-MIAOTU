@@ -259,18 +259,8 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       '整体画面必须自然连续，修改区域不能出现拼接边、色块、矩形边界或局部贴图感。不要新增其他文字、标志或水印。',
     ].join('\n');
     const cropUrl = crop.toDataURL('image/png'); const maskUrl = mask.toDataURL('image/png'); const guideUrl = guide.toDataURL('image/png');
-    const lockedTexts = selectedRegions
-      .filter(selected => selected.item.mode === 'text')
-      .map(selected => selected.item.text.trim())
-      .filter(Boolean);
-    const hasTextRegions = selectedRegions.some(selected => selected.item.mode === 'text');
-    const hasContentRegions = selectedRegions.some(selected => selected.item.mode !== 'text');
     const [editedUrl] = await generateImage({
       prompt, model, imageSize: '1K', aspectRatio: aspect.id, quality: model === 'gpt-image-2' ? 'medium' : 'low',
-      operation: hasTextRegions && hasContentRegions
-        ? 'mixed_mask_edit'
-        : hasTextRegions ? 'mask_text_edit' : 'mask_content_edit',
-      lockedTexts,
       images: model === 'gpt-image-2'
         ? [{ data: cropUrl.split(',')[1], mimeType: 'image/png' }]
         : [{ data: cropUrl.split(',')[1], mimeType: 'image/png' }, { data: guideUrl.split(',')[1], mimeType: 'image/png' }],
