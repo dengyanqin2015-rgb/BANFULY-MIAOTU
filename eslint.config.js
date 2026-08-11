@@ -16,6 +16,8 @@ export default [
   {
     ignores: [
       "dist/**",
+      ".vite-runtime-cache/**",
+      "**/__pycache__/**",
       "src/geminiService.ts",
       "src/hooks/useAppLogic.ts",
       "src/components/AdminPanel.tsx"

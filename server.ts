@@ -7,8 +7,30 @@ import fs from "fs";
 import path from "path";
 import cors from "cors";
 import pg from "pg";
+import { randomUUID } from "node:crypto";
 import { ImageRequestDeduplicator, OPENAI_IMAGE_TOTAL_TIMEOUT_MS, normalizeImageRequestId } from "./src/lib/openAiImageRuntime";
 import { aggregateGenerationTrend, type GenerationTrendBucket, type GenerationTrendGranularity } from "./src/lib/generationStats";
+import {
+  AssetValidationError,
+  normalizeAssetWriteInput,
+  normalizeCategoryBaseWriteInput,
+  paginateInMemory,
+  parseAssetPageOptions,
+  parseCategoryBasePageOptions,
+  type AssetItem,
+  type AssetPageOptions,
+  type AssetRecord,
+  type AssetType,
+  type AssetVersion,
+  type AssetWriteInput,
+  type CategoryBase,
+  type CategoryBaseComponents,
+  type CategoryBasePageOptions,
+  type CategoryBaseRecord,
+  type CategoryBaseVersion,
+  type CategoryBaseWriteInput,
+  type PaginatedAssetResult,
+} from "./src/lib/assetLibrary";
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? "" : "banfuly-local-dev-secret-change-me");
@@ -213,6 +235,10 @@ interface DBData {
   rechargeLogs: RechargeLog[];
   generationLogs: GenerationLog[];
   imageHistory: ImageHistory[];
+  assets: AssetItem[];
+  assetVersions: AssetVersion[];
+  categoryBases: CategoryBase[];
+  categoryBaseVersions: CategoryBaseVersion[];
 }
 
 interface AuthRequest extends Request {
@@ -222,6 +248,60 @@ interface AuthRequest extends Request {
     role: 'admin' | 'user';
   };
 }
+
+const toNumber = (value: unknown): number => Number(value || 0);
+
+const mapAssetRecordRow = (row: Record<string, any>): AssetRecord => ({
+  asset: {
+    id: String(row.id),
+    userId: String(row.userId),
+    type: row.type as AssetType,
+    name: String(row.name),
+    category: String(row.category || ''),
+    tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
+    status: row.status,
+    currentVersion: toNumber(row.currentVersion),
+    createdAt: toNumber(row.createdAt),
+    updatedAt: toNumber(row.updatedAt),
+    deletedAt: row.deletedAt == null ? undefined : toNumber(row.deletedAt),
+  },
+  version: {
+    id: String(row.versionId),
+    assetId: String(row.id),
+    userId: String(row.userId),
+    version: toNumber(row.versionNumber),
+    sourceKind: row.sourceKind,
+    profile: row.profile || {},
+    imageRefs: Array.isArray(row.imageRefs) ? row.imageRefs : [],
+    changeNote: String(row.changeNote || ''),
+    createdAt: toNumber(row.versionCreatedAt),
+  },
+});
+
+const mapCategoryBaseRecordRow = (row: Record<string, any>): CategoryBaseRecord => ({
+  base: {
+    id: String(row.id),
+    userId: String(row.userId),
+    name: String(row.name),
+    category: String(row.category),
+    description: String(row.description || ''),
+    status: row.status,
+    currentVersion: toNumber(row.currentVersion),
+    createdAt: toNumber(row.createdAt),
+    updatedAt: toNumber(row.updatedAt),
+    deletedAt: row.deletedAt == null ? undefined : toNumber(row.deletedAt),
+  },
+  version: {
+    id: String(row.versionId),
+    baseId: String(row.id),
+    userId: String(row.userId),
+    version: toNumber(row.versionNumber),
+    components: row.components || {},
+    defaults: row.defaults || {},
+    changeNote: String(row.changeNote || ''),
+    createdAt: toNumber(row.versionCreatedAt),
+  },
+});
 
 const APP_VERSION = "5.1-DB-CHECK";
 
@@ -290,6 +370,64 @@ class DatabaseService {
             prompt TEXT NOT NULL,
             timestamp BIGINT NOT NULL
           );
+          CREATE TABLE IF NOT EXISTS asset_items (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+            status TEXT NOT NULL DEFAULT 'active',
+            current_version INTEGER NOT NULL DEFAULT 1,
+            created_at BIGINT NOT NULL,
+            updated_at BIGINT NOT NULL,
+            deleted_at BIGINT
+          );
+          CREATE TABLE IF NOT EXISTS asset_versions (
+            id TEXT PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES asset_items(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL,
+            source_kind TEXT NOT NULL,
+            profile JSONB NOT NULL DEFAULT '{}'::jsonb,
+            image_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+            change_note TEXT NOT NULL DEFAULT '',
+            created_at BIGINT NOT NULL,
+            UNIQUE(asset_id, version)
+          );
+          CREATE TABLE IF NOT EXISTS category_bases (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            current_version INTEGER NOT NULL DEFAULT 1,
+            created_at BIGINT NOT NULL,
+            updated_at BIGINT NOT NULL,
+            deleted_at BIGINT
+          );
+          CREATE TABLE IF NOT EXISTS category_base_versions (
+            id TEXT PRIMARY KEY,
+            base_id TEXT NOT NULL REFERENCES category_bases(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL,
+            components JSONB NOT NULL DEFAULT '{}'::jsonb,
+            defaults JSONB NOT NULL DEFAULT '{}'::jsonb,
+            change_note TEXT NOT NULL DEFAULT '',
+            created_at BIGINT NOT NULL,
+            UNIQUE(base_id, version)
+          );
+          CREATE INDEX IF NOT EXISTS idx_asset_items_user_type_status_updated
+            ON asset_items(user_id, type, status, updated_at DESC)
+            WHERE deleted_at IS NULL;
+          CREATE INDEX IF NOT EXISTS idx_asset_versions_asset_version
+            ON asset_versions(asset_id, version DESC);
+          CREATE INDEX IF NOT EXISTS idx_category_bases_user_status_updated
+            ON category_bases(user_id, status, updated_at DESC)
+            WHERE deleted_at IS NULL;
+          CREATE INDEX IF NOT EXISTS idx_category_base_versions_base_version
+            ON category_base_versions(base_id, version DESC);
         `);
 
         // Check if admin exists
@@ -303,11 +441,17 @@ class DatabaseService {
         }
         console.log("PostgreSQL initialized.");
       } catch (err) {
-        console.error("PostgreSQL initialization failed, falling back to file:", err);
+        console.error("PostgreSQL initialization failed:", err);
+        await this.pool?.end().catch(() => undefined);
         this.pool = null;
+        if (process.env.NODE_ENV === 'production') throw err;
+        console.warn('Development fallback: using file database.');
         this.initFileDB();
       }
     } else {
+      if (process.env.NODE_ENV === 'production' && process.env.ALLOW_FILE_DB !== 'true') {
+        throw new Error('Production requires DATABASE_URL');
+      }
       this.initFileDB();
     }
   }
@@ -334,7 +478,11 @@ class DatabaseService {
         ],
         rechargeLogs: [],
         generationLogs: [],
-        imageHistory: []
+        imageHistory: [],
+        assets: [],
+        assetVersions: [],
+        categoryBases: [],
+        categoryBaseVersions: []
       };
       shouldSave = true;
     } else {
@@ -346,6 +494,10 @@ class DatabaseService {
         if (!this.fileData!.rechargeLogs) this.fileData!.rechargeLogs = [];
         if (!this.fileData!.generationLogs) this.fileData!.generationLogs = [];
         if (!this.fileData!.imageHistory) this.fileData!.imageHistory = [];
+        if (!this.fileData!.assets) this.fileData!.assets = [];
+        if (!this.fileData!.assetVersions) this.fileData!.assetVersions = [];
+        if (!this.fileData!.categoryBases) this.fileData!.categoryBases = [];
+        if (!this.fileData!.categoryBaseVersions) this.fileData!.categoryBaseVersions = [];
 
         // Ensure at least one admin exists if users is empty
         if (this.fileData!.users.length === 0) {
@@ -373,7 +525,11 @@ class DatabaseService {
           ],
           rechargeLogs: [],
           generationLogs: [],
-          imageHistory: []
+          imageHistory: [],
+          assets: [],
+          assetVersions: [],
+          categoryBases: [],
+          categoryBaseVersions: []
         };
         shouldSave = true;
       }
@@ -390,8 +546,13 @@ class DatabaseService {
         fs.writeFileSync(DB_FILE, JSON.stringify(this.fileData, null, 2));
       } catch (err) {
         console.error("Failed to save database to file:", err);
+        throw err;
       }
     }
+  }
+
+  getMode(): 'PostgreSQL' | 'File' {
+    return this.pool ? 'PostgreSQL' : 'File';
   }
 
   // --- User Methods ---
@@ -670,6 +831,481 @@ class DatabaseService {
       }
     }
   }
+
+  private getFileAssetRecord(id: string, userId: string): AssetRecord | null {
+    const asset = this.fileData!.assets.find(item => item.id === id && item.userId === userId && !item.deletedAt);
+    if (!asset) return null;
+    const version = this.fileData!.assetVersions.find(item => item.assetId === id && item.version === asset.currentVersion);
+    return version ? { asset: { ...asset }, version: structuredClone(version) } : null;
+  }
+
+  async createAsset(userId: string, input: AssetWriteInput): Promise<AssetRecord> {
+    const now = Date.now();
+    const asset: AssetItem = {
+      id: `asset-${randomUUID()}`,
+      userId,
+      type: input.type,
+      name: input.name,
+      category: input.category,
+      tags: input.tags,
+      status: input.status,
+      currentVersion: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const version: AssetVersion = {
+      id: `asset-version-${randomUUID()}`,
+      assetId: asset.id,
+      userId,
+      version: 1,
+      sourceKind: input.sourceKind,
+      profile: input.profile,
+      imageRefs: input.imageRefs,
+      changeNote: input.changeNote,
+      createdAt: now,
+    };
+    if (this.pool) {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `INSERT INTO asset_items (id, user_id, type, name, category, tags, status, current_version, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)`,
+          [asset.id, userId, asset.type, asset.name, asset.category, JSON.stringify(asset.tags), asset.status, 1, now, now],
+        );
+        await client.query(
+          `INSERT INTO asset_versions (id, asset_id, user_id, version, source_kind, profile, image_refs, change_note, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)`,
+          [version.id, asset.id, userId, 1, version.sourceKind, JSON.stringify(version.profile), JSON.stringify(version.imageRefs), version.changeNote, now],
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+      return { asset, version };
+    }
+    this.fileData!.assets.push(asset);
+    this.fileData!.assetVersions.push(version);
+    this.saveFileDB();
+    return { asset, version };
+  }
+
+  async getAsset(userId: string, id: string): Promise<AssetRecord | null> {
+    if (!this.pool) return this.getFileAssetRecord(id, userId);
+    const result = await this.pool.query(
+      `SELECT a.id, a.user_id AS "userId", a.type, a.name, a.category, a.tags, a.status,
+              a.current_version AS "currentVersion", a.created_at AS "createdAt", a.updated_at AS "updatedAt",
+              a.deleted_at AS "deletedAt", v.id AS "versionId", v.version AS "versionNumber",
+              v.source_kind AS "sourceKind", v.profile, v.image_refs AS "imageRefs",
+              v.change_note AS "changeNote", v.created_at AS "versionCreatedAt"
+       FROM asset_items a
+       JOIN asset_versions v ON v.asset_id = a.id AND v.version = a.current_version
+       WHERE a.id = $1 AND a.user_id = $2 AND a.deleted_at IS NULL`,
+      [id, userId],
+    );
+    return result.rows[0] ? mapAssetRecordRow(result.rows[0]) : null;
+  }
+
+  async listAssets(userId: string, options: AssetPageOptions): Promise<PaginatedAssetResult<AssetRecord>> {
+    const { page, pageSize, type, category, status, search } = options;
+    const offset = (page - 1) * pageSize;
+    if (this.pool) {
+      const clauses = ['a.user_id = $1', 'a.deleted_at IS NULL'];
+      const params: Array<string | number> = [userId];
+      if (type) { params.push(type); clauses.push(`a.type = $${params.length}`); }
+      if (category) { params.push(category); clauses.push(`a.category = $${params.length}`); }
+      params.push(status || 'active');
+      clauses.push(`a.status = $${params.length}`);
+      if (search) {
+        params.push(`%${search}%`);
+        clauses.push(`(a.name ILIKE $${params.length} OR a.category ILIKE $${params.length} OR a.tags::text ILIKE $${params.length})`);
+      }
+      const where = `WHERE ${clauses.join(' AND ')}`;
+      const limitIndex = params.length + 1;
+      const offsetIndex = params.length + 2;
+      const [countResult, rowsResult] = await Promise.all([
+        this.pool.query(`SELECT COUNT(*)::int AS total FROM asset_items a ${where}`, params),
+        this.pool.query(
+          `SELECT a.id, a.user_id AS "userId", a.type, a.name, a.category, a.tags, a.status,
+                  a.current_version AS "currentVersion", a.created_at AS "createdAt", a.updated_at AS "updatedAt",
+                  a.deleted_at AS "deletedAt", v.id AS "versionId", v.version AS "versionNumber",
+                  v.source_kind AS "sourceKind", v.profile, v.image_refs AS "imageRefs",
+                  v.change_note AS "changeNote", v.created_at AS "versionCreatedAt"
+           FROM asset_items a
+           JOIN asset_versions v ON v.asset_id = a.id AND v.version = a.current_version
+           ${where}
+           ORDER BY a.updated_at DESC, a.id DESC
+           LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+          [...params, pageSize, offset],
+        ),
+      ]);
+      return { items: rowsResult.rows.map(mapAssetRecordRow), total: toNumber(countResult.rows[0]?.total), page, pageSize };
+    }
+    const normalizedSearch = search?.toLowerCase();
+    const records = this.fileData!.assets
+      .filter(asset => asset.userId === userId && !asset.deletedAt)
+      .filter(asset => !type || asset.type === type)
+      .filter(asset => !category || asset.category === category)
+      .filter(asset => asset.status === (status || 'active'))
+      .filter(asset => !normalizedSearch || `${asset.name} ${asset.category} ${asset.tags.join(' ')}`.toLowerCase().includes(normalizedSearch))
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .map(asset => this.getFileAssetRecord(asset.id, userId))
+      .filter((record): record is AssetRecord => Boolean(record));
+    return paginateInMemory(records, page, pageSize);
+  }
+
+  async listAssetVersions(userId: string, assetId: string): Promise<AssetVersion[]> {
+    if (this.pool) {
+      const result = await this.pool.query(
+        `SELECT id, asset_id AS "assetId", user_id AS "userId", version, source_kind AS "sourceKind",
+                profile, image_refs AS "imageRefs", change_note AS "changeNote", created_at AS "createdAt"
+         FROM asset_versions WHERE asset_id = $1 AND user_id = $2 ORDER BY version DESC`,
+        [assetId, userId],
+      );
+      return result.rows.map(row => ({ ...row, version: toNumber(row.version), createdAt: toNumber(row.createdAt) }));
+    }
+    return this.fileData!.assetVersions
+      .filter(version => version.assetId === assetId && version.userId === userId)
+      .sort((left, right) => right.version - left.version)
+      .map(version => structuredClone(version));
+  }
+
+  async updateAsset(userId: string, id: string, input: AssetWriteInput): Promise<AssetRecord | null> {
+    const now = Date.now();
+    if (this.pool) {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        const currentResult = await client.query(
+          `SELECT type, current_version AS "currentVersion" FROM asset_items
+           WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+          [id, userId],
+        );
+        const current = currentResult.rows[0];
+        if (!current) { await client.query('ROLLBACK'); return null; }
+        if (current.type !== input.type) throw new AssetValidationError('资产类型创建后不能修改');
+        const nextVersion = toNumber(current.currentVersion) + 1;
+        const versionId = `asset-version-${randomUUID()}`;
+        await client.query(
+          `UPDATE asset_items SET name = $1, category = $2, tags = $3::jsonb, status = $4,
+                                  current_version = $5, updated_at = $6
+           WHERE id = $7 AND user_id = $8`,
+          [input.name, input.category, JSON.stringify(input.tags), input.status, nextVersion, now, id, userId],
+        );
+        await client.query(
+          `INSERT INTO asset_versions (id, asset_id, user_id, version, source_kind, profile, image_refs, change_note, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)`,
+          [versionId, id, userId, nextVersion, input.sourceKind, JSON.stringify(input.profile), JSON.stringify(input.imageRefs), input.changeNote, now],
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+      return this.getAsset(userId, id);
+    }
+    const asset = this.fileData!.assets.find(item => item.id === id && item.userId === userId && !item.deletedAt);
+    if (!asset) return null;
+    if (asset.type !== input.type) throw new AssetValidationError('资产类型创建后不能修改');
+    asset.name = input.name;
+    asset.category = input.category;
+    asset.tags = input.tags;
+    asset.status = input.status;
+    asset.currentVersion += 1;
+    asset.updatedAt = now;
+    this.fileData!.assetVersions.push({
+      id: `asset-version-${randomUUID()}`,
+      assetId: id,
+      userId,
+      version: asset.currentVersion,
+      sourceKind: input.sourceKind,
+      profile: input.profile,
+      imageRefs: input.imageRefs,
+      changeNote: input.changeNote,
+      createdAt: now,
+    });
+    this.saveFileDB();
+    return this.getFileAssetRecord(id, userId);
+  }
+
+  async deleteAsset(userId: string, id: string): Promise<boolean> {
+    const now = Date.now();
+    if (this.pool) {
+      const result = await this.pool.query(
+        `UPDATE asset_items SET status = 'archived', updated_at = $1
+         WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL AND status <> 'archived'`,
+        [now, id, userId],
+      );
+      return Boolean(result.rowCount);
+    }
+    const asset = this.fileData!.assets.find(item => item.id === id && item.userId === userId && !item.deletedAt && item.status !== 'archived');
+    if (!asset) return false;
+    asset.status = 'archived';
+    asset.updatedAt = now;
+    this.saveFileDB();
+    return true;
+  }
+
+  private async validateBaseComponents(
+    userId: string,
+    components: CategoryBaseComponents,
+    queryable: pg.Pool | pg.PoolClient | null = this.pool,
+  ): Promise<void> {
+    const expectedTypes: Record<keyof CategoryBaseComponents, AssetType> = {
+      visualSystem: 'visual_system',
+      scene: 'scene',
+      material: 'material',
+      model: 'model',
+    };
+    for (const key of Object.keys(expectedTypes) as Array<keyof CategoryBaseComponents>) {
+      const reference = components[key];
+      if (!reference) continue;
+      if (queryable) {
+        const result = await queryable.query(
+          `SELECT a.type, v.version FROM asset_items a
+           JOIN asset_versions v ON v.asset_id = a.id
+           WHERE a.id = $1 AND a.user_id = $2 AND a.deleted_at IS NULL
+             AND v.id = $3 AND v.version = $4 AND v.user_id = $2`,
+          [reference.assetId, userId, reference.versionId, reference.version],
+        );
+        if (!result.rows[0] || result.rows[0].type !== expectedTypes[key]) {
+          throw new AssetValidationError(`${key}引用的资产版本不存在或类型不匹配`);
+        }
+      } else {
+        const asset = this.fileData!.assets.find(item =>
+          item.id === reference.assetId && item.userId === userId && !item.deletedAt && item.type === expectedTypes[key]
+        );
+        const version = this.fileData!.assetVersions.find(item =>
+          item.id === reference.versionId && item.assetId === reference.assetId && item.userId === userId && item.version === reference.version
+        );
+        if (!asset || !version) throw new AssetValidationError(`${key}引用的资产版本不存在或类型不匹配`);
+      }
+    }
+  }
+
+  private getFileCategoryBaseRecord(id: string, userId: string): CategoryBaseRecord | null {
+    const base = this.fileData!.categoryBases.find(item => item.id === id && item.userId === userId && !item.deletedAt);
+    if (!base) return null;
+    const version = this.fileData!.categoryBaseVersions.find(item => item.baseId === id && item.version === base.currentVersion);
+    return version ? { base: { ...base }, version: structuredClone(version) } : null;
+  }
+
+  async createCategoryBase(userId: string, input: CategoryBaseWriteInput): Promise<CategoryBaseRecord> {
+    const now = Date.now();
+    const base: CategoryBase = {
+      id: `category-base-${randomUUID()}`,
+      userId,
+      name: input.name,
+      category: input.category,
+      description: input.description,
+      status: input.status,
+      currentVersion: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const version: CategoryBaseVersion = {
+      id: `category-base-version-${randomUUID()}`,
+      baseId: base.id,
+      userId,
+      version: 1,
+      components: input.components,
+      defaults: input.defaults,
+      changeNote: input.changeNote,
+      createdAt: now,
+    };
+    if (this.pool) {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await this.validateBaseComponents(userId, input.components, client);
+        await client.query(
+          `INSERT INTO category_bases
+             (id, user_id, name, category, description, status, current_version, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $7)`,
+          [base.id, userId, base.name, base.category, base.description, base.status, now],
+        );
+        await client.query(
+          `INSERT INTO category_base_versions
+             (id, base_id, user_id, version, components, defaults, change_note, created_at)
+           VALUES ($1, $2, $3, 1, $4::jsonb, $5::jsonb, $6, $7)`,
+          [version.id, base.id, userId, JSON.stringify(version.components), JSON.stringify(version.defaults), version.changeNote, now],
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+      return { base, version };
+    }
+    await this.validateBaseComponents(userId, input.components, null);
+    this.fileData!.categoryBases.push(base);
+    this.fileData!.categoryBaseVersions.push(version);
+    this.saveFileDB();
+    return { base, version };
+  }
+
+  async getCategoryBase(userId: string, id: string): Promise<CategoryBaseRecord | null> {
+    if (!this.pool) return this.getFileCategoryBaseRecord(id, userId);
+    const result = await this.pool.query(
+      `SELECT b.id, b.user_id AS "userId", b.name, b.category, b.description, b.status,
+              b.current_version AS "currentVersion",
+              b.created_at AS "createdAt", b.updated_at AS "updatedAt", b.deleted_at AS "deletedAt",
+              v.id AS "versionId", v.version AS "versionNumber", v.components, v.defaults,
+              v.change_note AS "changeNote", v.created_at AS "versionCreatedAt"
+       FROM category_bases b
+       JOIN category_base_versions v ON v.base_id = b.id AND v.version = b.current_version
+       WHERE b.id = $1 AND b.user_id = $2 AND b.deleted_at IS NULL`,
+      [id, userId],
+    );
+    return result.rows[0] ? mapCategoryBaseRecordRow(result.rows[0]) : null;
+  }
+
+  async listCategoryBases(userId: string, options: CategoryBasePageOptions): Promise<PaginatedAssetResult<CategoryBaseRecord>> {
+    const { page, pageSize, category, status, search } = options;
+    const offset = (page - 1) * pageSize;
+    if (this.pool) {
+      const clauses = ['b.user_id = $1', 'b.deleted_at IS NULL'];
+      const params: Array<string | number> = [userId];
+      if (category) { params.push(category); clauses.push(`b.category = $${params.length}`); }
+      params.push(status || 'active');
+      clauses.push(`b.status = $${params.length}`);
+      if (search) {
+        params.push(`%${search}%`);
+        clauses.push(`(b.name ILIKE $${params.length} OR b.category ILIKE $${params.length} OR b.description ILIKE $${params.length})`);
+      }
+      const where = `WHERE ${clauses.join(' AND ')}`;
+      const limitIndex = params.length + 1;
+      const offsetIndex = params.length + 2;
+      const [countResult, rowsResult] = await Promise.all([
+        this.pool.query(`SELECT COUNT(*)::int AS total FROM category_bases b ${where}`, params),
+        this.pool.query(
+          `SELECT b.id, b.user_id AS "userId", b.name, b.category, b.description, b.status,
+                  b.current_version AS "currentVersion",
+                  b.created_at AS "createdAt", b.updated_at AS "updatedAt", b.deleted_at AS "deletedAt",
+                  v.id AS "versionId", v.version AS "versionNumber", v.components, v.defaults,
+                  v.change_note AS "changeNote", v.created_at AS "versionCreatedAt"
+           FROM category_bases b
+           JOIN category_base_versions v ON v.base_id = b.id AND v.version = b.current_version
+           ${where}
+           ORDER BY b.updated_at DESC, b.id DESC
+           LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+          [...params, pageSize, offset],
+        ),
+      ]);
+      return { items: rowsResult.rows.map(mapCategoryBaseRecordRow), total: toNumber(countResult.rows[0]?.total), page, pageSize };
+    }
+    const normalizedSearch = search?.toLowerCase();
+    const records = this.fileData!.categoryBases
+      .filter(base => base.userId === userId && !base.deletedAt)
+      .filter(base => !category || base.category === category)
+      .filter(base => base.status === (status || 'active'))
+      .filter(base => !normalizedSearch || `${base.name} ${base.category} ${base.description}`.toLowerCase().includes(normalizedSearch))
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .map(base => this.getFileCategoryBaseRecord(base.id, userId))
+      .filter((record): record is CategoryBaseRecord => Boolean(record));
+    return paginateInMemory(records, page, pageSize);
+  }
+
+  async listCategoryBaseVersions(userId: string, baseId: string): Promise<CategoryBaseVersion[]> {
+    if (this.pool) {
+      const result = await this.pool.query(
+        `SELECT id, base_id AS "baseId", user_id AS "userId", version, components, defaults,
+                change_note AS "changeNote", created_at AS "createdAt"
+         FROM category_base_versions WHERE base_id = $1 AND user_id = $2 ORDER BY version DESC`,
+        [baseId, userId],
+      );
+      return result.rows.map(row => ({ ...row, version: toNumber(row.version), createdAt: toNumber(row.createdAt) }));
+    }
+    return this.fileData!.categoryBaseVersions
+      .filter(version => version.baseId === baseId && version.userId === userId)
+      .sort((left, right) => right.version - left.version)
+      .map(version => structuredClone(version));
+  }
+
+  async updateCategoryBase(userId: string, id: string, input: CategoryBaseWriteInput): Promise<CategoryBaseRecord | null> {
+    const now = Date.now();
+    if (this.pool) {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        const currentResult = await client.query(
+          `SELECT current_version AS "currentVersion" FROM category_bases
+           WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+          [id, userId],
+        );
+        const current = currentResult.rows[0];
+        if (!current) { await client.query('ROLLBACK'); return null; }
+        await this.validateBaseComponents(userId, input.components, client);
+        const nextVersion = toNumber(current.currentVersion) + 1;
+        const versionId = `category-base-version-${randomUUID()}`;
+        await client.query(
+          `UPDATE category_bases SET name = $1, category = $2, description = $3, status = $4,
+                                     current_version = $5, updated_at = $6
+           WHERE id = $7 AND user_id = $8`,
+          [input.name, input.category, input.description, input.status, nextVersion, now, id, userId],
+        );
+        await client.query(
+          `INSERT INTO category_base_versions
+             (id, base_id, user_id, version, components, defaults, change_note, created_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8)`,
+          [versionId, id, userId, nextVersion, JSON.stringify(input.components), JSON.stringify(input.defaults), input.changeNote, now],
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+      return this.getCategoryBase(userId, id);
+    }
+    const base = this.fileData!.categoryBases.find(item => item.id === id && item.userId === userId && !item.deletedAt);
+    if (!base) return null;
+    await this.validateBaseComponents(userId, input.components, null);
+    base.name = input.name;
+    base.category = input.category;
+    base.description = input.description;
+    base.status = input.status;
+    base.currentVersion += 1;
+    base.updatedAt = now;
+    this.fileData!.categoryBaseVersions.push({
+      id: `category-base-version-${randomUUID()}`,
+      baseId: id,
+      userId,
+      version: base.currentVersion,
+      components: input.components,
+      defaults: input.defaults,
+      changeNote: input.changeNote,
+      createdAt: now,
+    });
+    this.saveFileDB();
+    return this.getFileCategoryBaseRecord(id, userId);
+  }
+
+  async deleteCategoryBase(userId: string, id: string): Promise<boolean> {
+    const now = Date.now();
+    if (this.pool) {
+      const result = await this.pool.query(
+        `UPDATE category_bases SET status = 'archived', updated_at = $1
+         WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL AND status <> 'archived'`,
+        [now, id, userId],
+      );
+      return Boolean(result.rowCount);
+    }
+    const base = this.fileData!.categoryBases.find(item => item.id === id && item.userId === userId && !item.deletedAt && item.status !== 'archived');
+    if (!base) return false;
+    base.status = 'archived';
+    base.updatedAt = now;
+    this.saveFileDB();
+    return true;
+  }
 }
 
 const db = new DatabaseService();
@@ -821,7 +1457,7 @@ app.put("/api/admin/image-analysis-templates", authenticateToken, isAdmin, (req:
 // --- API Routes (REGISTERED FIRST) ---
 
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", dbInitialized });
+  res.json({ status: "ok", dbInitialized, dbMode: db.getMode() });
 });
 
 app.get("/api/test", async (req, res) => {
@@ -830,7 +1466,7 @@ app.get("/api/test", async (req, res) => {
     message: "API is working", 
     timestamp: Date.now(), 
     env: process.env.NODE_ENV,
-    dbMode: DATABASE_URL ? "PostgreSQL" : "File"
+    dbMode: db.getMode()
   });
 });
 
@@ -1045,6 +1681,132 @@ app.delete("/api/user/history/:id", authenticateToken, async (req: AuthRequest, 
   const id = String(req.params.id);
   await db.deleteImageHistory(id, req.user?.id || "", req.user?.role === 'admin');
   res.json({ message: "已删除" });
+});
+
+const handleAssetApiError = (res: Response, error: unknown) => {
+  if (error instanceof AssetValidationError) return res.status(400).json({ message: error.message });
+  console.error('Asset library API failed:', error);
+  return res.status(500).json({ message: '资产库操作失败，请稍后重试' });
+};
+
+app.get('/api/assets', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const options = parseAssetPageOptions(req.query as Record<string, unknown>);
+    res.json(await db.listAssets(req.user!.id, options));
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.post('/api/assets', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const input = normalizeAssetWriteInput(req.body);
+    res.status(201).json(await db.createAsset(req.user!.id, input));
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.get('/api/assets/:id/versions', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = String(req.params.id);
+    const asset = await db.getAsset(req.user!.id, id);
+    if (!asset) return res.status(404).json({ message: '资产不存在' });
+    res.json(await db.listAssetVersions(req.user!.id, id));
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.get('/api/assets/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const asset = await db.getAsset(req.user!.id, String(req.params.id));
+    if (!asset) return res.status(404).json({ message: '资产不存在' });
+    res.json(asset);
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.put('/api/assets/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const input = normalizeAssetWriteInput(req.body);
+    const asset = await db.updateAsset(req.user!.id, String(req.params.id), input);
+    if (!asset) return res.status(404).json({ message: '资产不存在' });
+    res.json(asset);
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.delete('/api/assets/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const deleted = await db.deleteAsset(req.user!.id, String(req.params.id));
+    if (!deleted) return res.status(404).json({ message: '资产不存在' });
+    res.json({ message: '资产已归档' });
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.get('/api/category-bases', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const options = parseCategoryBasePageOptions(req.query as Record<string, unknown>);
+    res.json(await db.listCategoryBases(req.user!.id, options));
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.post('/api/category-bases', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const input = normalizeCategoryBaseWriteInput(req.body);
+    res.status(201).json(await db.createCategoryBase(req.user!.id, input));
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.get('/api/category-bases/:id/versions', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = String(req.params.id);
+    const categoryBase = await db.getCategoryBase(req.user!.id, id);
+    if (!categoryBase) return res.status(404).json({ message: '类目基座不存在' });
+    res.json(await db.listCategoryBaseVersions(req.user!.id, id));
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.get('/api/category-bases/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const categoryBase = await db.getCategoryBase(req.user!.id, String(req.params.id));
+    if (!categoryBase) return res.status(404).json({ message: '类目基座不存在' });
+    res.json(categoryBase);
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.put('/api/category-bases/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const input = normalizeCategoryBaseWriteInput(req.body);
+    const categoryBase = await db.updateCategoryBase(req.user!.id, String(req.params.id), input);
+    if (!categoryBase) return res.status(404).json({ message: '类目基座不存在' });
+    res.json(categoryBase);
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.delete('/api/category-bases/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const deleted = await db.deleteCategoryBase(req.user!.id, String(req.params.id));
+    if (!deleted) return res.status(404).json({ message: '类目基座不存在' });
+    res.json({ message: '类目基座已归档' });
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
 });
 
 const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -1667,7 +2429,9 @@ async function startServer() {
     dbInitialized = true;
   } catch (err) {
     console.error("Critical: Database initialization failed:", err);
-    dbInitialized = true; // Fallback to file DB is handled inside init()
+    dbInitialized = false;
+    process.exitCode = 1;
+    return;
   }
 
   // 2. Static files or Vite middleware (AFTER API routes)

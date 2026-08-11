@@ -18,7 +18,9 @@
     "test:persistence": "tsx tests/projectPersistence.test.ts",
     "test:assistant": "tsx tests/assistantRuntime.test.ts",
     "test:stats": "tsx tests/generationStats.test.ts",
-    "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run typecheck && npm run lint && npm run build",
+    "test:assets": "tsx tests/assetLibrary.test.ts",
+    "test:asset-api": "tsx tests/assetApi.test.ts",
+    "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run test:assets && npm run test:asset-api && npm run typecheck && npm run lint && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {
