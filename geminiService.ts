@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, Part } from "@google/genai";
 import { VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, ImageDeconstruction, SegmentedObject, DetailStoryboard } from "./types";
+import { compileImagePrompt, type PromptSafetyOperation } from "./src/lib/promptSafety";
 
 const parseB64 = (b64: string) => {
   const matches = b64.match(/^data:([^;]+);base64,(.+)$/);
@@ -220,7 +221,9 @@ export const generateEcomImage = async (params: {
   refImageB64?: string,
   productImageB64?: string,
   productImagesB64?: string[], // Support multiple product images
-  apiKey?: string
+  apiKey?: string,
+  operation?: PromptSafetyOperation,
+  lockedTexts?: string[]
 }): Promise<string | undefined> => {
   // 自动切换逻辑：
   // 1. 优先检查环境变量中配置的付费生图专用 Key (VITE_PAID_IMAGE_API_KEY)
@@ -229,6 +232,12 @@ export const generateEcomImage = async (params: {
   // 4. 最后回退到系统默认的免费 Key
   const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
   const finalApiKey = localPaidKey || params.apiKey;
+  const hasReferenceImages = Boolean(
+    params.refImageB64
+    || params.productImageB64
+    || params.productImagesB64?.length,
+  );
+  const operation = params.operation ?? (hasReferenceImages ? 'image_to_image' : 'text_to_image');
 
   if (params.model === 'gpt-image-2') {
     const apiKey = typeof window !== 'undefined' ? localStorage.getItem('user_openai_api_key') : null;
@@ -259,7 +268,15 @@ export const generateEcomImage = async (params: {
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
       },
-      body: JSON.stringify({ apiKey, prompt: params.prompt, size, quality, images: referenceImages })
+      body: JSON.stringify({
+        apiKey,
+        prompt: params.prompt,
+        size,
+        quality,
+        images: referenceImages,
+        operation,
+        lockedTexts: params.lockedTexts || [],
+      })
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.message || response.statusText);
@@ -315,6 +332,25 @@ export const generateEcomImage = async (params: {
   }
 
   const ai = getAiClient(finalApiKey);
+  const promptSafetyShadow = compileImagePrompt(params.prompt, {
+    provider: 'google',
+    operation,
+    mode: 'observe',
+    lockedTexts: params.lockedTexts,
+  });
+  if (promptSafetyShadow.rule_ids.length > 0 || promptSafetyShadow.review_recommended) {
+    console.info('[PromptSafetyShadow]', {
+      ruleVersion: promptSafetyShadow.rule_version,
+      provider: promptSafetyShadow.provider,
+      operation: promptSafetyShadow.operation,
+      decision: promptSafetyShadow.decision,
+      candidateDecision: promptSafetyShadow.candidate_decision,
+      applied: promptSafetyShadow.applied,
+      riskLevel: promptSafetyShadow.risk_level,
+      ruleIds: promptSafetyShadow.rule_ids,
+      blocked: promptSafetyShadow.blocked,
+    });
+  }
   const parts: Part[] = [{ text: params.prompt }];
   
   if (params.refImageB64) {
