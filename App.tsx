@@ -17,6 +17,7 @@ import { decodeStyle, analyzeProduct, fusePrompts, generateEcomImage, /* regener
 import { WorkflowCanvas } from './src/components/WorkflowCanvas';
 import { ImageAnalysisTemplateManager } from './src/components/ImageAnalysisTemplateManager';
 import { RequestLogPanel } from './src/components/RequestLogPanel';
+import { AssetLibraryPanel } from './src/components/AssetLibraryPanel';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { processImageFiles } from './src/lib/uploadProcessing';
 import { buildGenerationTrendSeries, type GenerationTrendBucket } from './src/lib/generationStats';
@@ -1632,11 +1633,12 @@ ${p.prompt}
     <div className={cn("h-screen flex flex-col selection:bg-black selection:text-white overflow-hidden")}>
       {/* 导航栏 */}
       <header className="h-14 glass-nav flex items-center justify-between px-8 sticky top-0 z-50 shadow-sm">
-        <div className="flex items-center gap-6">
-          <div className="text-lg font-extrabold tracking-tighter text-black cursor-pointer" onClick={() => setStep(AppStep.FULL_PLAN)}>BANFULY <span className="text-[#6e6e73] font-light">ARCHITECT</span></div>
-          <div className="step-capsule flex gap-1 items-center bg-[#F5F5F7] border border-black/5 shadow-inner">
+        <div className="flex min-w-0 flex-1 items-center gap-6">
+          <div className="shrink-0 text-lg font-extrabold tracking-tighter text-black cursor-pointer" onClick={() => setStep(AppStep.FULL_PLAN)}>BANFULY <span className="text-[#6e6e73] font-light">ARCHITECT</span></div>
+          <div className="step-capsule flex min-w-0 items-center gap-1 overflow-x-auto bg-[#F5F5F7] border border-black/5 shadow-inner [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {[
               { id: AppStep.WORKFLOW, label: '创意工作流' },
+              { id: AppStep.ASSET_LIBRARY, label: '品牌基座库' },
               { id: AppStep.FULL_PLAN, label: '全案策划' },
               { id: AppStep.DETAIL_ASSISTANT, label: '详情助手' },
               { id: AppStep.SINGLE_TOOL, label: '单图灵活工具' },
@@ -1646,16 +1648,16 @@ ${p.prompt}
             ].map((s) => (
               <button
                 key={s.id}
-                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL && s.id !== AppStep.DETAIL_ASSISTANT && s.id !== AppStep.FULL_PLAN && s.id !== AppStep.WORKFLOW}
+                disabled={step < s.id && s.id !== AppStep.ADMIN_PANEL && s.id !== AppStep.PROFILE && s.id !== AppStep.HISTORY && s.id !== AppStep.SINGLE_TOOL && s.id !== AppStep.DETAIL_ASSISTANT && s.id !== AppStep.FULL_PLAN && s.id !== AppStep.WORKFLOW && s.id !== AppStep.ASSET_LIBRARY}
                 onClick={() => activeStep(s.id)}
-                className={`px-4 py-1.5 rounded-full text-[11px] font-bold transition-all duration-500 ${step === s.id ? 'bg-white shadow-md text-black scale-105' : 'text-[#86868b] opacity-60 hover:opacity-100'}`}
+                className={`shrink-0 px-4 py-1.5 rounded-full text-[11px] font-bold transition-all duration-500 ${step === s.id ? 'bg-white shadow-md text-black scale-105' : 'text-[#86868b] opacity-60 hover:opacity-100'}`}
               >
                 {s.label}
               </button>
             ))}
           </div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="ml-4 flex shrink-0 items-center gap-4">
           <div className="flex items-center gap-4 mr-4 border-r border-black/10 pr-4">
             <div className="text-right">
               <p className="text-[10px] font-black text-black leading-none">{auth.user.username}</p>
@@ -1686,6 +1688,7 @@ ${p.prompt}
       </header>
 
       <main className={cn("flex-1 w-full mx-auto relative", step === AppStep.WORKFLOW ? "h-[calc(100vh-112px)] max-w-none px-0 py-0 overflow-hidden" : "max-w-[1440px] px-8 py-8 overflow-y-auto")}>
+        {step === AppStep.ASSET_LIBRARY && <AssetLibraryPanel />}
         {step === AppStep.DETAIL_ASSISTANT && (
           <div className="animate-slide-up">
             <div className="flex items-end justify-between mb-10">

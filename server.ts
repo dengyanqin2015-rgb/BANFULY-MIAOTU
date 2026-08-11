@@ -18,6 +18,7 @@ import {
   parseAssetPageOptions,
   parseCategoryBasePageOptions,
   type AssetItem,
+  type AssetImageReference,
   type AssetPageOptions,
   type AssetRecord,
   type AssetType,
@@ -31,6 +32,23 @@ import {
   type CategoryBaseWriteInput,
   type PaginatedAssetResult,
 } from "./src/lib/assetLibrary";
+import {
+  MAX_ASSET_IMAGE_BYTES,
+  PENDING_UPLOAD_TTL_MS,
+  StorageValidationError,
+  buildStorageObjectKey,
+  isUserStorageKey,
+  normalizeUploadRequest,
+  type StorageObjectRecord,
+  type UploadRequest,
+} from "./src/lib/storageObjects";
+import {
+  createReadUrl,
+  createUploadUrl,
+  deleteStoredObject,
+  getBucketStatus,
+  inspectStoredObject,
+} from "./src/lib/railwayBucket";
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? "" : "banfuly-local-dev-secret-change-me");
@@ -62,7 +80,7 @@ interface RequestLogEntry {
   responseBody?: unknown;
 }
 
-const sensitiveKeyPattern = /password|passcode|secret|token|authorization|cookie|api[-_]?key/i;
+const sensitiveKeyPattern = /password|passcode|secret|token|authorization|cookie|api[-_]?key|upload[-_]?url|signed[-_]?url|presigned|x-amz/i;
 const sanitizeLogValue = (value: unknown, key = "", depth = 0): unknown => {
   if (sensitiveKeyPattern.test(key)) return "[REDACTED]";
   if (depth > 6) return "[MAX_DEPTH]";
@@ -239,6 +257,7 @@ interface DBData {
   assetVersions: AssetVersion[];
   categoryBases: CategoryBase[];
   categoryBaseVersions: CategoryBaseVersion[];
+  storageObjects: StorageObjectRecord[];
 }
 
 interface AuthRequest extends Request {
@@ -370,6 +389,20 @@ class DatabaseService {
             prompt TEXT NOT NULL,
             timestamp BIGINT NOT NULL
           );
+          CREATE TABLE IF NOT EXISTS storage_objects (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            object_key TEXT UNIQUE NOT NULL,
+            mime_type TEXT NOT NULL,
+            byte_size BIGINT NOT NULL,
+            original_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            width INTEGER,
+            height INTEGER,
+            created_at BIGINT NOT NULL,
+            updated_at BIGINT NOT NULL,
+            expires_at BIGINT NOT NULL
+          );
           CREATE TABLE IF NOT EXISTS asset_items (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -428,6 +461,11 @@ class DatabaseService {
             WHERE deleted_at IS NULL;
           CREATE INDEX IF NOT EXISTS idx_category_base_versions_base_version
             ON category_base_versions(base_id, version DESC);
+          CREATE INDEX IF NOT EXISTS idx_storage_objects_user_status_updated
+            ON storage_objects(user_id, status, updated_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_storage_objects_cleanup
+            ON storage_objects(status, expires_at)
+            WHERE status IN ('pending', 'ready');
         `);
 
         // Check if admin exists
@@ -482,7 +520,8 @@ class DatabaseService {
         assets: [],
         assetVersions: [],
         categoryBases: [],
-        categoryBaseVersions: []
+        categoryBaseVersions: [],
+        storageObjects: []
       };
       shouldSave = true;
     } else {
@@ -498,6 +537,7 @@ class DatabaseService {
         if (!this.fileData!.assetVersions) this.fileData!.assetVersions = [];
         if (!this.fileData!.categoryBases) this.fileData!.categoryBases = [];
         if (!this.fileData!.categoryBaseVersions) this.fileData!.categoryBaseVersions = [];
+        if (!this.fileData!.storageObjects) this.fileData!.storageObjects = [];
 
         // Ensure at least one admin exists if users is empty
         if (this.fileData!.users.length === 0) {
@@ -529,7 +569,8 @@ class DatabaseService {
           assets: [],
           assetVersions: [],
           categoryBases: [],
-          categoryBaseVersions: []
+          categoryBaseVersions: [],
+          storageObjects: []
         };
         shouldSave = true;
       }
@@ -553,6 +594,207 @@ class DatabaseService {
 
   getMode(): 'PostgreSQL' | 'File' {
     return this.pool ? 'PostgreSQL' : 'File';
+  }
+
+  async createStorageObject(userId: string, upload: UploadRequest): Promise<StorageObjectRecord> {
+    const now = Date.now();
+    const id = `storage-object-${randomUUID()}`;
+    const object: StorageObjectRecord = {
+      id,
+      userId,
+      objectKey: buildStorageObjectKey(userId, id, upload.mimeType),
+      mimeType: upload.mimeType,
+      byteSize: upload.byteSize,
+      originalName: upload.fileName,
+      status: 'pending',
+      width: upload.width,
+      height: upload.height,
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + PENDING_UPLOAD_TTL_MS,
+    };
+    if (this.pool) {
+      await this.pool.query(
+        `INSERT INTO storage_objects
+           (id, user_id, object_key, mime_type, byte_size, original_name, status, width, height, created_at, updated_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $9, $10)`,
+        [object.id, userId, object.objectKey, object.mimeType, object.byteSize, object.originalName,
+          object.width || null, object.height || null, now, object.expiresAt],
+      );
+      return object;
+    }
+    this.fileData!.storageObjects.push(object);
+    this.saveFileDB();
+    return structuredClone(object);
+  }
+
+  async getStorageObject(userId: string, id: string): Promise<StorageObjectRecord | null> {
+    if (this.pool) {
+      const result = await this.pool.query(
+        `SELECT id, user_id AS "userId", object_key AS "objectKey", mime_type AS "mimeType",
+                byte_size AS "byteSize", original_name AS "originalName", status, width, height,
+                created_at AS "createdAt", updated_at AS "updatedAt", expires_at AS "expiresAt"
+         FROM storage_objects WHERE id = $1 AND user_id = $2 AND status <> 'deleted'`,
+        [id, userId],
+      );
+      const row = result.rows[0];
+      return row ? {
+        ...row,
+        byteSize: toNumber(row.byteSize),
+        width: row.width == null ? undefined : toNumber(row.width),
+        height: row.height == null ? undefined : toNumber(row.height),
+        createdAt: toNumber(row.createdAt),
+        updatedAt: toNumber(row.updatedAt),
+        expiresAt: toNumber(row.expiresAt),
+      } as StorageObjectRecord : null;
+    }
+    const object = this.fileData!.storageObjects.find(item => item.id === id && item.userId === userId && item.status !== 'deleted');
+    return object ? structuredClone(object) : null;
+  }
+
+  async markStorageObjectReady(
+    userId: string,
+    id: string,
+    actual: { byteSize: number; mimeType: string; signatureMatches: boolean },
+  ): Promise<StorageObjectRecord | null> {
+    const current = await this.getStorageObject(userId, id);
+    if (!current) return null;
+    if (current.status !== 'pending' && current.status !== 'ready') {
+      throw new StorageValidationError('该图片已经绑定到资产');
+    }
+    if (actual.byteSize !== current.byteSize || actual.byteSize < 1 || actual.byteSize > MAX_ASSET_IMAGE_BYTES) {
+      throw new StorageValidationError('上传后的图片大小与申请信息不一致');
+    }
+    if (actual.mimeType !== current.mimeType) {
+      throw new StorageValidationError('上传后的图片格式与申请信息不一致');
+    }
+    if (!actual.signatureMatches) {
+      throw new StorageValidationError('文件内容不是有效的 JPG、PNG 或 WebP 图片');
+    }
+    const now = Date.now();
+    if (this.pool) {
+      await this.pool.query(
+        `UPDATE storage_objects SET status = 'ready', updated_at = $1
+         WHERE id = $2 AND user_id = $3 AND status IN ('pending', 'ready')`,
+        [now, id, userId],
+      );
+    } else {
+      const object = this.fileData!.storageObjects.find(item => item.id === id && item.userId === userId);
+      if (!object) return null;
+      object.status = 'ready';
+      object.updatedAt = now;
+      this.saveFileDB();
+    }
+    return this.getStorageObject(userId, id);
+  }
+
+  private async canonicalizeAssetImageRefs(
+    userId: string,
+    imageRefs: AssetImageReference[],
+    queryable: pg.Pool | pg.PoolClient | null = this.pool,
+  ): Promise<AssetImageReference[]> {
+    const canonical: AssetImageReference[] = [];
+    for (const reference of imageRefs) {
+      let object: StorageObjectRecord | null = null;
+      if (queryable) {
+        const result = await queryable.query(
+          `SELECT id, user_id AS "userId", object_key AS "objectKey", mime_type AS "mimeType",
+                  byte_size AS "byteSize", original_name AS "originalName", status, width, height,
+                  created_at AS "createdAt", updated_at AS "updatedAt", expires_at AS "expiresAt"
+           FROM storage_objects WHERE id = $1 AND user_id = $2 AND status IN ('ready', 'attached')`,
+          [reference.objectId, userId],
+        );
+        const row = result.rows[0];
+        if (row) object = {
+          ...row,
+          byteSize: toNumber(row.byteSize),
+          width: row.width == null ? undefined : toNumber(row.width),
+          height: row.height == null ? undefined : toNumber(row.height),
+          createdAt: toNumber(row.createdAt),
+          updatedAt: toNumber(row.updatedAt),
+          expiresAt: toNumber(row.expiresAt),
+        } as StorageObjectRecord;
+      } else {
+        object = this.fileData!.storageObjects.find(item =>
+          item.id === reference.objectId && item.userId === userId && (item.status === 'ready' || item.status === 'attached')
+        ) || null;
+      }
+      if (!object || !isUserStorageKey(userId, object.objectKey)) {
+        throw new StorageValidationError('图片对象不存在、尚未上传完成或无权访问');
+      }
+      canonical.push({
+        ...reference,
+        mimeType: object.mimeType,
+        width: object.width,
+        height: object.height,
+      });
+    }
+    return canonical;
+  }
+
+  private async markImageObjectsAttached(
+    userId: string,
+    imageRefs: AssetImageReference[],
+    queryable: pg.Pool | pg.PoolClient | null = this.pool,
+  ) {
+    const ids = [...new Set(imageRefs.map(item => item.objectId))];
+    if (ids.length === 0) return;
+    const now = Date.now();
+    if (queryable) {
+      await queryable.query(
+        `UPDATE storage_objects SET status = 'attached', updated_at = $1
+         WHERE user_id = $2 AND id = ANY($3::text[]) AND status IN ('ready', 'attached')`,
+        [now, userId, ids],
+      );
+      return;
+    }
+    for (const object of this.fileData!.storageObjects) {
+      if (object.userId === userId && ids.includes(object.id) && (object.status === 'ready' || object.status === 'attached')) {
+        object.status = 'attached';
+        object.updatedAt = now;
+      }
+    }
+  }
+
+  async getExpiredStorageObjects(limit = 100): Promise<StorageObjectRecord[]> {
+    const now = Date.now();
+    if (this.pool) {
+      const result = await this.pool.query(
+        `SELECT id, user_id AS "userId", object_key AS "objectKey", mime_type AS "mimeType",
+                byte_size AS "byteSize", original_name AS "originalName", status, width, height,
+                created_at AS "createdAt", updated_at AS "updatedAt", expires_at AS "expiresAt"
+         FROM storage_objects WHERE status IN ('pending', 'ready') AND expires_at < $1
+         ORDER BY expires_at ASC LIMIT $2`,
+        [now, limit],
+      );
+      return result.rows.map(row => ({
+        ...row,
+        byteSize: toNumber(row.byteSize),
+        width: row.width == null ? undefined : toNumber(row.width),
+        height: row.height == null ? undefined : toNumber(row.height),
+        createdAt: toNumber(row.createdAt),
+        updatedAt: toNumber(row.updatedAt),
+        expiresAt: toNumber(row.expiresAt),
+      })) as StorageObjectRecord[];
+    }
+    return this.fileData!.storageObjects
+      .filter(item => (item.status === 'pending' || item.status === 'ready') && item.expiresAt < now)
+      .slice(0, limit)
+      .map(item => structuredClone(item));
+  }
+
+  async markStorageObjectDeleted(id: string): Promise<void> {
+    const now = Date.now();
+    if (this.pool) {
+      await this.pool.query(`UPDATE storage_objects SET status = 'deleted', updated_at = $1 WHERE id = $2`, [now, id]);
+      return;
+    }
+    const object = this.fileData!.storageObjects.find(item => item.id === id);
+    if (object) {
+      object.status = 'deleted';
+      object.updatedAt = now;
+      this.saveFileDB();
+    }
   }
 
   // --- User Methods ---
@@ -868,6 +1110,7 @@ class DatabaseService {
       const client = await this.pool.connect();
       try {
         await client.query('BEGIN');
+        version.imageRefs = await this.canonicalizeAssetImageRefs(userId, input.imageRefs, client);
         await client.query(
           `INSERT INTO asset_items (id, user_id, type, name, category, tags, status, current_version, created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)`,
@@ -878,6 +1121,7 @@ class DatabaseService {
            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)`,
           [version.id, asset.id, userId, 1, version.sourceKind, JSON.stringify(version.profile), JSON.stringify(version.imageRefs), version.changeNote, now],
         );
+        await this.markImageObjectsAttached(userId, version.imageRefs, client);
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');
@@ -887,8 +1131,10 @@ class DatabaseService {
       }
       return { asset, version };
     }
+    version.imageRefs = await this.canonicalizeAssetImageRefs(userId, input.imageRefs, null);
     this.fileData!.assets.push(asset);
     this.fileData!.assetVersions.push(version);
+    await this.markImageObjectsAttached(userId, version.imageRefs, null);
     this.saveFileDB();
     return { asset, version };
   }
@@ -987,6 +1233,7 @@ class DatabaseService {
         const current = currentResult.rows[0];
         if (!current) { await client.query('ROLLBACK'); return null; }
         if (current.type !== input.type) throw new AssetValidationError('资产类型创建后不能修改');
+        const imageRefs = await this.canonicalizeAssetImageRefs(userId, input.imageRefs, client);
         const nextVersion = toNumber(current.currentVersion) + 1;
         const versionId = `asset-version-${randomUUID()}`;
         await client.query(
@@ -998,8 +1245,9 @@ class DatabaseService {
         await client.query(
           `INSERT INTO asset_versions (id, asset_id, user_id, version, source_kind, profile, image_refs, change_note, created_at)
            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)`,
-          [versionId, id, userId, nextVersion, input.sourceKind, JSON.stringify(input.profile), JSON.stringify(input.imageRefs), input.changeNote, now],
+          [versionId, id, userId, nextVersion, input.sourceKind, JSON.stringify(input.profile), JSON.stringify(imageRefs), input.changeNote, now],
         );
+        await this.markImageObjectsAttached(userId, imageRefs, client);
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');
@@ -1012,6 +1260,7 @@ class DatabaseService {
     const asset = this.fileData!.assets.find(item => item.id === id && item.userId === userId && !item.deletedAt);
     if (!asset) return null;
     if (asset.type !== input.type) throw new AssetValidationError('资产类型创建后不能修改');
+    const imageRefs = await this.canonicalizeAssetImageRefs(userId, input.imageRefs, null);
     asset.name = input.name;
     asset.category = input.category;
     asset.tags = input.tags;
@@ -1025,10 +1274,11 @@ class DatabaseService {
       version: asset.currentVersion,
       sourceKind: input.sourceKind,
       profile: input.profile,
-      imageRefs: input.imageRefs,
+      imageRefs,
       changeNote: input.changeNote,
       createdAt: now,
     });
+    await this.markImageObjectsAttached(userId, imageRefs, null);
     this.saveFileDB();
     return this.getFileAssetRecord(id, userId);
   }
@@ -1310,6 +1560,25 @@ class DatabaseService {
 
 const db = new DatabaseService();
 
+let storageCleanupRunning = false;
+const cleanupExpiredStorageObjects = async () => {
+  if (storageCleanupRunning || !getBucketStatus().configured) return;
+  storageCleanupRunning = true;
+  try {
+    const expired = await db.getExpiredStorageObjects(100);
+    for (const object of expired) {
+      try {
+        await deleteStoredObject(object.objectKey);
+        await db.markStorageObjectDeleted(object.id);
+      } catch (error) {
+        console.error('Failed to cleanup abandoned storage object:', object.id, error);
+      }
+    }
+  } finally {
+    storageCleanupRunning = false;
+  }
+};
+
 app.use(express.json({ limit: '20mb' }));
 app.use(cookieParser());
 const allowedOrigins = (process.env.CORS_ORIGINS || "")
@@ -1457,7 +1726,7 @@ app.put("/api/admin/image-analysis-templates", authenticateToken, isAdmin, (req:
 // --- API Routes (REGISTERED FIRST) ---
 
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", dbInitialized, dbMode: db.getMode() });
+  res.json({ status: "ok", dbInitialized, dbMode: db.getMode(), objectStorage: getBucketStatus() });
 });
 
 app.get("/api/test", async (req, res) => {
@@ -1684,10 +1953,72 @@ app.delete("/api/user/history/:id", authenticateToken, async (req: AuthRequest, 
 });
 
 const handleAssetApiError = (res: Response, error: unknown) => {
-  if (error instanceof AssetValidationError) return res.status(400).json({ message: error.message });
+  if (error instanceof AssetValidationError || error instanceof StorageValidationError) {
+    return res.status(400).json({ message: error.message });
+  }
   console.error('Asset library API failed:', error);
   return res.status(500).json({ message: '资产库操作失败，请稍后重试' });
 };
+
+app.get('/api/storage/status', authenticateToken, (_req: AuthRequest, res: Response) => {
+  res.json(getBucketStatus());
+});
+
+app.post('/api/storage/uploads/presign', authenticateToken, async (req: AuthRequest, res: Response) => {
+  if (!getBucketStatus().configured) return res.status(503).json({ message: '对象存储尚未配置' });
+  let object: StorageObjectRecord | null = null;
+  try {
+    const upload = normalizeUploadRequest(req.body);
+    object = await db.createStorageObject(req.user!.id, upload);
+    const uploadUrl = await createUploadUrl(object.objectKey, object.mimeType, object.byteSize);
+    res.status(201).json({
+      objectId: object.id,
+      uploadUrl,
+      expiresIn: 10 * 60,
+      headers: { 'Content-Type': object.mimeType },
+    });
+  } catch (error) {
+    if (object) await db.markStorageObjectDeleted(object.id).catch(() => undefined);
+    handleAssetApiError(res, error);
+  }
+});
+
+app.post('/api/storage/uploads/:id/complete', authenticateToken, async (req: AuthRequest, res: Response) => {
+  let object: StorageObjectRecord | null = null;
+  try {
+    object = await db.getStorageObject(req.user!.id, String(req.params.id));
+    if (!object || !isUserStorageKey(req.user!.id, object.objectKey)) {
+      return res.status(404).json({ message: '上传任务不存在' });
+    }
+    const actual = await inspectStoredObject(object.objectKey, object.mimeType);
+    const completed = await db.markStorageObjectReady(req.user!.id, object.id, actual);
+    if (!completed) return res.status(404).json({ message: '上传任务不存在' });
+    res.json({ object: completed, previewUrl: `/api/storage/objects/${completed.id}/view` });
+  } catch (error) {
+    if (object && error instanceof StorageValidationError) {
+      try {
+        await deleteStoredObject(object.objectKey);
+        await db.markStorageObjectDeleted(object.id);
+      } catch (cleanupError) {
+        console.error('Failed to remove rejected storage object:', object.id, cleanupError);
+      }
+    }
+    handleAssetApiError(res, error);
+  }
+});
+
+app.get('/api/storage/objects/:id/view', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const object = await db.getStorageObject(req.user!.id, String(req.params.id));
+    if (!object || object.status === 'pending' || !isUserStorageKey(req.user!.id, object.objectKey)) {
+      return res.status(404).json({ message: '图片不存在' });
+    }
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.redirect(302, await createReadUrl(object.objectKey));
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
 
 app.get('/api/assets', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
@@ -2427,6 +2758,9 @@ async function startServer() {
   try {
     await db.init();
     dbInitialized = true;
+    void cleanupExpiredStorageObjects();
+    const storageCleanupTimer = setInterval(() => void cleanupExpiredStorageObjects(), 60 * 60 * 1000);
+    storageCleanupTimer.unref();
   } catch (err) {
     console.error("Critical: Database initialization failed:", err);
     dbInitialized = false;

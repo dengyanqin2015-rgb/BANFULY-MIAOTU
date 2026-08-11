@@ -57,7 +57,8 @@ export enum AppStep {
   SINGLE_TOOL = 7,
   DETAIL_ASSISTANT = 8,
   FULL_PLAN = 9,
-  WORKFLOW = 10
+  WORKFLOW = 10,
+  ASSET_LIBRARY = 11
 }
 
 export enum SingleToolMode {

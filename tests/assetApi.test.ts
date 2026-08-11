@@ -90,15 +90,7 @@ const assetPayload = (type: 'visual_system' | 'scene' | 'material' | 'model', na
     variableFields: ['商品'],
     attributes: { tone: 'clean' },
   },
-  imageRefs: [{
-    id: `${type}-source`,
-    role: 'source',
-    storageKey: `users/test/${type}.png`,
-    mimeType: 'image/png',
-    width: 1024,
-    height: 1024,
-    sortOrder: 0,
-  }],
+  imageRefs: [],
   changeNote: '初始版本',
 });
 
@@ -114,9 +106,21 @@ try {
 
   const anonymous = await request('/api/assets');
   assert.equal(anonymous.status, 401);
+  const anonymousStorage = await request('/api/storage/status');
+  assert.equal(anonymousStorage.status, 401);
 
   const tokenA = await registerAndLogin('asset-user-a');
   const tokenB = await registerAndLogin('asset-user-b');
+
+  const storageStatus = await request<{ configured: boolean; provider: string }>('/api/storage/status', { token: tokenA });
+  assert.equal(storageStatus.status, 200);
+  assert.deepEqual(storageStatus.body, { configured: false, provider: 'none' });
+  const unavailableUpload = await request('/api/storage/uploads/presign', {
+    method: 'POST',
+    token: tokenA,
+    body: JSON.stringify({ fileName: 'sample.png', mimeType: 'image/png', byteSize: 1024 }),
+  });
+  assert.equal(unavailableUpload.status, 503);
 
   const visual = await request<AssetRecord>('/api/assets', {
     method: 'POST', token: tokenA, body: JSON.stringify(assetPayload('visual_system', '清透海岸VI')),
@@ -222,15 +226,15 @@ try {
   const baseVersions = await request<CategoryBaseVersion[]>(`/api/category-bases/${createdBase.body.base.id}/versions`, { token: tokenA });
   assert.deepEqual(baseVersions.body.map(version => version.version), [2, 1]);
 
-  const base64Rejected = await request('/api/assets', {
+  const missingObjectRejected = await request('/api/assets', {
     method: 'POST',
     token: tokenA,
     body: JSON.stringify({
-      ...assetPayload('material', 'Base64违规样本'),
-      imageRefs: [{ role: 'source', url: 'data:image/png;base64,AAAA' }],
+      ...assetPayload('material', '缺少对象样本'),
+      imageRefs: [{ role: 'source', objectId: '' }],
     }),
   });
-  assert.equal(base64Rejected.status, 400);
+  assert.equal(missingObjectRejected.status, 400);
 
   const deleted = await request(`/api/assets/${scene.body.asset.id}`, { method: 'DELETE', token: tokenA });
   assert.equal(deleted.status, 200);

@@ -24,9 +24,8 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 export interface AssetImageReference {
   id: string;
   role: AssetImageRole;
-  storageKey?: string;
+  objectId: string;
   url?: string;
-  thumbnailUrl?: string;
   mimeType?: string;
   width?: number;
   height?: number;
@@ -203,14 +202,6 @@ const optionalPositiveInteger = (value: unknown): number | undefined => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 };
 
-const optionalHttpUrl = (value: unknown, label: string): string | undefined => {
-  const normalized = text(value, 2048);
-  if (!normalized) return undefined;
-  if (/^data:/i.test(normalized)) throw new AssetValidationError(`${label}不能保存Base64图片`);
-  if (!/^https?:\/\//i.test(normalized)) throw new AssetValidationError(`${label}必须是HTTP(S)地址`);
-  return normalized;
-};
-
 export const isAssetType = (value: unknown): value is AssetType =>
   ASSET_TYPES.includes(value as AssetType);
 
@@ -225,17 +216,11 @@ const normalizeImageRefs = (value: unknown): AssetImageReference[] => {
     const role = ASSET_IMAGE_ROLES.includes(source.role as AssetImageRole)
       ? source.role as AssetImageRole
       : 'reference';
-    const storageKey = text(source.storageKey, 512) || undefined;
-    if (storageKey && /^data:/i.test(storageKey)) throw new AssetValidationError('对象存储键不能包含Base64图片');
-    const url = optionalHttpUrl(source.url, '图片地址');
-    const thumbnailUrl = optionalHttpUrl(source.thumbnailUrl, '缩略图地址');
-    if (!storageKey && !url) throw new AssetValidationError(`第${index + 1}张图片缺少对象存储键或地址`);
+    const objectId = requireText(source.objectId, `第${index + 1}张图片对象ID`, 120);
     return {
       id: text(source.id, 100) || `image-${index + 1}`,
       role,
-      storageKey,
-      url,
-      thumbnailUrl,
+      objectId,
       mimeType: text(source.mimeType, 100) || undefined,
       width: optionalPositiveInteger(source.width),
       height: optionalPositiveInteger(source.height),

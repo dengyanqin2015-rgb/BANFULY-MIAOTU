@@ -20,10 +20,14 @@
     "test:stats": "tsx tests/generationStats.test.ts",
     "test:assets": "tsx tests/assetLibrary.test.ts",
     "test:asset-api": "tsx tests/assetApi.test.ts",
-    "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run test:assets && npm run test:asset-api && npm run typecheck && npm run lint && npm run build",
+    "test:storage": "tsx tests/storageObjects.test.ts",
+    "storage:cors": "tsx scripts/configureBucketCors.ts",
+    "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run test:assets && npm run test:asset-api && npm run test:storage && npm run typecheck && npm run lint && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1107.0",
+    "@aws-sdk/s3-request-presigner": "^3.1107.0",
     "@fontpkg/alibaba-pu-hui-ti-3-0": "^3.1.2",
     "@fontsource-variable/noto-sans-sc": "^5.3.0",
     "@fontsource-variable/noto-serif-sc": "^5.3.0",

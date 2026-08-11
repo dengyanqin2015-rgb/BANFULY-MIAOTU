@@ -25,8 +25,7 @@ const visualSystem = normalizeAssetWriteInput({
   imageRefs: [{
     id: 'source-1',
     role: 'source',
-    storageKey: 'users/u1/assets/a1/source.webp',
-    thumbnailUrl: 'https://cdn.example.com/a1/thumb.webp',
+    objectId: 'storage-object-1',
     width: 1200,
     height: 1600,
   }],
@@ -42,9 +41,9 @@ assert.throws(
   () => normalizeAssetWriteInput({
     type: 'visual_system',
     name: '错误图片',
-    imageRefs: [{ role: 'source', url: 'data:image/png;base64,abc' }],
+    imageRefs: [{ role: 'source', objectId: '' }],
   }),
-  (error: unknown) => error instanceof AssetValidationError && /Base64/.test(error.message),
+  (error: unknown) => error instanceof AssetValidationError && /对象ID不能为空/.test(error.message),
 );
 
 assert.throws(
