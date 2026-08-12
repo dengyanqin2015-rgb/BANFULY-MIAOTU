@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
-import { Send, ChevronDown, Key, Image as ImageIcon, X, Boxes, Loader2, SlidersHorizontal, Library, Palette, Mountain, Layers3, UserRound, Type } from 'lucide-react';
+import { Send, ChevronDown, Key, Image as ImageIcon, X, Boxes, Loader2, SlidersHorizontal, Library, Palette, Mountain, Layers3, UserRound, Type, LockKeyhole, Unlink, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { cn } from '../lib/utils';
@@ -185,8 +185,11 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const [isSubmitLocked, setIsSubmitLocked] = useState(false);
   const [categoryBases, setCategoryBases] = useState<CategoryBaseRecord[]>([]);
   const [productionMaterials, setProductionMaterials] = useState<ProductionMaterialSelection>({ overrides: {} });
+  const [materialsEnabled, setMaterialsEnabled] = useState(false);
+  const [materialMode, setMaterialMode] = useState<'base' | 'flexible'>('base');
   const [optionPage, setOptionPage] = useState<'model' | 'materials'>('model');
   const [openMaterialMenu, setOpenMaterialMenu] = useState<'base' | CategoryBaseSlotKey | null>(null);
+  const [openParameterMenu, setOpenParameterMenu] = useState<'model' | 'quality' | 'size' | 'ratio' | null>(null);
   const [basesLoading, setBasesLoading] = useState(false);
   const [basesLoaded, setBasesLoaded] = useState(false);
   const [basesError, setBasesError] = useState('');
@@ -251,9 +254,11 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const selectCategoryBase = (record: CategoryBaseRecord | null) => {
     setOpenMaterialMenu(null);
     if (!record) {
-      setProductionMaterials(current => ({ overrides: current.overrides }));
+      setProductionMaterials({ overrides: {} });
       return;
     }
+    setMaterialsEnabled(true);
+    setMaterialMode('base');
     setProductionMaterials({ base: { id: record.base.id, versionId: record.version.id, name: record.base.name, version: record.version.version }, overrides: {} });
     const defaults = record.version.defaults;
     if (MODELS.some(item => item.id === defaults.modelId)) setModel(defaults.modelId as ImageModel);
@@ -271,8 +276,22 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       version: record.version.version,
       type: record.asset.type,
     } : null;
-    setProductionMaterials(current => ({ ...current, overrides: { ...current.overrides, [key]: selected } }));
+    setMaterialsEnabled(true);
+    setMaterialMode('flexible');
+    setProductionMaterials(current => {
+      const overrides = { ...current.overrides };
+      if (selected) overrides[key] = selected;
+      else delete overrides[key];
+      return { overrides };
+    });
     setOpenMaterialMenu(null);
+  };
+
+  const switchMaterialMode = (mode: 'base' | 'flexible') => {
+    if (mode === materialMode) return;
+    setMaterialMode(mode);
+    setOpenMaterialMenu(null);
+    setProductionMaterials({ overrides: {} });
   };
 
   const assetLookup = new Map(Object.values(assetsByType).flat().map(record => [record.asset.id, record]));
@@ -325,6 +344,8 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       setImageSize(is);
       setModel(m);
       setProductionMaterials(selectedMaterials || { overrides: {} });
+      setMaterialsEnabled(Boolean(selectedMaterials?.base || Object.keys(selectedMaterials?.overrides || {}).length));
+      setMaterialMode(selectedMaterials?.base ? 'base' : 'flexible');
       if (imgs) {
         uploadQueueRef.current = uploadQueueRef.current.then(async () => {
         const next = imgs.map(img => {
@@ -504,7 +525,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       data: img.data, 
       mimeType: img.mimeType,
       sourceNodeId: img.sourceNodeId
-    })), undefined, (productionMaterials.base || Object.keys(productionMaterials.overrides).length) ? productionMaterials : undefined);
+    })), undefined, materialsEnabled && (productionMaterials.base || Object.keys(productionMaterials.overrides).length) ? productionMaterials : undefined);
     setPrompt('');
     setImages([]);
     uploadUsageRef.current = { count: 0, originalBytes: 0, analysisBytes: 0 };
@@ -646,144 +667,104 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                   </div>
 
                   {optionPage === 'materials' && (
-                    <div className="space-y-2.5">
-                      <MaterialPicker
-                        label="类目基座" caption="一键带出整套生产资料" icon={Boxes} color="text-orange-400"
-                        selected={productionMaterials.base ? `${productionMaterials.base.name} · V${productionMaterials.base.version}` : undefined}
-                        open={openMaterialMenu === 'base'} onToggle={() => setOpenMaterialMenu(value => value === 'base' ? null : 'base')}
-                        onClear={() => selectCategoryBase(null)}
-                      >
-                        {categoryBases.map(record => <PickerOption key={record.base.id} title={record.base.name} meta={`${record.base.category || '未分类'} · V${record.version.version}`} onClick={() => selectCategoryBase(record)} />)}
-                      </MaterialPicker>
-                      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                        {MATERIAL_SLOTS.map(slot => {
-                          const selected = resolveMaterial(slot.key);
-                          return (
-                            <MaterialPicker
-                              key={slot.key} label={slot.label} caption={slot.caption} icon={slot.icon} color={slot.color}
-                              selected={selected ? `${selected.name} · V${selected.version}` : undefined}
-                              open={openMaterialMenu === slot.key} onToggle={() => setOpenMaterialMenu(value => value === slot.key ? null : slot.key)}
-                              onClear={() => selectMaterial(slot.key, null)} compact
-                            >
-                              {assetsByType[slot.type].map(record => <PickerOption key={record.asset.id} title={record.asset.name} meta={`${record.asset.category || '未分类'} · V${record.version.version}`} onClick={() => selectMaterial(slot.key, record)} />)}
-                            </MaterialPicker>
-                          );
-                        })}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-3 px-1">
+                        <label className="flex items-center gap-2 text-[10px] font-black text-gray-200">
+                          <input
+                            type="checkbox"
+                            checked={materialsEnabled}
+                            onChange={event => { setMaterialsEnabled(event.target.checked); setOpenMaterialMenu(null); }}
+                            className="peer sr-only"
+                          />
+                          <span className="relative h-5 w-9 rounded-full bg-[#3a3a3d] transition peer-checked:bg-red-600 after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-gray-300 after:transition-transform peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+                          使用生产资料
+                        </label>
+                        <span className="text-[8px] text-gray-600">{materialsEnabled ? '结构化资料随本次任务发送' : '已关闭 · 原始模型生图'}</span>
                       </div>
+
+                      {!materialsEnabled ? (
+                        <div className="flex min-h-[58px] items-center justify-between rounded-lg border border-dashed border-[#3a3a3d] bg-[#181818] px-3 py-2.5">
+                          <div><div className="text-[10px] font-black text-gray-300">原始模型生图</div><div className="mt-1 text-[8px] text-gray-600">仅发送当前提示词和手动引用图，不读取任何生产资料。</div></div>
+                          <Zap size={15} className="text-gray-600" />
+                        </div>
+                      ) : (
+                        <>
+                          <div className="grid grid-cols-2 gap-1 rounded-lg bg-[#111] p-1">
+                            <button type="button" onClick={() => switchMaterialMode('base')} className={cn('rounded-md border px-3 py-1.5 text-[10px] font-black transition', materialMode === 'base' ? 'border-[#454549] bg-[#29292c] text-white' : 'border-transparent text-gray-600 hover:text-white')}>类目基座</button>
+                            <button type="button" onClick={() => switchMaterialMode('flexible')} className={cn('rounded-md border px-3 py-1.5 text-[10px] font-black transition', materialMode === 'flexible' ? 'border-[#454549] bg-[#29292c] text-white' : 'border-transparent text-gray-600 hover:text-white')}>灵活配置</button>
+                          </div>
+
+                          {materialMode === 'base' ? (
+                            <>
+                              <MaterialPicker
+                                label="选择类目基座" caption="整套加载，配置不可临时覆盖" icon={Boxes} color="text-orange-400"
+                                selected={productionMaterials.base ? `${productionMaterials.base.name} · V${productionMaterials.base.version}` : undefined}
+                                open={openMaterialMenu === 'base'} onToggle={() => setOpenMaterialMenu(value => value === 'base' ? null : 'base')}
+                                onClear={() => selectCategoryBase(null)}
+                              >
+                                {categoryBases.map(record => <PickerOption key={record.base.id} title={record.base.name} meta={`${record.base.category || '未分类'} · V${record.version.version}`} onClick={() => selectCategoryBase(record)} />)}
+                              </MaterialPicker>
+                              {selectedBaseRecord && (
+                                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-5">
+                                  {MATERIAL_SLOTS.flatMap(slot => {
+                                    const reference = selectedBaseRecord.version.components[slot.key];
+                                    if (!reference) return [];
+                                    const selected = resolveMaterial(slot.key);
+                                    const Icon = slot.icon;
+                                    return [<div key={slot.key} className="min-w-0 rounded-lg border border-[#303034] bg-[#1d1d1f] px-2 py-1.5"><div className="flex items-center gap-1 text-[8px] font-black text-gray-400"><Icon size={10} className={slot.color} />{slot.label}</div><div className="mt-1 truncate text-[8px] text-gray-600">{selected?.name || `固定版本 V${reference.version}`}</div></div>];
+                                  })}
+                                </div>
+                              )}
+                              <div className="flex items-start gap-1.5 rounded-lg bg-[#121213] px-2.5 py-2 text-[8px] leading-4 text-gray-600"><LockKeyhole size={11} className="mt-0.5 shrink-0" />选择基座后，仅使用并展示基座实际配置；需要自由组合时，请切换到灵活配置。</div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                                {MATERIAL_SLOTS.map(slot => {
+                                  const selected = resolveMaterial(slot.key);
+                                  return (
+                                    <MaterialPicker
+                                      key={slot.key} label={slot.label} caption={slot.caption} icon={slot.icon} color={slot.color}
+                                      selected={selected ? `${selected.name} · V${selected.version}` : undefined}
+                                      open={openMaterialMenu === slot.key} onToggle={() => setOpenMaterialMenu(value => value === slot.key ? null : slot.key)}
+                                      onClear={() => selectMaterial(slot.key, null)} compact
+                                    >
+                                      {assetsByType[slot.type].map(record => <PickerOption key={record.asset.id} title={record.asset.name} meta={`${record.asset.category || '未分类'} · V${record.version.version}`} onClick={() => selectMaterial(slot.key, record)} />)}
+                                    </MaterialPicker>
+                                  );
+                                })}
+                              </div>
+                              <div className="flex items-start gap-1.5 rounded-lg bg-[#121213] px-2.5 py-2 text-[8px] leading-4 text-gray-600"><Unlink size={11} className="mt-0.5 shrink-0" />灵活配置不使用类目基座；仅发送已选择的模块，未选择项不参与。</div>
+                            </>
+                          )}
+                        </>
+                      )}
                       {basesLoading && <div className="flex items-center gap-2 px-1 text-[9px] text-gray-500"><Loader2 size={11} className="animate-spin" />正在读取生产资料</div>}
                       {basesError && <div className="px-1 text-[9px] text-red-400">{basesError}</div>}
-                      <div className="rounded-lg border border-[#303030] bg-[#151515] px-2.5 py-2 text-[8px] leading-4 text-gray-500">基座负责默认组合；单独选择的资料会覆盖对应槽位。未选择任何资料时，保持原生图逻辑不变。</div>
                     </div>
                   )}
 
-                  {optionPage === 'model' && <>
-
-                  {/* Engine Selection */}
-                  <div>
-                    <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">渲染引擎 / ENGINE</div>
-                    <div className="grid grid-cols-4 gap-1.5">
-                      {MODELS.map((m) => (
-                        <button
-                          key={m.id}
-                          type="button"
-                          onClick={() => setModel(m.id)}
-                          className={cn(
-                            "flex flex-col items-start px-2.5 py-1.5 rounded-lg transition-all text-left relative overflow-hidden min-h-[56px]",
-                            model === m.id 
-                              ? "bg-white text-black shadow-[0_6px_18px_rgba(255,255,255,0.08)] ring-1 ring-white/70"
-                              : "bg-[#222] text-gray-400 hover:bg-[#2a2a2a]"
-                          )}
-                        >
-                          <div className="text-xs font-black tracking-tight leading-tight">{m.name} {m.version}</div>
-                          <div className="text-[7px] font-bold opacity-60 mb-1 uppercase tracking-wider">{m.desc}</div>
-                          <div className={cn(
-                            "text-[10px] font-bold",
-                            model === m.id ? "text-red-600" : "text-red-500"
-                          )}>{calculatePrice(m.id, imageSize)}/图</div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {model === "gpt-image-2" && (
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className="text-[9px] font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap px-1">
-                        GPT 精细度
-                      </div>
-                      <div className="grid grid-cols-3 gap-1.5 flex-1">
-                        {GPT_QUALITY_OPTIONS.map((option) => (
-                          <button
-                            key={option.id}
-                            type="button"
-                            onClick={() => setGptQuality(option.id)}
-                            className={cn(
-                              "flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg transition-all text-left min-h-[34px]",
-                              gptQuality === option.id
-                                ? "bg-white text-black ring-1 ring-white/70"
-                                : "bg-[#222] text-gray-400 hover:bg-[#2a2a2a]"
-                            )}
-                        >
-                          <span className="text-[11px] font-black whitespace-nowrap">{option.label}</span>
-                          <span className={cn(
-                            "text-[8px] font-black whitespace-nowrap",
-                            gptQuality === option.id ? "text-red-600" : "text-red-500"
-                          )}>
-                            ¥{estimateGptImagePrice(imageSize, aspectRatio, option.id).cny.toFixed(2)}
-                          </span>
-                        </button>
-                        ))}
-                      </div>
+                  {optionPage === 'model' && (
+                    <div className={cn('grid gap-1.5', model === 'gpt-image-2' ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3')}>
+                      <ParameterPicker label="模型" value={`${MODELS.find(item => item.id === model)?.name} ${MODELS.find(item => item.id === model)?.version}`} meta={`${MODELS.find(item => item.id === model)?.desc} · ${calculatePrice(model, imageSize)}/图`} open={openParameterMenu === 'model'} onToggle={() => setOpenParameterMenu(value => value === 'model' ? null : 'model')}>
+                        {MODELS.map(item => <PickerOption key={item.id} title={`${item.name} ${item.version}`} meta={`${item.desc} · ${calculatePrice(item.id, imageSize)}/图`} onClick={() => { setModel(item.id); setOpenParameterMenu(null); }} />)}
+                      </ParameterPicker>
+                      {model === 'gpt-image-2' && (
+                        <ParameterPicker label="精细度" value={GPT_QUALITY_OPTIONS.find(item => item.id === gptQuality)?.label || '快速'} meta={`预计 ¥${estimateGptImagePrice(imageSize, aspectRatio, gptQuality).cny.toFixed(2)}`} open={openParameterMenu === 'quality'} onToggle={() => setOpenParameterMenu(value => value === 'quality' ? null : 'quality')}>
+                          {GPT_QUALITY_OPTIONS.map(item => <PickerOption key={item.id} title={item.label} meta={`${item.description} · ¥${estimateGptImagePrice(imageSize, aspectRatio, item.id).cny.toFixed(2)}`} onClick={() => { setGptQuality(item.id); setOpenParameterMenu(null); }} />)}
+                        </ParameterPicker>
+                      )}
+                      <ParameterPicker label="精度" value={IMAGE_SIZES.find(item => item.id === imageSize)?.label || imageSize} meta={calculatePrice(model, imageSize)} open={openParameterMenu === 'size'} onToggle={() => setOpenParameterMenu(value => value === 'size' ? null : 'size')}>
+                        {IMAGE_SIZES.filter(size => {
+                          const lookupId = size.id === '512px' ? '0.5K' : size.id;
+                          return !!MODEL_COSTS[model].resolutions[lookupId];
+                        }).map(item => <PickerOption key={item.id} title={item.label} meta={calculatePrice(model, item.id)} onClick={() => { setImageSize(item.id); setOpenParameterMenu(null); }} />)}
+                      </ParameterPicker>
+                      <ParameterPicker label="画面比例" value={aspectRatio} meta={`${availableAspectRatios.length} 种可选比例`} open={openParameterMenu === 'ratio'} onToggle={() => setOpenParameterMenu(value => value === 'ratio' ? null : 'ratio')}>
+                        <div className="grid grid-cols-4 gap-1 p-1">{availableAspectRatios.map(ratio => <button key={ratio} type="button" onClick={() => { setAspectRatio(ratio); setOpenParameterMenu(null); }} className={cn('rounded-md px-2 py-1.5 text-[9px] font-black transition', aspectRatio === ratio ? 'bg-white text-black' : 'bg-[#242424] text-gray-400 hover:text-white')}>{ratio}</button>)}</div>
+                      </ParameterPicker>
                     </div>
                   )}
-
-                  {/* Resolution Selection */}
-                  <div>
-                    <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">渲染精度 / RESOLUTION</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {IMAGE_SIZES.filter(size => {
-                        const lookupId = size.id === "512px" ? "0.5K" : size.id;
-                        return !!MODEL_COSTS[model].resolutions[lookupId];
-                      }).map((size) => (
-                        <button
-                          key={size.id}
-                          type="button"
-                          onClick={() => setImageSize(size.id)}
-                          className={cn(
-                            "flex items-baseline gap-1 px-3 py-1.5 rounded-lg transition-all",
-                            imageSize === size.id 
-                              ? "bg-white text-black ring-1 ring-white/70"
-                              : "bg-[#222] text-gray-400 hover:bg-[#2a2a2a]"
-                          )}
-                        >
-                          <span className="text-xs font-black">{size.label}</span>
-                          <span className="text-[8px] font-bold opacity-60">{calculatePrice(model, size.id)}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Aspect Ratio Selection */}
-                  <div>
-                    <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">构图比例 / ASPECT RATIO</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {availableAspectRatios.map((ratio) => (
-                        <button
-                          key={ratio}
-                          type="button"
-                          onClick={() => setAspectRatio(ratio)}
-                          className={cn(
-                            "px-3 py-1.5 rounded-lg text-xs font-black transition-all",
-                            aspectRatio === ratio 
-                              ? "bg-white text-black ring-1 ring-white/70"
-                              : "bg-[#222] text-gray-400 hover:bg-[#2a2a2a]"
-                          )}
-                        >
-                          {ratio}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  </>}
                 </div>
               </motion.div>
             )}
@@ -795,6 +776,23 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
 });
 
 GenerationBar.displayName = 'GenerationBar';
+
+const ParameterPicker: React.FC<{
+  label: string;
+  value: string;
+  meta: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}> = ({ label, value, meta, open, onToggle, children }) => (
+  <div className="relative min-w-0">
+    <button type="button" onClick={onToggle} className="flex min-h-[52px] w-full items-center gap-2 rounded-lg border border-[#323236] bg-[#202023] px-2.5 py-2 text-left transition hover:bg-[#29292c]">
+      <span className="min-w-0 flex-1"><span className="block text-[8px] font-bold uppercase tracking-wider text-gray-600">{label}</span><span className="mt-0.5 block truncate text-[11px] font-black text-gray-100">{value}</span><span className="block truncate text-[7px] text-gray-600">{meta}</span></span>
+      <ChevronDown size={11} className={cn('shrink-0 text-gray-600 transition-transform', open && 'rotate-180')} />
+    </button>
+    <AnimatePresence>{open && <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} className="absolute z-50 left-0 right-0 mt-1 max-h-52 min-w-[150px] overflow-y-auto rounded-lg border border-[#3b3b3b] bg-[#181818] p-1 shadow-2xl">{children}</motion.div>}</AnimatePresence>
+  </div>
+);
 
 const MaterialPicker: React.FC<{
   label: string;
