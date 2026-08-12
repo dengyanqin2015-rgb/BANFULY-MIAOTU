@@ -189,7 +189,6 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const [materialMode, setMaterialMode] = useState<'base' | 'flexible'>('base');
   const [optionPage, setOptionPage] = useState<'model' | 'materials'>('model');
   const [openMaterialMenu, setOpenMaterialMenu] = useState<'base' | CategoryBaseSlotKey | null>(null);
-  const [openParameterMenu, setOpenParameterMenu] = useState<'model' | 'quality' | 'size' | 'ratio' | null>(null);
   const [basesLoading, setBasesLoading] = useState(false);
   const [basesLoaded, setBasesLoaded] = useState(false);
   const [basesError, setBasesError] = useState('');
@@ -569,7 +568,51 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
         )}
       </AnimatePresence>
       
-      <div className="bg-[#1a1a1a]/94 backdrop-blur-xl border border-[#333] rounded-xl p-1.5 shadow-2xl">
+      <div className="relative bg-[#1a1a1a]/94 backdrop-blur-xl border border-[#333] rounded-xl p-1.5 shadow-2xl">
+        <AnimatePresence>
+          {showOptions && (
+            <motion.div
+              initial={{ opacity: 0, x: -4 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -4 }}
+              className="absolute left-full top-[62px] z-20 ml-1 flex flex-col gap-1"
+              aria-label="参数面板分页"
+            >
+              <button
+                type="button"
+                title="模型参数"
+                aria-label="模型参数"
+                aria-pressed={optionPage === 'model'}
+                onClick={() => { setOptionPage('model'); setOpenMaterialMenu(null); }}
+                className={cn(
+                  'flex h-[72px] w-8 flex-col items-center justify-center gap-1 rounded-r-lg border border-l-0 text-[9px] font-black shadow-lg transition-colors',
+                  optionPage === 'model'
+                    ? 'border-red-500/80 bg-red-600 text-white'
+                    : 'border-[#3a3a3a] bg-[#202020] text-gray-500 hover:bg-[#292929] hover:text-white'
+                )}
+              >
+                <SlidersHorizontal size={12} />
+                <span className="leading-3">参数</span>
+              </button>
+              <button
+                type="button"
+                title="生产资料"
+                aria-label="生产资料"
+                aria-pressed={optionPage === 'materials'}
+                onClick={() => { setOptionPage('materials'); setOpenMaterialMenu(null); }}
+                className={cn(
+                  'flex h-[72px] w-8 flex-col items-center justify-center gap-1 rounded-r-lg border border-l-0 text-[9px] font-black shadow-lg transition-colors',
+                  optionPage === 'materials'
+                    ? 'border-red-500/80 bg-red-600 text-white'
+                    : 'border-[#3a3a3a] bg-[#202020] text-gray-500 hover:bg-[#292929] hover:text-white'
+                )}
+              >
+                <Library size={12} />
+                <span className="leading-3">资料</span>
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
         <form onSubmit={handleSubmit} className="flex flex-col">
           <div className="flex items-center gap-2">
             <input
@@ -661,11 +704,6 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
             className="overflow-hidden"
               >
                 <div className="mt-1.5 space-y-2.5 border-t border-[#333] pt-2 pb-0.5">
-                  <div className="grid grid-cols-2 gap-1 rounded-lg bg-[#111] p-1">
-                    <button type="button" onClick={() => setOptionPage('model')} className={cn('flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[10px] font-black transition', optionPage === 'model' ? 'bg-white text-black' : 'text-gray-500 hover:text-white')}><SlidersHorizontal size={12} />模型参数</button>
-                    <button type="button" onClick={() => setOptionPage('materials')} className={cn('flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[10px] font-black transition', optionPage === 'materials' ? 'bg-white text-black' : 'text-gray-500 hover:text-white')}><Library size={12} />生产资料</button>
-                  </div>
-
                   {optionPage === 'materials' && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between gap-3 px-1">
@@ -744,27 +782,104 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                     </div>
                   )}
 
-                  {optionPage === 'model' && (
-                    <div className={cn('grid gap-1.5', model === 'gpt-image-2' ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3')}>
-                      <ParameterPicker label="模型" value={`${MODELS.find(item => item.id === model)?.name} ${MODELS.find(item => item.id === model)?.version}`} meta={`${MODELS.find(item => item.id === model)?.desc} · ${calculatePrice(model, imageSize)}/图`} open={openParameterMenu === 'model'} onToggle={() => setOpenParameterMenu(value => value === 'model' ? null : 'model')}>
-                        {MODELS.map(item => <PickerOption key={item.id} title={`${item.name} ${item.version}`} meta={`${item.desc} · ${calculatePrice(item.id, imageSize)}/图`} onClick={() => { setModel(item.id); setOpenParameterMenu(null); }} />)}
-                      </ParameterPicker>
-                      {model === 'gpt-image-2' && (
-                        <ParameterPicker label="精细度" value={GPT_QUALITY_OPTIONS.find(item => item.id === gptQuality)?.label || '快速'} meta={`预计 ¥${estimateGptImagePrice(imageSize, aspectRatio, gptQuality).cny.toFixed(2)}`} open={openParameterMenu === 'quality'} onToggle={() => setOpenParameterMenu(value => value === 'quality' ? null : 'quality')}>
-                          {GPT_QUALITY_OPTIONS.map(item => <PickerOption key={item.id} title={item.label} meta={`${item.description} · ¥${estimateGptImagePrice(imageSize, aspectRatio, item.id).cny.toFixed(2)}`} onClick={() => { setGptQuality(item.id); setOpenParameterMenu(null); }} />)}
-                        </ParameterPicker>
-                      )}
-                      <ParameterPicker label="精度" value={IMAGE_SIZES.find(item => item.id === imageSize)?.label || imageSize} meta={calculatePrice(model, imageSize)} open={openParameterMenu === 'size'} onToggle={() => setOpenParameterMenu(value => value === 'size' ? null : 'size')}>
+                  {optionPage === 'model' && <>
+                    <div>
+                      <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">渲染引擎 / ENGINE</div>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {MODELS.map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => setModel(item.id)}
+                            className={cn(
+                              'flex flex-col items-start px-2.5 py-1.5 rounded-lg transition-all text-left relative overflow-hidden min-h-[56px]',
+                              model === item.id
+                                ? 'bg-white text-black shadow-[0_6px_18px_rgba(255,255,255,0.08)] ring-1 ring-white/70'
+                                : 'bg-[#222] text-gray-400 hover:bg-[#2a2a2a]'
+                            )}
+                          >
+                            <div className="text-xs font-black tracking-tight leading-tight">{item.name} {item.version}</div>
+                            <div className="text-[7px] font-bold opacity-60 mb-1 uppercase tracking-wider">{item.desc}</div>
+                            <div className={cn('text-[10px] font-bold', model === item.id ? 'text-red-600' : 'text-red-500')}>
+                              {calculatePrice(item.id, imageSize)}/图
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {model === 'gpt-image-2' && (
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="text-[9px] font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap px-1">GPT 精细度</div>
+                        <div className="grid grid-cols-3 gap-1.5 flex-1">
+                          {GPT_QUALITY_OPTIONS.map((option) => (
+                            <button
+                              key={option.id}
+                              type="button"
+                              onClick={() => setGptQuality(option.id)}
+                              className={cn(
+                                'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg transition-all text-left min-h-[34px]',
+                                gptQuality === option.id
+                                  ? 'bg-white text-black ring-1 ring-white/70'
+                                  : 'bg-[#222] text-gray-400 hover:bg-[#2a2a2a]'
+                              )}
+                            >
+                              <span className="text-[11px] font-black whitespace-nowrap">{option.label}</span>
+                              <span className={cn('text-[8px] font-black whitespace-nowrap', gptQuality === option.id ? 'text-red-600' : 'text-red-500')}>
+                                ¥{estimateGptImagePrice(imageSize, aspectRatio, option.id).cny.toFixed(2)}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">渲染精度 / RESOLUTION</div>
+                      <div className="flex flex-wrap gap-1.5">
                         {IMAGE_SIZES.filter(size => {
                           const lookupId = size.id === '512px' ? '0.5K' : size.id;
                           return !!MODEL_COSTS[model].resolutions[lookupId];
-                        }).map(item => <PickerOption key={item.id} title={item.label} meta={calculatePrice(model, item.id)} onClick={() => { setImageSize(item.id); setOpenParameterMenu(null); }} />)}
-                      </ParameterPicker>
-                      <ParameterPicker label="画面比例" value={aspectRatio} meta={`${availableAspectRatios.length} 种可选比例`} open={openParameterMenu === 'ratio'} onToggle={() => setOpenParameterMenu(value => value === 'ratio' ? null : 'ratio')}>
-                        <div className="grid grid-cols-4 gap-1 p-1">{availableAspectRatios.map(ratio => <button key={ratio} type="button" onClick={() => { setAspectRatio(ratio); setOpenParameterMenu(null); }} className={cn('rounded-md px-2 py-1.5 text-[9px] font-black transition', aspectRatio === ratio ? 'bg-white text-black' : 'bg-[#242424] text-gray-400 hover:text-white')}>{ratio}</button>)}</div>
-                      </ParameterPicker>
+                        }).map((size) => (
+                          <button
+                            key={size.id}
+                            type="button"
+                            onClick={() => setImageSize(size.id)}
+                            className={cn(
+                              'flex items-baseline gap-1 px-3 py-1.5 rounded-lg transition-all',
+                              imageSize === size.id
+                                ? 'bg-white text-black ring-1 ring-white/70'
+                                : 'bg-[#222] text-gray-400 hover:bg-[#2a2a2a]'
+                            )}
+                          >
+                            <span className="text-xs font-black">{size.label}</span>
+                            <span className="text-[8px] font-bold opacity-60">{calculatePrice(model, size.id)}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  )}
+
+                    <div>
+                      <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">构图比例 / ASPECT RATIO</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {availableAspectRatios.map((ratio) => (
+                          <button
+                            key={ratio}
+                            type="button"
+                            onClick={() => setAspectRatio(ratio)}
+                            className={cn(
+                              'px-3 py-1.5 rounded-lg text-xs font-black transition-all',
+                              aspectRatio === ratio
+                                ? 'bg-white text-black ring-1 ring-white/70'
+                                : 'bg-[#222] text-gray-400 hover:bg-[#2a2a2a]'
+                            )}
+                          >
+                            {ratio}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>}
                 </div>
               </motion.div>
             )}
@@ -776,23 +891,6 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
 });
 
 GenerationBar.displayName = 'GenerationBar';
-
-const ParameterPicker: React.FC<{
-  label: string;
-  value: string;
-  meta: string;
-  open: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}> = ({ label, value, meta, open, onToggle, children }) => (
-  <div className={cn('min-w-0', open && 'col-span-full')}>
-    <button type="button" onClick={onToggle} className="flex min-h-[52px] w-full items-center gap-2 rounded-lg border border-[#323236] bg-[#202023] px-2.5 py-2 text-left transition hover:bg-[#29292c]">
-      <span className="min-w-0 flex-1"><span className="block text-[8px] font-bold uppercase tracking-wider text-gray-600">{label}</span><span className="mt-0.5 block truncate text-[11px] font-black text-gray-100">{value}</span><span className="block truncate text-[7px] text-gray-600">{meta}</span></span>
-      <ChevronDown size={11} className={cn('shrink-0 text-gray-600 transition-transform', open && 'rotate-180')} />
-    </button>
-    <AnimatePresence>{open && <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="mt-1 overflow-hidden rounded-lg border border-[#3b3b3b] bg-[#181818] p-1 shadow-xl">{children}</motion.div>}</AnimatePresence>
-  </div>
-);
 
 const MaterialPicker: React.FC<{
   label: string;
