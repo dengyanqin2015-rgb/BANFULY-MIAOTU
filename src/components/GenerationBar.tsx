@@ -660,7 +660,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                 exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden"
               >
-                <div className="pt-2 pb-0.5 border-t border-[#333] mt-1.5 space-y-2.5 max-h-[44vh] overflow-y-auto overscroll-contain pr-1">
+                <div className="mt-1.5 space-y-2.5 border-t border-[#333] pt-2 pb-0.5">
                   <div className="grid grid-cols-2 gap-1 rounded-lg bg-[#111] p-1">
                     <button type="button" onClick={() => setOptionPage('model')} className={cn('flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[10px] font-black transition', optionPage === 'model' ? 'bg-white text-black' : 'text-gray-500 hover:text-white')}><SlidersHorizontal size={12} />模型参数</button>
                     <button type="button" onClick={() => setOptionPage('materials')} className={cn('flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[10px] font-black transition', optionPage === 'materials' ? 'bg-white text-black' : 'text-gray-500 hover:text-white')}><Library size={12} />生产资料</button>
@@ -785,12 +785,12 @@ const ParameterPicker: React.FC<{
   onToggle: () => void;
   children: React.ReactNode;
 }> = ({ label, value, meta, open, onToggle, children }) => (
-  <div className="relative min-w-0">
+  <div className={cn('min-w-0', open && 'col-span-full')}>
     <button type="button" onClick={onToggle} className="flex min-h-[52px] w-full items-center gap-2 rounded-lg border border-[#323236] bg-[#202023] px-2.5 py-2 text-left transition hover:bg-[#29292c]">
       <span className="min-w-0 flex-1"><span className="block text-[8px] font-bold uppercase tracking-wider text-gray-600">{label}</span><span className="mt-0.5 block truncate text-[11px] font-black text-gray-100">{value}</span><span className="block truncate text-[7px] text-gray-600">{meta}</span></span>
       <ChevronDown size={11} className={cn('shrink-0 text-gray-600 transition-transform', open && 'rotate-180')} />
     </button>
-    <AnimatePresence>{open && <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} className="absolute z-50 left-0 right-0 mt-1 max-h-52 min-w-[150px] overflow-y-auto rounded-lg border border-[#3b3b3b] bg-[#181818] p-1 shadow-2xl">{children}</motion.div>}</AnimatePresence>
+    <AnimatePresence>{open && <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="mt-1 overflow-hidden rounded-lg border border-[#3b3b3b] bg-[#181818] p-1 shadow-xl">{children}</motion.div>}</AnimatePresence>
   </div>
 );
 
