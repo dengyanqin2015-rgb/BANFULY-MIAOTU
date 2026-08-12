@@ -42,6 +42,8 @@ const SLOT_KEYS: Array<{ key: keyof CategoryBaseComponents; type: AssetType }> =
   { key: 'copyLayout', type: 'copy_layout' },
 ];
 
+const CONTROL_CLASS = 'w-full rounded-xl border border-black/15 bg-[#f5f5f7] px-3.5 py-3 text-sm font-semibold text-[#1d1d1f] outline-none transition placeholder:text-[#9b9ba1] focus:border-black/45 focus:bg-white focus:ring-2 focus:ring-black/5';
+
 const emptyAssetForm = (type: AssetType) => ({
   type,
   name: '',
@@ -189,7 +191,7 @@ export const AssetLibraryPanel: React.FC = () => {
       category: record.asset.category,
       tags: record.asset.tags.join('，'),
       summary: record.version.profile.summary,
-      promptFragment: record.version.profile.promptFragment,
+      promptFragment: record.version.profile.promptFragment || record.version.profile.summary,
       negativePrompt: record.version.profile.negativePrompt,
       lockedFields: record.version.profile.lockedFields.join('，'),
       variableFields: record.version.profile.variableFields.join('，'),
@@ -252,7 +254,7 @@ export const AssetLibraryPanel: React.FC = () => {
         status: 'active',
         sourceKind: editingAsset ? 'manual' : files.length ? 'imported' : 'manual',
         profile: {
-          summary: assetForm.summary,
+          summary: assetForm.promptFragment || assetForm.summary,
           promptFragment: assetForm.promptFragment,
           negativePrompt: assetForm.negativePrompt,
           lockedFields: splitList(assetForm.lockedFields),
@@ -493,44 +495,52 @@ export const AssetLibraryPanel: React.FC = () => {
 
       {assetModalOpen && (
         <Modal title={editingAsset ? `编辑${TYPE_META[assetForm.type].label}` : `新增${TYPE_META[assetForm.type].label}`} onClose={() => !saving && setAssetModalOpen(false)}>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Field label="资产名称"><input value={assetForm.name} onChange={e => setAssetForm({ ...assetForm, name: e.target.value })} placeholder="例如：AURA 清透海岸" className="input-control" /></Field>
-            <Field label="所属类目"><input value={assetForm.category} onChange={e => setAssetForm({ ...assetForm, category: e.target.value })} placeholder="例如：女士泳装" className="input-control" /></Field>
-            <Field label="标签"><input value={assetForm.tags} onChange={e => setAssetForm({ ...assetForm, tags: e.target.value })} placeholder="清透，轻奢，夏季" className="input-control" /></Field>
-            <Field label="锁定要素"><input value={assetForm.lockedFields} onChange={e => setAssetForm({ ...assetForm, lockedFields: e.target.value })} placeholder="品牌色，版式，镜头" className="input-control" /></Field>
+          <div className="rounded-2xl border border-black/10 bg-[#fafafa] p-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <Field label="名称"><input value={assetForm.name} onChange={e => setAssetForm({ ...assetForm, name: e.target.value })} placeholder="例如：AURA 清透海岸" className={CONTROL_CLASS} /></Field>
+              <Field label="所属类目"><input value={assetForm.category} onChange={e => setAssetForm({ ...assetForm, category: e.target.value })} placeholder="例如：女士泳装" className={CONTROL_CLASS} /></Field>
+            </div>
           </div>
-          <Field label="结构化摘要"><textarea value={assetForm.summary} onChange={e => setAssetForm({ ...assetForm, summary: e.target.value })} rows={3} placeholder="用中文记录这套资产最重要的视觉特征" className="input-control resize-none" /></Field>
-          <Field label="生图引导片段"><textarea value={assetForm.promptFragment} onChange={e => setAssetForm({ ...assetForm, promptFragment: e.target.value })} rows={4} placeholder="后续会与用户提示词组合；不需要重复写商品主体" className="input-control resize-none" /></Field>
+
           {assetForm.type === 'copy_layout' && (
-            <div className="space-y-4 rounded-2xl border border-fuchsia-100 bg-fuchsia-50/40 p-4">
-              <div className="text-[10px] font-black tracking-wider text-fuchsia-600">文案排版结构</div>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                <Field label="模板用途"><select value={assetForm.templateKind} onChange={e => setAssetForm({ ...assetForm, templateKind: e.target.value })} className="input-control"><option value="main_image">主图模板</option><option value="detail">详情模板</option></select></Field>
-                <Field label="主标题字体"><input value={assetForm.headlineFont} onChange={e => setAssetForm({ ...assetForm, headlineFont: e.target.value })} placeholder="字体或字体风格" className="input-control" /></Field>
-                <Field label="主标题字号层级"><input value={assetForm.headlineSize} onChange={e => setAssetForm({ ...assetForm, headlineSize: e.target.value })} placeholder="例如：画面宽度的 8%" className="input-control" /></Field>
-                <Field label="主标题位置"><input value={assetForm.headlinePosition} onChange={e => setAssetForm({ ...assetForm, headlinePosition: e.target.value })} placeholder="例如：左上安全区" className="input-control" /></Field>
-                <Field label="主标题字数上限"><input type="number" min="0" value={assetForm.headlineMaxChars} onChange={e => setAssetForm({ ...assetForm, headlineMaxChars: e.target.value })} className="input-control" /></Field>
-                <Field label="主标题内容方向"><input value={assetForm.headlineDirection} onChange={e => setAssetForm({ ...assetForm, headlineDirection: e.target.value })} placeholder="品牌主张、品类利益点" className="input-control" /></Field>
-                <Field label="核心卖点位置"><input value={assetForm.sellingPointPosition} onChange={e => setAssetForm({ ...assetForm, sellingPointPosition: e.target.value })} placeholder="例如：商品右侧" className="input-control" /></Field>
-                <Field label="核心卖点字数上限"><input type="number" min="0" value={assetForm.sellingPointMaxChars} onChange={e => setAssetForm({ ...assetForm, sellingPointMaxChars: e.target.value })} className="input-control" /></Field>
-                <Field label="核心卖点方向"><input value={assetForm.sellingPointDirection} onChange={e => setAssetForm({ ...assetForm, sellingPointDirection: e.target.value })} placeholder="功能、痛点、差异化" className="input-control" /></Field>
-                <Field label="副文案字体"><input value={assetForm.subcopyFont} onChange={e => setAssetForm({ ...assetForm, subcopyFont: e.target.value })} className="input-control" /></Field>
-                <Field label="副文案字号层级"><input value={assetForm.subcopySize} onChange={e => setAssetForm({ ...assetForm, subcopySize: e.target.value })} className="input-control" /></Field>
-                <Field label="副文案位置"><input value={assetForm.subcopyPosition} onChange={e => setAssetForm({ ...assetForm, subcopyPosition: e.target.value })} className="input-control" /></Field>
-                <Field label="副文案字数上限"><input type="number" min="0" value={assetForm.subcopyMaxChars} onChange={e => setAssetForm({ ...assetForm, subcopyMaxChars: e.target.value })} className="input-control" /></Field>
-                <div className="md:col-span-2"><Field label="副文案内容方向"><input value={assetForm.subcopyDirection} onChange={e => setAssetForm({ ...assetForm, subcopyDirection: e.target.value })} placeholder="佐证、使用场景、补充利益点" className="input-control" /></Field></div>
-              </div>
+            <div className="rounded-2xl border border-fuchsia-200 bg-fuchsia-50/50 p-4">
+              <Field label="模板类型">
+                <select value={assetForm.templateKind} onChange={e => setAssetForm({ ...assetForm, templateKind: e.target.value })} className={CONTROL_CLASS}>
+                  <option value="main_image">主图模板</option>
+                  <option value="detail">详情模板</option>
+                </select>
+              </Field>
             </div>
           )}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Field label="避免要素"><textarea value={assetForm.negativePrompt} onChange={e => setAssetForm({ ...assetForm, negativePrompt: e.target.value })} rows={2} className="input-control resize-none" /></Field>
-            <Field label="可变要素"><textarea value={assetForm.variableFields} onChange={e => setAssetForm({ ...assetForm, variableFields: e.target.value })} rows={2} placeholder="商品，文案，姿势" className="input-control resize-none" /></Field>
-          </div>
-          <Field label={`参考图片（可选，最多 ${12 - (editingAsset?.version.imageRefs.length || 0)} 张）`}>
-            <label className={`flex cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed px-4 py-5 text-xs font-bold transition ${storageConfigured ? 'border-black/20 hover:bg-black/[0.02]' : 'cursor-not-allowed border-amber-200 bg-amber-50 text-amber-700'}`}>
-              <UploadCloud size={18} /> {storageConfigured ? (files.length ? `已选择 ${files.length} 张` : '选择 JPG / PNG / WebP，单张不超过 15MB') : '请先在 Railway 测试环境绑定 Bucket'}
-              <input disabled={!storageConfigured} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={e => setFiles(Array.from(e.target.files || []).slice(0, 12 - (editingAsset?.version.imageRefs.length || 0)))} />
-            </label>
+
+          {assetForm.type !== 'copy_layout' && (
+            <Field label={`参考图片（最多 ${12 - (editingAsset?.version.imageRefs.length || 0)} 张）`}>
+              {editingAsset && editingAsset.version.imageRefs.length > 0 && (
+                <div className="mb-3 grid grid-cols-4 gap-2 sm:grid-cols-6">
+                  {editingAsset.version.imageRefs.map(reference => (
+                    <div key={reference.id} className="aspect-square overflow-hidden rounded-xl border border-black/10 bg-[#f2f2f3]">
+                      <img src={`/api/storage/objects/${reference.objectId}/view`} alt="参考图" className="h-full w-full object-cover" />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <label className={`flex cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed px-4 py-6 text-xs font-bold transition ${storageConfigured ? 'border-black/15 bg-[#fafafa] text-[#444] hover:border-black/35 hover:bg-[#f5f5f7]' : 'cursor-not-allowed border-amber-300 bg-amber-50 text-amber-700'}`}>
+                <UploadCloud size={18} /> {storageConfigured ? (files.length ? `已选择 ${files.length} 张图片` : '上传参考图 · JPG / PNG / WebP · 单张不超过 15MB') : '请先在 Railway 测试环境绑定 Bucket'}
+                <input disabled={!storageConfigured} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={e => setFiles(Array.from(e.target.files || []).slice(0, 12 - (editingAsset?.version.imageRefs.length || 0)))} />
+              </label>
+            </Field>
+          )}
+
+          <Field label={assetForm.type === 'copy_layout' ? '排版提示词' : '提示词'}>
+            <textarea
+              value={assetForm.promptFragment}
+              onChange={e => setAssetForm({ ...assetForm, promptFragment: e.target.value })}
+              rows={assetForm.type === 'copy_layout' ? 6 : 5}
+              placeholder={assetForm.type === 'copy_layout'
+                ? '例如：主标题使用粗宋体，位于左上安全区，控制在 10 字内；核心卖点靠近商品右侧，副文案小一档并保持留白。'
+                : '说明这组参考图在生图时要控制什么，例如色调、场景氛围、产品材质或模特特征。'}
+              className={`${CONTROL_CLASS} resize-none leading-6`}
+            />
           </Field>
           <div className="flex justify-end gap-3 pt-2">
             <button onClick={() => setAssetModalOpen(false)} disabled={saving} className="rounded-xl px-4 py-2.5 text-xs font-bold text-[#6e6e73]">取消</button>
@@ -541,29 +551,23 @@ export const AssetLibraryPanel: React.FC = () => {
 
       {baseModalOpen && (
         <Modal title={editingBase ? '调整类目基座' : '新建类目基座'} onClose={() => !saving && setBaseModalOpen(false)} wide>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Field label="基座名称"><input value={baseForm.name} onChange={e => setBaseForm({ ...baseForm, name: e.target.value })} placeholder="例如：泳装清透海岸基座" className="input-control" /></Field>
-            <Field label="所属类目"><input value={baseForm.category} onChange={e => setBaseForm({ ...baseForm, category: e.target.value })} placeholder="女士泳装" className="input-control" /></Field>
+          <div className="grid grid-cols-1 gap-4 rounded-2xl border border-black/10 bg-[#fafafa] p-4 md:grid-cols-2">
+            <Field label="基座名称"><input value={baseForm.name} onChange={e => setBaseForm({ ...baseForm, name: e.target.value })} placeholder="例如：泳装清透海岸基座" className={CONTROL_CLASS} /></Field>
+            <Field label="所属类目"><input value={baseForm.category} onChange={e => setBaseForm({ ...baseForm, category: e.target.value })} placeholder="例如：女士泳装" className={CONTROL_CLASS} /></Field>
           </div>
-          <Field label="方案说明"><textarea value={baseForm.description} onChange={e => setBaseForm({ ...baseForm, description: e.target.value })} rows={2} className="input-control resize-none" /></Field>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {SLOT_KEYS.map(({ key, type }) => {
               const meta = TYPE_META[type];
               return (
                 <label key={key} className="rounded-2xl border border-black/10 bg-[#f7f7f8] p-4">
                   <span className="text-[10px] font-black tracking-wider" style={{ color: meta.accent }}>{meta.label}</span>
-                  <select value={baseForm[key]} onChange={e => setBaseForm({ ...baseForm, [key]: e.target.value })} className="mt-3 w-full bg-transparent text-sm font-bold outline-none">
+                  <select value={baseForm[key]} onChange={e => setBaseForm({ ...baseForm, [key]: e.target.value })} className={`${CONTROL_CLASS} mt-3`}>
                     <option value="">不使用</option>
                     {assetsByType[type].map(record => <option key={record.asset.id} value={record.asset.id}>{record.asset.name} · V{record.version.version}</option>)}
                   </select>
                 </label>
               );
             })}
-          </div>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <Field label="默认模型"><input value={baseForm.modelId} onChange={e => setBaseForm({ ...baseForm, modelId: e.target.value })} placeholder="留空则跟随工作流" className="input-control" /></Field>
-            <Field label="默认比例"><input value={baseForm.aspectRatio} onChange={e => setBaseForm({ ...baseForm, aspectRatio: e.target.value })} placeholder="例如 4:5" className="input-control" /></Field>
-            <Field label="默认精度"><input value={baseForm.imageSize} onChange={e => setBaseForm({ ...baseForm, imageSize: e.target.value })} placeholder="例如 2K" className="input-control" /></Field>
           </div>
           <div className="flex justify-end gap-3 pt-2">
             <button onClick={() => setBaseModalOpen(false)} disabled={saving} className="rounded-xl px-4 py-2.5 text-xs font-bold text-[#6e6e73]">取消</button>
