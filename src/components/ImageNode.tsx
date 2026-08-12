@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { ImageSliceEditor } from './ImageSliceEditor';
+import type { SelectedCategoryBase } from './GenerationBar';
 
 export interface ImageNodeData extends Record<string, unknown> {
   imageUrl?: string;
@@ -36,6 +37,7 @@ export interface ImageNodeData extends Record<string, unknown> {
   aspectRatio?: AspectRatio;
   imageSize?: ImageSize;
   model?: ImageModel;
+  categoryBase?: SelectedCategoryBase;
   analysisPrompt?: string;
   analysisTemplateName?: string;
   isAnalyzing?: boolean;
@@ -242,8 +244,13 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
       {data.type === 'generated' && (
         <div className="flex flex-col gap-1 px-1">
           {!data.isLoading && (
-            <div className="text-[9px] text-gray-500 font-bold uppercase">
-              {data.resolution || '1024 x 1024'}
+            <div className="flex items-center gap-1.5 text-[9px] text-gray-500 font-bold uppercase">
+              <span>{data.resolution || '1024 x 1024'}</span>
+              {data.categoryBase && (
+                <span className="max-w-[170px] truncate rounded border border-orange-500/25 bg-orange-500/10 px-1.5 py-0.5 text-[8px] text-orange-300 normal-case">
+                  基座 · {data.categoryBase.name} V{data.categoryBase.version}
+                </span>
+              )}
             </div>
           )}
           <div className="flex items-start gap-2 relative group/prompt">

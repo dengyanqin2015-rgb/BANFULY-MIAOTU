@@ -21,7 +21,7 @@ import '@xyflow/react/dist/style.css';
 import { ImageNode, ImageNodeData } from './ImageNode';
 import { MaskEditNode, type MaskEditNodeData } from './MaskEditNode';
 import { NoteNode, NoteNodeData } from './NoteNode';
-import { GenerationBar, GenerationBarRef } from './GenerationBar';
+import { GenerationBar, GenerationBarRef, type SelectedCategoryBase } from './GenerationBar';
 import { Assistant, AssistantRef } from './Assistant';
 import { generateImage, analyzeImageForPrompt, getDefaultImageAnalysisTemplate, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
 import { ImageStorage } from '../lib/storage';
@@ -29,10 +29,48 @@ import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
-import { allocatePasteBatchOrigin, getBatchImportPosition, processImageFiles } from '../lib/uploadProcessing';
+import { allocatePasteBatchOrigin, getBatchImportPosition, IMAGE_UPLOAD_LIMITS, processImageFiles } from '../lib/uploadProcessing';
 import { advanceGenerationGrid, findDerivedNodePosition, findFreeGenerationPosition, findFreeGridPosition, WORKFLOW_LAYOUT } from '../lib/workflowLayout';
 import { GenerationTaskCoordinator, getGenerationErrorMessage, getGenerationProgress, type GenerationTaskToken } from '../lib/generationTasks';
 import { ImageWriteCache, SerialTaskQueue, createProjectFingerprint, stripRuntimeGraphState } from '../lib/projectPersistence';
+import { compileCategoryBasePrompt, type CategoryBaseGenerationContext } from '../lib/categoryBaseGeneration';
+
+const loadCategoryBaseGeneration = async (
+  selected: SelectedCategoryBase,
+  manualImages: { data: string; mimeType: string; sourceNodeId?: string }[],
+) => {
+  const response = await fetch(
+    `/api/category-bases/${encodeURIComponent(selected.id)}/generation-context?versionId=${encodeURIComponent(selected.versionId)}`
+  );
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || '类目基座读取失败');
+  const context = payload as CategoryBaseGenerationContext;
+  if (context.baseId !== selected.id || context.versionId !== selected.versionId) {
+    throw new Error('类目基座版本校验失败，请重新选择');
+  }
+
+  const manualUsage = manualImages.reduce((usage, image) => {
+    const bytes = Math.ceil(image.data.length * 3 / 4);
+    return {
+      count: usage.count + 1,
+      originalBytes: usage.originalBytes + bytes,
+      analysisBytes: usage.analysisBytes + bytes,
+    };
+  }, { count: 0, originalBytes: 0, analysisBytes: 0 });
+  const remaining = Math.max(0, IMAGE_UPLOAD_LIMITS.maxFiles - manualImages.length);
+  const references = context.slots.flatMap(slot => slot.referenceImage ? [{ slot, image: slot.referenceImage }] : []).slice(0, remaining);
+  const files = await Promise.all(references.map(async ({ slot, image }) => {
+    const imageResponse = await fetch(image.viewUrl);
+    if (!imageResponse.ok) throw new Error(`${slot.assetName} 的基座参考图读取失败`);
+    const blob = await imageResponse.blob();
+    return new File([blob], `${slot.key}-${image.id}`, { type: blob.type || image.mimeType || 'image/png' });
+  }));
+  const processed = await processImageFiles(files, manualUsage);
+  return {
+    context,
+    referenceImages: processed.map(image => ({ data: image.analysisData, mimeType: image.analysisMimeType })),
+  };
+};
 
 const nodeTypes = {
   imageNode: ImageNode,
@@ -896,7 +934,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             nodeData.imageSize || '1K', 
             nodeData.model || 'gemini-3.1-flash-image-preview', 
             originalImages, 
-            node.id
+            node.id,
+            nodeData.categoryBase,
           );
         } : undefined,
         onAdjust: nodeData.type === 'generated' ? (mode: 'reference' | 'text' = 'reference') => {
@@ -912,7 +951,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 mimeType: img.mimeType, 
                 preview: `data:${img.mimeType};base64,${img.data}`,
                 sourceNodeId: img.sourceNodeId 
-              }))
+              })),
+              nodeData.categoryBase,
             );
           }
         } : undefined,
@@ -1167,8 +1207,22 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     imageSize: ImageSize, 
     model: ImageModel,
     images?: { data: string; mimeType: string; sourceNodeId?: string }[],
-    targetNodeId?: string
+    targetNodeId?: string,
+    categoryBase?: SelectedCategoryBase,
   ) => {
+    const manualImages = images || [];
+    let requestPrompt = prompt;
+    let requestImages = manualImages.map(image => ({ data: image.data, mimeType: image.mimeType }));
+    if (categoryBase) {
+      try {
+        const prepared = await loadCategoryBaseGeneration(categoryBase, manualImages);
+        requestPrompt = compileCategoryBasePrompt(prompt, prepared.context);
+        requestImages = [...requestImages, ...prepared.referenceImages];
+      } catch (error) {
+        alert(error instanceof Error ? error.message : '类目基座读取失败');
+        return;
+      }
+    }
     // Calculate cost
     const modelCfg = MODEL_COSTS[model];
     const lookupId = imageSize === "512px" ? "0.5K" : imageSize;
@@ -1186,7 +1240,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         ...n,
         data: { ...n.data, isLoading: true, error: undefined }
       }) : n));
-      startGenerationProgress(targetNodeId, task, model, images?.length || 0);
+      startGenerationProgress(targetNodeId, task, model, requestImages.length);
       setLastNodeId(targetNodeId);
       focusNode(targetNodeId);
 
@@ -1194,11 +1248,11 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
       try {
         const urls = await generateImage({ 
-          prompt, 
+          prompt: requestPrompt,
           aspectRatio, 
           imageSize, 
           model, 
-          images: images?.map(img => ({ data: img.data, mimeType: img.mimeType })),
+          images: requestImages,
           apiKey: userApiKey,
           signal: task.signal,
           requestId: task.id,
@@ -1341,7 +1395,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         layoutMode: hasReferences ? 'reference' : 'grid',
         layoutSlot: { x: posX, y: posY },
         refImages: images?.map(img => `data:${img.mimeType};base64,${img.data}`),
-        originalImages: images,
+        originalImages: manualImages,
+        categoryBase,
         aspectRatio,
         imageSize,
         model,
@@ -1385,16 +1440,16 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     setLastNodeId(newNodeId);
     const task = generationTasksRef.current.start(newNodeId);
-    startGenerationProgress(newNodeId, task, model, images?.length || 0);
+    startGenerationProgress(newNodeId, task, model, requestImages.length);
     console.log(`[Workflow] Starting generation for node ${newNodeId}`, { prompt, aspectRatio, imageSize, model, imagesCount: images?.length });
 
     try {
       const urls = await generateImage({ 
-        prompt, 
+        prompt: requestPrompt,
         aspectRatio, 
         imageSize, 
         model, 
-        images: images?.map(img => ({ data: img.data, mimeType: img.mimeType })),
+        images: requestImages,
         apiKey: userApiKey,
         signal: task.signal,
         requestId: task.id,

@@ -11,6 +11,7 @@ import type {
   CategoryBaseVersion,
   PaginatedAssetResult,
 } from '../src/lib/assetLibrary';
+import type { CategoryBaseGenerationContext } from '../src/lib/categoryBaseGeneration';
 
 const workspace = process.cwd();
 const tempRoot = await mkdtemp(path.join(tmpdir(), 'banfuly-asset-api-'));
@@ -197,6 +198,19 @@ try {
   const stableBase = await request<CategoryBaseRecord>(`/api/category-bases/${createdBase.body.base.id}`, { token: tokenA });
   assert.equal(stableBase.status, 200);
   assert.equal(stableBase.body.version.components.visualSystem.versionId, visual.body.version.id);
+  const generationContextV1 = await request<CategoryBaseGenerationContext>(
+    `/api/category-bases/${createdBase.body.base.id}/generation-context?versionId=${createdBase.body.version.id}`,
+    { token: tokenA },
+  );
+  assert.equal(generationContextV1.status, 200);
+  assert.equal(generationContextV1.body.versionId, createdBase.body.version.id);
+  assert.deepEqual(generationContextV1.body.slots.map(slot => [slot.key, slot.version]), [['visualSystem', 1], ['scene', 1]]);
+  assert.ok(generationContextV1.body.slots.every(slot => slot.referenceImage === undefined));
+  const hiddenGenerationContext = await request(
+    `/api/category-bases/${createdBase.body.base.id}/generation-context?versionId=${createdBase.body.version.id}`,
+    { token: tokenB },
+  );
+  assert.equal(hiddenGenerationContext.status, 404);
 
   const updatedBase = await request<CategoryBaseRecord>(`/api/category-bases/${createdBase.body.base.id}`, {
     method: 'PUT',
@@ -222,6 +236,12 @@ try {
   });
   assert.equal(updatedBase.status, 200);
   assert.equal(updatedBase.body.base.currentVersion, 2);
+  const stillStableContextV1 = await request<CategoryBaseGenerationContext>(
+    `/api/category-bases/${createdBase.body.base.id}/generation-context?versionId=${createdBase.body.version.id}`,
+    { token: tokenA },
+  );
+  assert.equal(stillStableContextV1.status, 200);
+  assert.equal(stillStableContextV1.body.slots.find(slot => slot.key === 'visualSystem')?.versionId, visual.body.version.id);
 
   const baseVersions = await request<CategoryBaseVersion[]>(`/api/category-bases/${createdBase.body.base.id}/versions`, { token: tokenA });
   assert.deepEqual(baseVersions.body.map(version => version.version), [2, 1]);

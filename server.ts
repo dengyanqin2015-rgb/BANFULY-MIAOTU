@@ -33,6 +33,11 @@ import {
   type PaginatedAssetResult,
 } from "./src/lib/assetLibrary";
 import {
+  CATEGORY_BASE_SLOT_KEYS,
+  type CategoryBaseGenerationContext,
+  type CategoryBaseGenerationSlot,
+} from "./src/lib/categoryBaseGeneration";
+import {
   MAX_ASSET_IMAGE_BYTES,
   PENDING_UPLOAD_TTL_MS,
   StorageValidationError,
@@ -1417,6 +1422,97 @@ class DatabaseService {
     return result.rows[0] ? mapCategoryBaseRecordRow(result.rows[0]) : null;
   }
 
+  async getCategoryBaseGenerationContext(userId: string, id: string, versionId?: string): Promise<CategoryBaseGenerationContext | null> {
+    const currentRecord = await this.getCategoryBase(userId, id);
+    if (!currentRecord || (!versionId && currentRecord.base.status !== 'active')) return null;
+    const requestedVersion = versionId
+      ? (await this.listCategoryBaseVersions(userId, id)).find(version => version.id === versionId)
+      : currentRecord.version;
+    if (!requestedVersion) return null;
+    const record: CategoryBaseRecord = { base: currentRecord.base, version: requestedVersion };
+    const expectedTypes: Record<(typeof CATEGORY_BASE_SLOT_KEYS)[number], AssetType> = {
+      visualSystem: 'visual_system',
+      scene: 'scene',
+      material: 'material',
+      model: 'model',
+    };
+    const rolePriority: Record<string, number> = { source: 0, reference: 1, thumbnail: 2 };
+    const slots: CategoryBaseGenerationSlot[] = [];
+
+    for (const key of CATEGORY_BASE_SLOT_KEYS) {
+      const reference = record.version.components[key];
+      if (!reference) continue;
+      let assetName = '';
+      let assetType: AssetType | null = null;
+      let version: AssetVersion | null = null;
+
+      if (this.pool) {
+        const result = await this.pool.query(
+          `SELECT a.name, a.type, v.id, v.asset_id AS "assetId", v.user_id AS "userId", v.version,
+                  v.source_kind AS "sourceKind", v.profile, v.image_refs AS "imageRefs",
+                  v.change_note AS "changeNote", v.created_at AS "createdAt"
+           FROM asset_items a
+           JOIN asset_versions v ON v.asset_id = a.id
+           WHERE a.id = $1 AND a.user_id = $2 AND a.deleted_at IS NULL
+             AND v.id = $3 AND v.version = $4 AND v.user_id = $2`,
+          [reference.assetId, userId, reference.versionId, reference.version],
+        );
+        const row = result.rows[0];
+        if (row) {
+          assetName = String(row.name);
+          assetType = row.type as AssetType;
+          version = {
+            id: String(row.id), assetId: String(row.assetId), userId: String(row.userId),
+            version: toNumber(row.version), sourceKind: row.sourceKind,
+            profile: row.profile || {}, imageRefs: Array.isArray(row.imageRefs) ? row.imageRefs : [],
+            changeNote: String(row.changeNote || ''), createdAt: toNumber(row.createdAt),
+          };
+        }
+      } else {
+        const asset = this.fileData!.assets.find(item => item.id === reference.assetId && item.userId === userId && !item.deletedAt);
+        const storedVersion = this.fileData!.assetVersions.find(item =>
+          item.id === reference.versionId && item.assetId === reference.assetId && item.userId === userId && item.version === reference.version
+        );
+        if (asset && storedVersion) {
+          assetName = asset.name;
+          assetType = asset.type;
+          version = structuredClone(storedVersion);
+        }
+      }
+
+      if (!version || assetType !== expectedTypes[key]) {
+        throw new AssetValidationError(`类目基座中的 ${key} 固定版本已不可用`);
+      }
+      const representative = [...version.imageRefs].sort((left, right) =>
+        (rolePriority[left.role] ?? 9) - (rolePriority[right.role] ?? 9) || left.sortOrder - right.sortOrder
+      )[0];
+      slots.push({
+        key,
+        assetId: version.assetId,
+        assetName,
+        assetType,
+        versionId: version.id,
+        version: version.version,
+        profile: version.profile,
+        referenceImage: representative ? {
+          ...representative,
+          viewUrl: `/api/storage/objects/${representative.objectId}/view`,
+        } : undefined,
+      });
+    }
+
+    return {
+      baseId: record.base.id,
+      baseName: record.base.name,
+      category: record.base.category,
+      description: record.base.description,
+      versionId: record.version.id,
+      version: record.version.version,
+      defaults: record.version.defaults,
+      slots,
+    };
+  }
+
   async listCategoryBases(userId: string, options: CategoryBasePageOptions): Promise<PaginatedAssetResult<CategoryBaseRecord>> {
     const { page, pageSize, category, status, search } = options;
     const offset = (page - 1) * pageSize;
@@ -2104,6 +2200,17 @@ app.get('/api/category-bases/:id/versions', authenticateToken, async (req: AuthR
     const categoryBase = await db.getCategoryBase(req.user!.id, id);
     if (!categoryBase) return res.status(404).json({ message: '类目基座不存在' });
     res.json(await db.listCategoryBaseVersions(req.user!.id, id));
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.get('/api/category-bases/:id/generation-context', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const versionId = typeof req.query.versionId === 'string' ? req.query.versionId : undefined;
+    const context = await db.getCategoryBaseGenerationContext(req.user!.id, String(req.params.id), versionId);
+    if (!context) return res.status(404).json({ message: '类目基座不存在或已归档' });
+    res.json(context);
   } catch (error) {
     handleAssetApiError(res, error);
   }

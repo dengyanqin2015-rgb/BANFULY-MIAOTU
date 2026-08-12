@@ -1,17 +1,25 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
-import { Send, ChevronDown, Key, Image as ImageIcon, X } from 'lucide-react';
+import { Send, ChevronDown, Key, Image as ImageIcon, X, Boxes, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { cn } from '../lib/utils';
 import { assertImageUsage, processImageFiles } from '../lib/uploadProcessing';
+import type { CategoryBaseRecord, PaginatedAssetResult } from '../lib/assetLibrary';
+
+export interface SelectedCategoryBase {
+  id: string;
+  versionId: string;
+  name: string;
+  version: number;
+}
 
 export interface GenerationBarRef {
   addImage: (data: string, mimeType: string, preview: string, sourceNodeId?: string, usage?: { originalBytes: number; analysisBytes: number }) => void;
-  setParams: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; preview: string; sourceNodeId?: string }[]) => void;
+  setParams: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; preview: string; sourceNodeId?: string }[], categoryBase?: SelectedCategoryBase) => void;
 }
 
 interface GenerationBarProps {
-  onGenerate: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; sourceNodeId?: string }[]) => void;
+  onGenerate: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; sourceNodeId?: string }[], targetNodeId?: string, categoryBase?: SelectedCategoryBase) => void;
   hasApiKey: boolean;
   onOpenApiKey: () => void;
 }
@@ -166,6 +174,12 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const submitLockRef = useRef(false);
   const submitUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isSubmitLocked, setIsSubmitLocked] = useState(false);
+  const [categoryBases, setCategoryBases] = useState<CategoryBaseRecord[]>([]);
+  const [selectedCategoryBase, setSelectedCategoryBase] = useState<SelectedCategoryBase | null>(null);
+  const [baseMenuOpen, setBaseMenuOpen] = useState(false);
+  const [basesLoading, setBasesLoading] = useState(false);
+  const [basesLoaded, setBasesLoaded] = useState(false);
+  const [basesError, setBasesError] = useState('');
 
   useEffect(() => () => {
     if (submitUnlockTimerRef.current) clearTimeout(submitUnlockTimerRef.current);
@@ -199,6 +213,44 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
     localStorage.setItem("user_openai_image_quality", gptQuality);
   }, [gptQuality]);
 
+  useEffect(() => {
+    if (!showOptions || basesLoaded || basesLoading) return;
+    setBasesLoading(true);
+    setBasesError('');
+    fetch('/api/category-bases?page=1&pageSize=100&status=active')
+      .then(async response => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.message || '类目基座加载失败');
+        return payload as PaginatedAssetResult<CategoryBaseRecord>;
+      })
+      .then(result => {
+        setCategoryBases(result.items);
+        setBasesLoaded(true);
+      })
+      .catch(error => setBasesError(error instanceof Error ? error.message : '类目基座加载失败'))
+      .finally(() => setBasesLoading(false));
+  }, [showOptions, basesLoaded, basesLoading]);
+
+  const selectCategoryBase = (record: CategoryBaseRecord | null) => {
+    setBaseMenuOpen(false);
+    if (!record) {
+      setSelectedCategoryBase(null);
+      return;
+    }
+    setSelectedCategoryBase({
+      id: record.base.id,
+      versionId: record.version.id,
+      name: record.base.name,
+      version: record.version.version,
+    });
+    const defaults = record.version.defaults;
+    if (MODELS.some(item => item.id === defaults.modelId)) setModel(defaults.modelId as ImageModel);
+    if (IMAGE_SIZES.some(item => item.id === defaults.imageSize)) setImageSize(defaults.imageSize as ImageSize);
+    const nextModel = MODELS.some(item => item.id === defaults.modelId) ? defaults.modelId as ImageModel : model;
+    const compatibleRatios = nextModel === 'gpt-image-2' ? GPT_ASPECT_RATIOS : GOOGLE_ASPECT_RATIOS;
+    if (compatibleRatios.includes(defaults.aspectRatio as AspectRatio)) setAspectRatio(defaults.aspectRatio as AspectRatio);
+  };
+
   useImperativeHandle(ref, () => ({
     addImage: (data, mimeType, preview, sourceNodeId, usage) => {
       uploadQueueRef.current = uploadQueueRef.current.then(async () => {
@@ -230,11 +282,12 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
         setImages(prev => [...prev, { data, mimeType, preview, sourceNodeId, originalBytes, analysisBytes }]);
       });
     },
-    setParams: (p, ar, is, m, imgs) => {
+    setParams: (p, ar, is, m, imgs, categoryBase) => {
       setPrompt(p);
       setAspectRatio(ar);
       setImageSize(is);
       setModel(m);
+      setSelectedCategoryBase(categoryBase || null);
       if (imgs) {
         uploadQueueRef.current = uploadQueueRef.current.then(async () => {
         const next = imgs.map(img => {
@@ -414,7 +467,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       data: img.data, 
       mimeType: img.mimeType,
       sourceNodeId: img.sourceNodeId
-    })));
+    })), undefined, selectedCategoryBase || undefined);
     setPrompt('');
     setImages([]);
     uploadUsageRef.current = { count: 0, originalBytes: 0, analysisBytes: 0 };
@@ -550,6 +603,69 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
             className="overflow-hidden"
               >
                 <div className="pt-2 pb-0.5 border-t border-[#333] mt-1.5 space-y-2.5 max-h-[44vh] overflow-y-auto overscroll-contain pr-1">
+                  <div className="relative">
+                    <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">类目基座 / FOUNDATION</div>
+                    <button
+                      type="button"
+                      onClick={() => setBaseMenuOpen(value => !value)}
+                      className={cn(
+                        'w-full min-h-[42px] rounded-lg border px-2.5 py-2 flex items-center gap-2 text-left transition-colors',
+                        selectedCategoryBase
+                          ? 'border-orange-500/60 bg-orange-500/10 text-white'
+                          : 'border-[#333] bg-[#222] text-gray-400 hover:bg-[#292929]'
+                      )}
+                    >
+                      <span className={cn('w-7 h-7 rounded-md flex items-center justify-center shrink-0', selectedCategoryBase ? 'bg-orange-500 text-white' : 'bg-[#303030]')}>
+                        <Boxes size={15} />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[11px] font-black truncate">{selectedCategoryBase?.name || '不使用类目基座'}</span>
+                        <span className="block text-[8px] text-gray-500 truncate">
+                          {selectedCategoryBase ? `固定版本 V${selectedCategoryBase.version} · 与当前提示词组合` : '保持原有生图逻辑不变'}
+                        </span>
+                      </span>
+                      {basesLoading ? <Loader2 size={13} className="animate-spin" /> : <ChevronDown size={13} className={cn('transition-transform', baseMenuOpen && 'rotate-180')} />}
+                    </button>
+
+                    <AnimatePresence>
+                      {baseMenuOpen && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
+                          className="absolute z-30 left-0 right-0 mt-1 max-h-48 overflow-y-auto rounded-lg border border-[#3b3b3b] bg-[#181818] p-1 shadow-2xl"
+                        >
+                          <button type="button" onClick={() => selectCategoryBase(null)} className="w-full rounded-md px-2.5 py-2 text-left text-[11px] text-gray-400 hover:bg-[#272727]">
+                            不使用类目基座
+                          </button>
+                          {categoryBases.map(record => {
+                            const slots = record.version.components;
+                            const slotCount = [slots.visualSystem, slots.scene, slots.material, slots.model].filter(Boolean).length;
+                            return (
+                              <button
+                                key={record.base.id}
+                                type="button"
+                                onClick={() => selectCategoryBase(record)}
+                                className={cn(
+                                  'w-full rounded-md px-2.5 py-2 text-left hover:bg-[#272727] flex items-center justify-between gap-3',
+                                  selectedCategoryBase?.id === record.base.id && selectedCategoryBase.versionId === record.version.id && 'bg-orange-500/10'
+                                )}
+                              >
+                                <span className="min-w-0">
+                                  <span className="block text-[11px] font-bold text-gray-100 truncate">{record.base.name}</span>
+                                  <span className="block text-[8px] text-gray-500 truncate">{record.base.category || '未分类'} · V{record.version.version}</span>
+                                </span>
+                                <span className="text-[8px] text-orange-400 shrink-0">{slotCount}/4 模块</span>
+                              </button>
+                            );
+                          })}
+                          {!basesLoading && !basesError && categoryBases.length === 0 && (
+                            <div className="px-2.5 py-3 text-[10px] text-gray-500">还没有可用基座，请先到品牌基座库创建。</div>
+                          )}
+                          {basesError && <div className="px-2.5 py-3 text-[10px] text-red-400">{basesError}</div>}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
                   {/* Engine Selection */}
                   <div>
                     <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">渲染引擎 / ENGINE</div>
