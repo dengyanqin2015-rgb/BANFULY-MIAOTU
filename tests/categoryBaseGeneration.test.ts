@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import {
   compileCategoryBasePrompt,
+  compileProductionMaterialsPrompt,
   getCategoryBaseReferenceCount,
+  shouldUseModelMaterial,
   type CategoryBaseGenerationContext,
 } from '../src/lib/categoryBaseGeneration';
 
@@ -44,5 +46,40 @@ assert.match(compiled, /【场景｜海滩场景｜V1】/);
 assert.match(compiled, /不要水印；不要脏色/);
 assert.equal(getCategoryBaseReferenceCount(context), 1);
 assert.equal(getCategoryBaseReferenceCount(null), 0);
+assert.equal(shouldUseModelMaterial('纯产品平铺主图，不要人物'), false);
+assert.equal(shouldUseModelMaterial('生成一张白底商品主图'), false);
+assert.equal(shouldUseModelMaterial('成年女性模特穿着泳装拍摄全身主图'), true);
+assert.equal(shouldUseModelMaterial('模特穿搭，但画面不要人物'), false);
+
+const copyLayoutContext = {
+  base: undefined,
+  slots: [{
+    key: 'copyLayout' as const,
+    assetId: 'copy-1', assetName: '主图左上标题', assetType: 'copy_layout' as const,
+    versionId: 'copy-version-1', version: 1,
+    profile: {
+      ...profile('简洁电商文案排版'),
+      attributes: {
+        templateKind: 'main_image', headlineFont: '现代黑体', headlineSize: '画面宽度8%',
+        headlinePosition: '左上安全区', headlineMaxChars: 10, headlineDirection: '核心利益点',
+        sellingPointPosition: '商品右侧', sellingPointMaxChars: 16, sellingPointDirection: '差异化卖点',
+        subcopyFont: '细黑体', subcopySize: '主标题的45%', subcopyPosition: '标题下方',
+        subcopyMaxChars: 20, subcopyDirection: '使用场景佐证',
+      },
+    },
+    referenceImage: { id: 'copy-image', role: 'source' as const, objectId: 'copy-object', sortOrder: 0, viewUrl: '/view/copy' },
+  }],
+};
+const copyPrompt = compileProductionMaterialsPrompt('商品名称必须写“清透一夏”', copyLayoutContext, 2);
+assert.match(copyPrompt, /对应输入参考图：图3/);
+assert.match(copyPrompt, /主标题字体：现代黑体/);
+assert.match(copyPrompt, /主标题不超过10字/);
+assert.match(copyPrompt, /用户明确给出的文案必须原样保留/);
+
+const suppressedModelPrompt = compileProductionMaterialsPrompt('纯产品平铺主图', {
+  slots: [],
+  modelMaterialSuppressed: true,
+});
+assert.match(suppressedModelPrompt, /模特参考图不参与，也不要擅自添加人物/);
 
 console.log('category base generation tests passed');

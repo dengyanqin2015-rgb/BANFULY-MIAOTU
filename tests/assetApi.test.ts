@@ -77,7 +77,7 @@ const registerAndLogin = async (username: string) => {
   return loggedIn.body.token;
 };
 
-const assetPayload = (type: 'visual_system' | 'scene' | 'material' | 'model', name: string) => ({
+const assetPayload = (type: 'visual_system' | 'scene' | 'material' | 'model' | 'copy_layout', name: string) => ({
   type,
   name,
   category: '泳装',
@@ -133,6 +133,16 @@ try {
     method: 'POST', token: tokenA, body: JSON.stringify(assetPayload('scene', '地中海沙滩')),
   });
   assert.equal(scene.status, 201);
+  const copyLayout = await request<AssetRecord>('/api/assets', {
+    method: 'POST', token: tokenA, body: JSON.stringify({
+      ...assetPayload('copy_layout', '主图左上标题模板'),
+      profile: {
+        ...assetPayload('copy_layout', '主图左上标题模板').profile,
+        attributes: { templateKind: 'main_image', headlineMaxChars: 10, headlinePosition: '左上安全区' },
+      },
+    }),
+  });
+  assert.equal(copyLayout.status, 201);
 
   const filtered = await request<PaginatedAssetResult<AssetRecord>>('/api/assets?type=visual_system&page=1&pageSize=10', { token: tokenA });
   assert.equal(filtered.status, 200);
@@ -175,6 +185,11 @@ try {
           versionId: scene.body.version.id,
           version: scene.body.version.version,
         },
+        copyLayout: {
+          assetId: copyLayout.body.asset.id,
+          versionId: copyLayout.body.version.id,
+          version: copyLayout.body.version.version,
+        },
       },
       defaults: { aspectRatio: '4:5', imageSize: '2K' },
       changeNote: '首次组合',
@@ -204,13 +219,25 @@ try {
   );
   assert.equal(generationContextV1.status, 200);
   assert.equal(generationContextV1.body.versionId, createdBase.body.version.id);
-  assert.deepEqual(generationContextV1.body.slots.map(slot => [slot.key, slot.version]), [['visualSystem', 1], ['scene', 1]]);
+  assert.deepEqual(generationContextV1.body.slots.map(slot => [slot.key, slot.version]), [['visualSystem', 1], ['scene', 1], ['copyLayout', 1]]);
   assert.ok(generationContextV1.body.slots.every(slot => slot.referenceImage === undefined));
   const hiddenGenerationContext = await request(
     `/api/category-bases/${createdBase.body.base.id}/generation-context?versionId=${createdBase.body.version.id}`,
     { token: tokenB },
   );
   assert.equal(hiddenGenerationContext.status, 404);
+  const copyGenerationContext = await request<import('../src/lib/categoryBaseGeneration').CategoryBaseGenerationSlot>(
+    `/api/assets/${copyLayout.body.asset.id}/generation-context?versionId=${copyLayout.body.version.id}`,
+    { token: tokenA },
+  );
+  assert.equal(copyGenerationContext.status, 200);
+  assert.equal(copyGenerationContext.body.key, 'copyLayout');
+  assert.equal(copyGenerationContext.body.profile.attributes.headlineMaxChars, 10);
+  const hiddenCopyGenerationContext = await request(
+    `/api/assets/${copyLayout.body.asset.id}/generation-context?versionId=${copyLayout.body.version.id}`,
+    { token: tokenB },
+  );
+  assert.equal(hiddenCopyGenerationContext.status, 404);
 
   const updatedBase = await request<CategoryBaseRecord>(`/api/category-bases/${createdBase.body.base.id}`, {
     method: 'PUT',
@@ -228,6 +255,11 @@ try {
           assetId: scene.body.asset.id,
           versionId: scene.body.version.id,
           version: scene.body.version.version,
+        },
+        copyLayout: {
+          assetId: copyLayout.body.asset.id,
+          versionId: copyLayout.body.version.id,
+          version: copyLayout.body.version.version,
         },
       },
       defaults: { aspectRatio: '4:5', imageSize: '2K' },

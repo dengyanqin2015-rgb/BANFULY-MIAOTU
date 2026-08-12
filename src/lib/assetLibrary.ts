@@ -1,4 +1,4 @@
-export const ASSET_TYPES = ['visual_system', 'scene', 'material', 'model'] as const;
+export const ASSET_TYPES = ['visual_system', 'scene', 'material', 'model', 'copy_layout'] as const;
 export type AssetType = (typeof ASSET_TYPES)[number];
 
 export const ASSET_STATUSES = ['active', 'archived'] as const;
@@ -84,6 +84,7 @@ export interface CategoryBaseComponents {
   scene?: AssetVersionReference;
   material?: AssetVersionReference;
   model?: AssetVersionReference;
+  copyLayout?: AssetVersionReference;
 }
 
 export interface CategoryBaseDefaults {
@@ -297,6 +298,7 @@ export const normalizeCategoryBaseWriteInput = (value: unknown): CategoryBaseWri
     scene: normalizeVersionReference(rawComponents.scene, '场景'),
     material: normalizeVersionReference(rawComponents.material, '材质'),
     model: normalizeVersionReference(rawComponents.model, '模特'),
+    copyLayout: normalizeVersionReference(rawComponents.copyLayout, '文案排版'),
   };
   if (!Object.values(components).some(Boolean)) throw new AssetValidationError('类目基座至少需要选择一个资产');
   return {

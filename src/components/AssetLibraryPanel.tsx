@@ -12,6 +12,7 @@ import {
   Sparkles,
   UploadCloud,
   UserRound,
+  Type,
   X,
 } from 'lucide-react';
 import type {
@@ -30,6 +31,7 @@ const TYPE_META: Record<AssetType, { label: string; short: string; icon: React.E
   scene: { label: '场景库', short: 'SCENE', icon: Mountain, accent: '#1473e6' },
   material: { label: '材质库', short: 'MATERIAL', icon: Layers3, accent: '#8b5cf6' },
   model: { label: '模特库', short: 'MODEL', icon: UserRound, accent: '#059669' },
+  copy_layout: { label: '文案排版库', short: 'COPY', icon: Type, accent: '#d946ef' },
 };
 
 const SLOT_KEYS: Array<{ key: keyof CategoryBaseComponents; type: AssetType }> = [
@@ -37,6 +39,7 @@ const SLOT_KEYS: Array<{ key: keyof CategoryBaseComponents; type: AssetType }> =
   { key: 'scene', type: 'scene' },
   { key: 'material', type: 'material' },
   { key: 'model', type: 'model' },
+  { key: 'copyLayout', type: 'copy_layout' },
 ];
 
 const emptyAssetForm = (type: AssetType) => ({
@@ -49,6 +52,20 @@ const emptyAssetForm = (type: AssetType) => ({
   negativePrompt: '',
   lockedFields: '',
   variableFields: '',
+  templateKind: 'main_image',
+  headlineFont: '',
+  headlineSize: '',
+  headlinePosition: '',
+  headlineMaxChars: '',
+  headlineDirection: '',
+  sellingPointPosition: '',
+  sellingPointMaxChars: '',
+  sellingPointDirection: '',
+  subcopyFont: '',
+  subcopySize: '',
+  subcopyPosition: '',
+  subcopyMaxChars: '',
+  subcopyDirection: '',
 });
 
 const emptyBaseForm = () => ({
@@ -59,6 +76,7 @@ const emptyBaseForm = () => ({
   scene: '',
   material: '',
   model: '',
+  copyLayout: '',
   modelId: '',
   aspectRatio: '',
   imageSize: '',
@@ -90,7 +108,7 @@ const splitList = (value: string) => value.split(/[,，\n]/).map(item => item.tr
 export const AssetLibraryPanel: React.FC = () => {
   const [tab, setTab] = useState<LibraryTab>('bases');
   const [assetsByType, setAssetsByType] = useState<Record<AssetType, AssetRecord[]>>({
-    visual_system: [], scene: [], material: [], model: [],
+    visual_system: [], scene: [], material: [], model: [], copy_layout: [],
   });
   const [bases, setBases] = useState<CategoryBaseRecord[]>([]);
   const [search, setSearch] = useState('');
@@ -110,10 +128,10 @@ export const AssetLibraryPanel: React.FC = () => {
     setLoading(true);
     setError('');
     try {
-      const [storage, baseResult, visual, scene, material, model] = await Promise.all([
+      const [storage, baseResult, visual, scene, material, model, copyLayout] = await Promise.all([
         api<{ configured: boolean }>('/api/storage/status'),
         api<PaginatedAssetResult<CategoryBaseRecord>>('/api/category-bases?page=1&pageSize=100'),
-        ...(['visual_system', 'scene', 'material', 'model'] as AssetType[]).map(type =>
+        ...(['visual_system', 'scene', 'material', 'model', 'copy_layout'] as AssetType[]).map(type =>
           api<PaginatedAssetResult<AssetRecord>>(`/api/assets?type=${type}&page=1&pageSize=100`)
         ),
       ]);
@@ -124,6 +142,7 @@ export const AssetLibraryPanel: React.FC = () => {
         scene: scene.items,
         material: material.items,
         model: model.items,
+        copy_layout: copyLayout.items,
       });
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : '资产库加载失败');
@@ -174,6 +193,20 @@ export const AssetLibraryPanel: React.FC = () => {
       negativePrompt: record.version.profile.negativePrompt,
       lockedFields: record.version.profile.lockedFields.join('，'),
       variableFields: record.version.profile.variableFields.join('，'),
+      templateKind: String(record.version.profile.attributes.templateKind || 'main_image'),
+      headlineFont: String(record.version.profile.attributes.headlineFont || ''),
+      headlineSize: String(record.version.profile.attributes.headlineSize || ''),
+      headlinePosition: String(record.version.profile.attributes.headlinePosition || ''),
+      headlineMaxChars: String(record.version.profile.attributes.headlineMaxChars || ''),
+      headlineDirection: String(record.version.profile.attributes.headlineDirection || ''),
+      sellingPointPosition: String(record.version.profile.attributes.sellingPointPosition || ''),
+      sellingPointMaxChars: String(record.version.profile.attributes.sellingPointMaxChars || ''),
+      sellingPointDirection: String(record.version.profile.attributes.sellingPointDirection || ''),
+      subcopyFont: String(record.version.profile.attributes.subcopyFont || ''),
+      subcopySize: String(record.version.profile.attributes.subcopySize || ''),
+      subcopyPosition: String(record.version.profile.attributes.subcopyPosition || ''),
+      subcopyMaxChars: String(record.version.profile.attributes.subcopyMaxChars || ''),
+      subcopyDirection: String(record.version.profile.attributes.subcopyDirection || ''),
     });
     setFiles([]);
     setAssetModalOpen(true);
@@ -224,7 +257,22 @@ export const AssetLibraryPanel: React.FC = () => {
           negativePrompt: assetForm.negativePrompt,
           lockedFields: splitList(assetForm.lockedFields),
           variableFields: splitList(assetForm.variableFields),
-          attributes: {},
+          attributes: assetForm.type === 'copy_layout' ? {
+            templateKind: assetForm.templateKind,
+            headlineFont: assetForm.headlineFont,
+            headlineSize: assetForm.headlineSize,
+            headlinePosition: assetForm.headlinePosition,
+            headlineMaxChars: Number(assetForm.headlineMaxChars) || 0,
+            headlineDirection: assetForm.headlineDirection,
+            sellingPointPosition: assetForm.sellingPointPosition,
+            sellingPointMaxChars: Number(assetForm.sellingPointMaxChars) || 0,
+            sellingPointDirection: assetForm.sellingPointDirection,
+            subcopyFont: assetForm.subcopyFont,
+            subcopySize: assetForm.subcopySize,
+            subcopyPosition: assetForm.subcopyPosition,
+            subcopyMaxChars: Number(assetForm.subcopyMaxChars) || 0,
+            subcopyDirection: assetForm.subcopyDirection,
+          } : {},
         },
         imageRefs: [...existingRefs, ...uploadedRefs],
         changeNote: editingAsset ? '页面编辑更新' : '首次创建',
@@ -269,6 +317,7 @@ export const AssetLibraryPanel: React.FC = () => {
       scene: record.version.components.scene?.assetId || '',
       material: record.version.components.material?.assetId || '',
       model: record.version.components.model?.assetId || '',
+      copyLayout: record.version.components.copyLayout?.assetId || '',
       modelId: record.version.defaults.modelId || '',
       aspectRatio: record.version.defaults.aspectRatio || '',
       imageSize: record.version.defaults.imageSize || '',
@@ -334,7 +383,7 @@ export const AssetLibraryPanel: React.FC = () => {
         <div>
           <div className="section-label mb-3 text-[#ff3b30]">Brand Foundation</div>
           <h1 className="text-4xl font-black tracking-tighter text-black">品牌基座库</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#6e6e73]">把视觉、场景、材质和模特拆开沉淀，再自由拼成可复用的类目方案。</p>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#6e6e73]">把视觉、场景、材质、模特和文案排版拆开沉淀，再自由拼成可复用的类目方案。</p>
         </div>
         <div className="flex items-center gap-3">
           <span className={`rounded-full border px-3 py-1.5 text-[11px] font-bold ${storageConfigured ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
@@ -349,7 +398,7 @@ export const AssetLibraryPanel: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
         <button onClick={() => setTab('bases')} className={`rounded-2xl border p-4 text-left transition ${tab === 'bases' ? 'border-black bg-black text-white shadow-xl' : 'border-black/10 bg-white hover:border-black/30'}`}>
           <Boxes size={20} />
           <div className="mt-5 text-[10px] font-black tracking-[0.18em] opacity-60">FOUNDATIONS</div>
@@ -394,7 +443,7 @@ export const AssetLibraryPanel: React.FC = () => {
                   <button onClick={() => archiveBase(record)} className="rounded-lg p-2 text-[#86868b] hover:bg-red-50 hover:text-red-500"><Archive size={15} /></button>
                 </div>
               </div>
-              <div className="mt-6 grid grid-cols-4 gap-2">
+              <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-5">
                 {SLOT_KEYS.map(({ key, type }) => {
                   const reference = record.version.components[key];
                   const asset = reference ? assetLookup.get(reference.assetId) : undefined;
@@ -410,7 +459,7 @@ export const AssetLibraryPanel: React.FC = () => {
               </div>
             </article>
           ))}
-          {visibleBases.length === 0 && <EmptyState title="还没有类目基座" description="从四个资产库中任选组合，保存成可复用方案。" onCreate={openNewBase} />}
+          {visibleBases.length === 0 && <EmptyState title="还没有类目基座" description="从各类生产资料中任选组合，保存成可复用方案。" onCreate={openNewBase} />}
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
@@ -452,6 +501,27 @@ export const AssetLibraryPanel: React.FC = () => {
           </div>
           <Field label="结构化摘要"><textarea value={assetForm.summary} onChange={e => setAssetForm({ ...assetForm, summary: e.target.value })} rows={3} placeholder="用中文记录这套资产最重要的视觉特征" className="input-control resize-none" /></Field>
           <Field label="生图引导片段"><textarea value={assetForm.promptFragment} onChange={e => setAssetForm({ ...assetForm, promptFragment: e.target.value })} rows={4} placeholder="后续会与用户提示词组合；不需要重复写商品主体" className="input-control resize-none" /></Field>
+          {assetForm.type === 'copy_layout' && (
+            <div className="space-y-4 rounded-2xl border border-fuchsia-100 bg-fuchsia-50/40 p-4">
+              <div className="text-[10px] font-black tracking-wider text-fuchsia-600">文案排版结构</div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <Field label="模板用途"><select value={assetForm.templateKind} onChange={e => setAssetForm({ ...assetForm, templateKind: e.target.value })} className="input-control"><option value="main_image">主图模板</option><option value="detail">详情模板</option></select></Field>
+                <Field label="主标题字体"><input value={assetForm.headlineFont} onChange={e => setAssetForm({ ...assetForm, headlineFont: e.target.value })} placeholder="字体或字体风格" className="input-control" /></Field>
+                <Field label="主标题字号层级"><input value={assetForm.headlineSize} onChange={e => setAssetForm({ ...assetForm, headlineSize: e.target.value })} placeholder="例如：画面宽度的 8%" className="input-control" /></Field>
+                <Field label="主标题位置"><input value={assetForm.headlinePosition} onChange={e => setAssetForm({ ...assetForm, headlinePosition: e.target.value })} placeholder="例如：左上安全区" className="input-control" /></Field>
+                <Field label="主标题字数上限"><input type="number" min="0" value={assetForm.headlineMaxChars} onChange={e => setAssetForm({ ...assetForm, headlineMaxChars: e.target.value })} className="input-control" /></Field>
+                <Field label="主标题内容方向"><input value={assetForm.headlineDirection} onChange={e => setAssetForm({ ...assetForm, headlineDirection: e.target.value })} placeholder="品牌主张、品类利益点" className="input-control" /></Field>
+                <Field label="核心卖点位置"><input value={assetForm.sellingPointPosition} onChange={e => setAssetForm({ ...assetForm, sellingPointPosition: e.target.value })} placeholder="例如：商品右侧" className="input-control" /></Field>
+                <Field label="核心卖点字数上限"><input type="number" min="0" value={assetForm.sellingPointMaxChars} onChange={e => setAssetForm({ ...assetForm, sellingPointMaxChars: e.target.value })} className="input-control" /></Field>
+                <Field label="核心卖点方向"><input value={assetForm.sellingPointDirection} onChange={e => setAssetForm({ ...assetForm, sellingPointDirection: e.target.value })} placeholder="功能、痛点、差异化" className="input-control" /></Field>
+                <Field label="副文案字体"><input value={assetForm.subcopyFont} onChange={e => setAssetForm({ ...assetForm, subcopyFont: e.target.value })} className="input-control" /></Field>
+                <Field label="副文案字号层级"><input value={assetForm.subcopySize} onChange={e => setAssetForm({ ...assetForm, subcopySize: e.target.value })} className="input-control" /></Field>
+                <Field label="副文案位置"><input value={assetForm.subcopyPosition} onChange={e => setAssetForm({ ...assetForm, subcopyPosition: e.target.value })} className="input-control" /></Field>
+                <Field label="副文案字数上限"><input type="number" min="0" value={assetForm.subcopyMaxChars} onChange={e => setAssetForm({ ...assetForm, subcopyMaxChars: e.target.value })} className="input-control" /></Field>
+                <div className="md:col-span-2"><Field label="副文案内容方向"><input value={assetForm.subcopyDirection} onChange={e => setAssetForm({ ...assetForm, subcopyDirection: e.target.value })} placeholder="佐证、使用场景、补充利益点" className="input-control" /></Field></div>
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <Field label="避免要素"><textarea value={assetForm.negativePrompt} onChange={e => setAssetForm({ ...assetForm, negativePrompt: e.target.value })} rows={2} className="input-control resize-none" /></Field>
             <Field label="可变要素"><textarea value={assetForm.variableFields} onChange={e => setAssetForm({ ...assetForm, variableFields: e.target.value })} rows={2} placeholder="商品，文案，姿势" className="input-control resize-none" /></Field>
@@ -532,4 +602,3 @@ const Modal: React.FC<{ title: string; children: React.ReactNode; onClose: () =>
     </div>
   </div>
 );
-

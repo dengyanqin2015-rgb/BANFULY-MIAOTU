@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
-import { Send, ChevronDown, Key, Image as ImageIcon, X, Boxes, Loader2 } from 'lucide-react';
+import { Send, ChevronDown, Key, Image as ImageIcon, X, Boxes, Loader2, SlidersHorizontal, Library, Palette, Mountain, Layers3, UserRound, Type } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { cn } from '../lib/utils';
 import { assertImageUsage, processImageFiles } from '../lib/uploadProcessing';
-import type { CategoryBaseRecord, PaginatedAssetResult } from '../lib/assetLibrary';
+import type { AssetRecord, AssetType, CategoryBaseRecord, PaginatedAssetResult } from '../lib/assetLibrary';
+import type { CategoryBaseSlotKey, ProductionMaterialSelection, SelectedAssetMaterial } from '../lib/categoryBaseGeneration';
 
 export interface SelectedCategoryBase {
   id: string;
@@ -15,11 +16,11 @@ export interface SelectedCategoryBase {
 
 export interface GenerationBarRef {
   addImage: (data: string, mimeType: string, preview: string, sourceNodeId?: string, usage?: { originalBytes: number; analysisBytes: number }) => void;
-  setParams: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; preview: string; sourceNodeId?: string }[], categoryBase?: SelectedCategoryBase) => void;
+  setParams: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; preview: string; sourceNodeId?: string }[], productionMaterials?: ProductionMaterialSelection) => void;
 }
 
 interface GenerationBarProps {
-  onGenerate: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; sourceNodeId?: string }[], targetNodeId?: string, categoryBase?: SelectedCategoryBase) => void;
+  onGenerate: (prompt: string, aspectRatio: AspectRatio, imageSize: ImageSize, model: ImageModel, images?: { data: string; mimeType: string; sourceNodeId?: string }[], targetNodeId?: string, productionMaterials?: ProductionMaterialSelection) => void;
   hasApiKey: boolean;
   onOpenApiKey: () => void;
 }
@@ -154,6 +155,14 @@ const MODELS: { id: ImageModel; name: string; version: string; desc: string }[] 
   { id: "gpt-image-2", name: "GPT IMAGE", version: "2", desc: "LINKAI" },
 ];
 
+const MATERIAL_SLOTS: Array<{ key: CategoryBaseSlotKey; type: AssetType; label: string; caption: string; icon: React.ElementType; color: string }> = [
+  { key: 'visualSystem', type: 'visual_system', label: 'VI视觉', caption: '色调 · 字体 · 品牌基调', icon: Palette, color: 'text-orange-400' },
+  { key: 'scene', type: 'scene', label: '场景', caption: '环境 · 光线 · 氛围配色', icon: Mountain, color: 'text-blue-400' },
+  { key: 'material', type: 'material', label: '材质', caption: '产品结构 · 纹理 · 工艺', icon: Layers3, color: 'text-violet-400' },
+  { key: 'model', type: 'model', label: '模特', caption: '需要人物时按需启用', icon: UserRound, color: 'text-emerald-400' },
+  { key: 'copyLayout', type: 'copy_layout', label: '文案排版', caption: '字体 · 位置 · 内容方向', icon: Type, color: 'text-fuchsia-400' },
+];
+
 export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({ onGenerate, hasApiKey, onOpenApiKey }, ref) => {
   const [prompt, setPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
@@ -175,11 +184,15 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const submitUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isSubmitLocked, setIsSubmitLocked] = useState(false);
   const [categoryBases, setCategoryBases] = useState<CategoryBaseRecord[]>([]);
-  const [selectedCategoryBase, setSelectedCategoryBase] = useState<SelectedCategoryBase | null>(null);
-  const [baseMenuOpen, setBaseMenuOpen] = useState(false);
+  const [productionMaterials, setProductionMaterials] = useState<ProductionMaterialSelection>({ overrides: {} });
+  const [optionPage, setOptionPage] = useState<'model' | 'materials'>('model');
+  const [openMaterialMenu, setOpenMaterialMenu] = useState<'base' | CategoryBaseSlotKey | null>(null);
   const [basesLoading, setBasesLoading] = useState(false);
   const [basesLoaded, setBasesLoaded] = useState(false);
   const [basesError, setBasesError] = useState('');
+  const [assetsByType, setAssetsByType] = useState<Record<AssetType, AssetRecord[]>>({
+    visual_system: [], scene: [], material: [], model: [], copy_layout: [],
+  });
 
   useEffect(() => () => {
     if (submitUnlockTimerRef.current) clearTimeout(submitUnlockTimerRef.current);
@@ -217,38 +230,62 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
     if (!showOptions || basesLoaded || basesLoading) return;
     setBasesLoading(true);
     setBasesError('');
-    fetch('/api/category-bases?page=1&pageSize=100&status=active')
-      .then(async response => {
+    Promise.all([
+      fetch('/api/category-bases?page=1&pageSize=100&status=active'),
+      ...MATERIAL_SLOTS.map(slot => fetch(`/api/assets?type=${slot.type}&page=1&pageSize=100&status=active`)),
+    ])
+      .then(async responses => Promise.all(responses.map(async response => {
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.message || '类目基座加载失败');
-        return payload as PaginatedAssetResult<CategoryBaseRecord>;
-      })
-      .then(result => {
-        setCategoryBases(result.items);
+        if (!response.ok) throw new Error(payload.message || '生产资料加载失败');
+        return payload as PaginatedAssetResult<CategoryBaseRecord | AssetRecord>;
+      })))
+      .then(([baseResult, ...assetResults]) => {
+        setCategoryBases(baseResult.items as CategoryBaseRecord[]);
+        setAssetsByType(Object.fromEntries(MATERIAL_SLOTS.map((slot, index) => [slot.type, assetResults[index].items])) as Record<AssetType, AssetRecord[]>);
         setBasesLoaded(true);
       })
-      .catch(error => setBasesError(error instanceof Error ? error.message : '类目基座加载失败'))
+      .catch(error => setBasesError(error instanceof Error ? error.message : '生产资料加载失败'))
       .finally(() => setBasesLoading(false));
   }, [showOptions, basesLoaded, basesLoading]);
 
   const selectCategoryBase = (record: CategoryBaseRecord | null) => {
-    setBaseMenuOpen(false);
+    setOpenMaterialMenu(null);
     if (!record) {
-      setSelectedCategoryBase(null);
+      setProductionMaterials(current => ({ overrides: current.overrides }));
       return;
     }
-    setSelectedCategoryBase({
-      id: record.base.id,
-      versionId: record.version.id,
-      name: record.base.name,
-      version: record.version.version,
-    });
+    setProductionMaterials({ base: { id: record.base.id, versionId: record.version.id, name: record.base.name, version: record.version.version }, overrides: {} });
     const defaults = record.version.defaults;
     if (MODELS.some(item => item.id === defaults.modelId)) setModel(defaults.modelId as ImageModel);
     if (IMAGE_SIZES.some(item => item.id === defaults.imageSize)) setImageSize(defaults.imageSize as ImageSize);
     const nextModel = MODELS.some(item => item.id === defaults.modelId) ? defaults.modelId as ImageModel : model;
     const compatibleRatios = nextModel === 'gpt-image-2' ? GPT_ASPECT_RATIOS : GOOGLE_ASPECT_RATIOS;
     if (compatibleRatios.includes(defaults.aspectRatio as AspectRatio)) setAspectRatio(defaults.aspectRatio as AspectRatio);
+  };
+
+  const selectMaterial = (key: CategoryBaseSlotKey, record: AssetRecord | null) => {
+    const selected: SelectedAssetMaterial | null = record ? {
+      assetId: record.asset.id,
+      versionId: record.version.id,
+      name: record.asset.name,
+      version: record.version.version,
+      type: record.asset.type,
+    } : null;
+    setProductionMaterials(current => ({ ...current, overrides: { ...current.overrides, [key]: selected } }));
+    setOpenMaterialMenu(null);
+  };
+
+  const assetLookup = new Map(Object.values(assetsByType).flat().map(record => [record.asset.id, record]));
+  const selectedBaseRecord = categoryBases.find(record => record.base.id === productionMaterials.base?.id && record.version.id === productionMaterials.base.versionId);
+  const resolveMaterial = (key: CategoryBaseSlotKey): SelectedAssetMaterial | null | undefined => {
+    if (Object.prototype.hasOwnProperty.call(productionMaterials.overrides, key)) return productionMaterials.overrides[key];
+    const reference = selectedBaseRecord?.version.components[key];
+    if (!reference) return undefined;
+    const record = assetLookup.get(reference.assetId);
+    return record ? {
+      assetId: reference.assetId, versionId: reference.versionId, version: reference.version,
+      name: record.asset.name, type: record.asset.type,
+    } : undefined;
   };
 
   useImperativeHandle(ref, () => ({
@@ -282,12 +319,12 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
         setImages(prev => [...prev, { data, mimeType, preview, sourceNodeId, originalBytes, analysisBytes }]);
       });
     },
-    setParams: (p, ar, is, m, imgs, categoryBase) => {
+    setParams: (p, ar, is, m, imgs, selectedMaterials) => {
       setPrompt(p);
       setAspectRatio(ar);
       setImageSize(is);
       setModel(m);
-      setSelectedCategoryBase(categoryBase || null);
+      setProductionMaterials(selectedMaterials || { overrides: {} });
       if (imgs) {
         uploadQueueRef.current = uploadQueueRef.current.then(async () => {
         const next = imgs.map(img => {
@@ -467,7 +504,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       data: img.data, 
       mimeType: img.mimeType,
       sourceNodeId: img.sourceNodeId
-    })), undefined, selectedCategoryBase || undefined);
+    })), undefined, (productionMaterials.base || Object.keys(productionMaterials.overrides).length) ? productionMaterials : undefined);
     setPrompt('');
     setImages([]);
     uploadUsageRef.current = { count: 0, originalBytes: 0, analysisBytes: 0 };
@@ -603,68 +640,43 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
             className="overflow-hidden"
               >
                 <div className="pt-2 pb-0.5 border-t border-[#333] mt-1.5 space-y-2.5 max-h-[44vh] overflow-y-auto overscroll-contain pr-1">
-                  <div className="relative">
-                    <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1 px-1">类目基座 / FOUNDATION</div>
-                    <button
-                      type="button"
-                      onClick={() => setBaseMenuOpen(value => !value)}
-                      className={cn(
-                        'w-full min-h-[42px] rounded-lg border px-2.5 py-2 flex items-center gap-2 text-left transition-colors',
-                        selectedCategoryBase
-                          ? 'border-orange-500/60 bg-orange-500/10 text-white'
-                          : 'border-[#333] bg-[#222] text-gray-400 hover:bg-[#292929]'
-                      )}
-                    >
-                      <span className={cn('w-7 h-7 rounded-md flex items-center justify-center shrink-0', selectedCategoryBase ? 'bg-orange-500 text-white' : 'bg-[#303030]')}>
-                        <Boxes size={15} />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-[11px] font-black truncate">{selectedCategoryBase?.name || '不使用类目基座'}</span>
-                        <span className="block text-[8px] text-gray-500 truncate">
-                          {selectedCategoryBase ? `固定版本 V${selectedCategoryBase.version} · 与当前提示词组合` : '保持原有生图逻辑不变'}
-                        </span>
-                      </span>
-                      {basesLoading ? <Loader2 size={13} className="animate-spin" /> : <ChevronDown size={13} className={cn('transition-transform', baseMenuOpen && 'rotate-180')} />}
-                    </button>
-
-                    <AnimatePresence>
-                      {baseMenuOpen && (
-                        <motion.div
-                          initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
-                          className="absolute z-30 left-0 right-0 mt-1 max-h-48 overflow-y-auto rounded-lg border border-[#3b3b3b] bg-[#181818] p-1 shadow-2xl"
-                        >
-                          <button type="button" onClick={() => selectCategoryBase(null)} className="w-full rounded-md px-2.5 py-2 text-left text-[11px] text-gray-400 hover:bg-[#272727]">
-                            不使用类目基座
-                          </button>
-                          {categoryBases.map(record => {
-                            const slots = record.version.components;
-                            const slotCount = [slots.visualSystem, slots.scene, slots.material, slots.model].filter(Boolean).length;
-                            return (
-                              <button
-                                key={record.base.id}
-                                type="button"
-                                onClick={() => selectCategoryBase(record)}
-                                className={cn(
-                                  'w-full rounded-md px-2.5 py-2 text-left hover:bg-[#272727] flex items-center justify-between gap-3',
-                                  selectedCategoryBase?.id === record.base.id && selectedCategoryBase.versionId === record.version.id && 'bg-orange-500/10'
-                                )}
-                              >
-                                <span className="min-w-0">
-                                  <span className="block text-[11px] font-bold text-gray-100 truncate">{record.base.name}</span>
-                                  <span className="block text-[8px] text-gray-500 truncate">{record.base.category || '未分类'} · V{record.version.version}</span>
-                                </span>
-                                <span className="text-[8px] text-orange-400 shrink-0">{slotCount}/4 模块</span>
-                              </button>
-                            );
-                          })}
-                          {!basesLoading && !basesError && categoryBases.length === 0 && (
-                            <div className="px-2.5 py-3 text-[10px] text-gray-500">还没有可用基座，请先到品牌基座库创建。</div>
-                          )}
-                          {basesError && <div className="px-2.5 py-3 text-[10px] text-red-400">{basesError}</div>}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                  <div className="grid grid-cols-2 gap-1 rounded-lg bg-[#111] p-1">
+                    <button type="button" onClick={() => setOptionPage('model')} className={cn('flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[10px] font-black transition', optionPage === 'model' ? 'bg-white text-black' : 'text-gray-500 hover:text-white')}><SlidersHorizontal size={12} />模型参数</button>
+                    <button type="button" onClick={() => setOptionPage('materials')} className={cn('flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[10px] font-black transition', optionPage === 'materials' ? 'bg-white text-black' : 'text-gray-500 hover:text-white')}><Library size={12} />生产资料</button>
                   </div>
+
+                  {optionPage === 'materials' && (
+                    <div className="space-y-2.5">
+                      <MaterialPicker
+                        label="类目基座" caption="一键带出整套生产资料" icon={Boxes} color="text-orange-400"
+                        selected={productionMaterials.base ? `${productionMaterials.base.name} · V${productionMaterials.base.version}` : undefined}
+                        open={openMaterialMenu === 'base'} onToggle={() => setOpenMaterialMenu(value => value === 'base' ? null : 'base')}
+                        onClear={() => selectCategoryBase(null)}
+                      >
+                        {categoryBases.map(record => <PickerOption key={record.base.id} title={record.base.name} meta={`${record.base.category || '未分类'} · V${record.version.version}`} onClick={() => selectCategoryBase(record)} />)}
+                      </MaterialPicker>
+                      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                        {MATERIAL_SLOTS.map(slot => {
+                          const selected = resolveMaterial(slot.key);
+                          return (
+                            <MaterialPicker
+                              key={slot.key} label={slot.label} caption={slot.caption} icon={slot.icon} color={slot.color}
+                              selected={selected ? `${selected.name} · V${selected.version}` : undefined}
+                              open={openMaterialMenu === slot.key} onToggle={() => setOpenMaterialMenu(value => value === slot.key ? null : slot.key)}
+                              onClear={() => selectMaterial(slot.key, null)} compact
+                            >
+                              {assetsByType[slot.type].map(record => <PickerOption key={record.asset.id} title={record.asset.name} meta={`${record.asset.category || '未分类'} · V${record.version.version}`} onClick={() => selectMaterial(slot.key, record)} />)}
+                            </MaterialPicker>
+                          );
+                        })}
+                      </div>
+                      {basesLoading && <div className="flex items-center gap-2 px-1 text-[9px] text-gray-500"><Loader2 size={11} className="animate-spin" />正在读取生产资料</div>}
+                      {basesError && <div className="px-1 text-[9px] text-red-400">{basesError}</div>}
+                      <div className="rounded-lg border border-[#303030] bg-[#151515] px-2.5 py-2 text-[8px] leading-4 text-gray-500">基座负责默认组合；单独选择的资料会覆盖对应槽位。未选择任何资料时，保持原生图逻辑不变。</div>
+                    </div>
+                  )}
+
+                  {optionPage === 'model' && <>
 
                   {/* Engine Selection */}
                   <div>
@@ -771,6 +783,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                       ))}
                     </div>
                   </div>
+                  </>}
                 </div>
               </motion.div>
             )}
@@ -782,3 +795,30 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
 });
 
 GenerationBar.displayName = 'GenerationBar';
+
+const MaterialPicker: React.FC<{
+  label: string;
+  caption: string;
+  icon: React.ElementType;
+  color: string;
+  selected?: string;
+  open: boolean;
+  onToggle: () => void;
+  onClear: () => void;
+  compact?: boolean;
+  children: React.ReactNode;
+}> = ({ label, caption, icon: Icon, color, selected, open, onToggle, onClear, compact, children }) => (
+  <div className="relative">
+    <button type="button" onClick={onToggle} className={cn('flex w-full items-center gap-2 rounded-lg border px-2.5 text-left transition', compact ? 'min-h-[48px] py-1.5' : 'min-h-[44px] py-2', selected ? 'border-white/30 bg-[#252525]' : 'border-[#333] bg-[#202020] hover:bg-[#292929]')}>
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#303030]"><Icon size={14} className={color} /></span>
+      <span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-black text-gray-100">{selected || label}</span><span className="block truncate text-[8px] text-gray-500">{selected ? `${label} · 固定版本` : caption}</span></span>
+      <ChevronDown size={12} className={cn('shrink-0 text-gray-500 transition-transform', open && 'rotate-180')} />
+    </button>
+    {selected && <button type="button" onClick={event => { event.stopPropagation(); onClear(); }} className="absolute right-7 top-1/2 -translate-y-1/2 rounded p-1 text-gray-600 hover:bg-black/30 hover:text-white"><X size={10} /></button>}
+    <AnimatePresence>{open && <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} className="absolute z-40 left-0 right-0 mt-1 max-h-44 overflow-y-auto rounded-lg border border-[#3b3b3b] bg-[#181818] p-1 shadow-2xl">{children}<button type="button" onClick={onClear} className="w-full rounded-md px-2.5 py-2 text-left text-[10px] text-gray-500 hover:bg-[#272727]">不使用此项</button></motion.div>}</AnimatePresence>
+  </div>
+);
+
+const PickerOption: React.FC<{ title: string; meta: string; onClick: () => void }> = ({ title, meta, onClick }) => (
+  <button type="button" onClick={onClick} className="flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2 text-left hover:bg-[#272727]"><span className="min-w-0"><span className="block truncate text-[10px] font-bold text-gray-100">{title}</span><span className="block truncate text-[8px] text-gray-500">{meta}</span></span></button>
+);

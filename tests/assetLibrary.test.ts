@@ -65,6 +65,17 @@ const categoryBase = normalizeCategoryBaseWriteInput({
 assert.equal(categoryBase.components.scene?.version, 3);
 assert.equal(categoryBase.defaults.aspectRatio, '4:5');
 
+const copyLayout = normalizeAssetWriteInput({
+  type: 'copy_layout', name: '主图左上标题模板', category: '泳装', status: 'active', sourceKind: 'manual',
+  profile: {
+    summary: '主图文案结构', promptFragment: '文字清晰、层级明确', negativePrompt: '',
+    lockedFields: ['标题位置'], variableFields: ['具体文案'],
+    attributes: { templateKind: 'main_image', headlineMaxChars: 10 },
+  }, imageRefs: [],
+});
+assert.equal(copyLayout.type, 'copy_layout');
+assert.equal(copyLayout.profile.attributes.headlineMaxChars, 10);
+
 assert.throws(
   () => normalizeCategoryBaseWriteInput({ name: '空基座', category: '泳装', components: {} }),
   (error: unknown) => error instanceof AssetValidationError && /至少需要选择一个资产/.test(error.message),

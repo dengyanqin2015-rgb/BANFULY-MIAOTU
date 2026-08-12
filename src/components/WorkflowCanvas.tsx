@@ -21,7 +21,7 @@ import '@xyflow/react/dist/style.css';
 import { ImageNode, ImageNodeData } from './ImageNode';
 import { MaskEditNode, type MaskEditNodeData } from './MaskEditNode';
 import { NoteNode, NoteNodeData } from './NoteNode';
-import { GenerationBar, GenerationBarRef, type SelectedCategoryBase } from './GenerationBar';
+import { GenerationBar, GenerationBarRef } from './GenerationBar';
 import { Assistant, AssistantRef } from './Assistant';
 import { generateImage, analyzeImageForPrompt, getDefaultImageAnalysisTemplate, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
 import { ImageStorage } from '../lib/storage';
@@ -33,21 +33,53 @@ import { allocatePasteBatchOrigin, getBatchImportPosition, IMAGE_UPLOAD_LIMITS, 
 import { advanceGenerationGrid, findDerivedNodePosition, findFreeGenerationPosition, findFreeGridPosition, WORKFLOW_LAYOUT } from '../lib/workflowLayout';
 import { GenerationTaskCoordinator, getGenerationErrorMessage, getGenerationProgress, type GenerationTaskToken } from '../lib/generationTasks';
 import { ImageWriteCache, SerialTaskQueue, createProjectFingerprint, stripRuntimeGraphState } from '../lib/projectPersistence';
-import { compileCategoryBasePrompt, type CategoryBaseGenerationContext } from '../lib/categoryBaseGeneration';
+import {
+  CATEGORY_BASE_SLOT_KEYS,
+  compileProductionMaterialsPrompt,
+  shouldUseModelMaterial,
+  type CategoryBaseGenerationContext,
+  type CategoryBaseGenerationSlot,
+  type ProductionMaterialContext,
+  type ProductionMaterialSelection,
+} from '../lib/categoryBaseGeneration';
 
-const loadCategoryBaseGeneration = async (
-  selected: SelectedCategoryBase,
+const loadProductionMaterials = async (
+  selected: ProductionMaterialSelection,
   manualImages: { data: string; mimeType: string; sourceNodeId?: string }[],
+  prompt: string,
 ) => {
-  const response = await fetch(
-    `/api/category-bases/${encodeURIComponent(selected.id)}/generation-context?versionId=${encodeURIComponent(selected.versionId)}`
-  );
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.message || '类目基座读取失败');
-  const context = payload as CategoryBaseGenerationContext;
-  if (context.baseId !== selected.id || context.versionId !== selected.versionId) {
-    throw new Error('类目基座版本校验失败，请重新选择');
+  let baseContext: CategoryBaseGenerationContext | undefined;
+  if (selected.base) {
+    const response = await fetch(`/api/category-bases/${encodeURIComponent(selected.base.id)}/generation-context?versionId=${encodeURIComponent(selected.base.versionId)}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || '类目基座读取失败');
+    baseContext = payload as CategoryBaseGenerationContext;
+    if (baseContext.baseId !== selected.base.id || baseContext.versionId !== selected.base.versionId) throw new Error('类目基座版本校验失败，请重新选择');
   }
+
+  const slots = new Map(baseContext?.slots.map(slot => [slot.key, slot]) || []);
+  await Promise.all(CATEGORY_BASE_SLOT_KEYS.map(async key => {
+    if (!Object.prototype.hasOwnProperty.call(selected.overrides, key)) return;
+    const override = selected.overrides[key];
+    if (!override) return void slots.delete(key);
+    const response = await fetch(`/api/assets/${encodeURIComponent(override.assetId)}/generation-context?versionId=${encodeURIComponent(override.versionId)}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || `${override.name}读取失败`);
+    const slot = payload as CategoryBaseGenerationSlot;
+    if (slot.key !== key || slot.versionId !== override.versionId) throw new Error(`${override.name}版本校验失败`);
+    slots.set(key, slot);
+  }));
+  const modelMaterialSuppressed = slots.has('model') && !shouldUseModelMaterial(prompt);
+  if (modelMaterialSuppressed) slots.delete('model');
+  const context: ProductionMaterialContext = {
+    base: baseContext ? {
+      baseId: baseContext.baseId, baseName: baseContext.baseName, category: baseContext.category,
+      description: baseContext.description, versionId: baseContext.versionId,
+      version: baseContext.version, defaults: baseContext.defaults,
+    } : undefined,
+    slots: CATEGORY_BASE_SLOT_KEYS.flatMap(key => slots.get(key) ? [slots.get(key)!] : []),
+    modelMaterialSuppressed,
+  };
 
   const manualUsage = manualImages.reduce((usage, image) => {
     const bytes = Math.ceil(image.data.length * 3 / 4);
@@ -59,6 +91,12 @@ const loadCategoryBaseGeneration = async (
   }, { count: 0, originalBytes: 0, analysisBytes: 0 });
   const remaining = Math.max(0, IMAGE_UPLOAD_LIMITS.maxFiles - manualImages.length);
   const references = context.slots.flatMap(slot => slot.referenceImage ? [{ slot, image: slot.referenceImage }] : []).slice(0, remaining);
+  const includedReferenceSlots = new Set(references.map(({ slot }) => slot.key));
+  context.slots = context.slots.map(slot => (
+    slot.referenceImage && !includedReferenceSlots.has(slot.key)
+      ? { ...slot, referenceImage: undefined }
+      : slot
+  ));
   const files = await Promise.all(references.map(async ({ slot, image }) => {
     const imageResponse = await fetch(image.viewUrl);
     if (!imageResponse.ok) throw new Error(`${slot.assetName} 的基座参考图读取失败`);
@@ -892,6 +930,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
 
     const nodeData = node.data as ImageNodeData;
+    const savedProductionMaterials = nodeData.productionMaterials || (nodeData.categoryBase ? {
+      base: nodeData.categoryBase,
+      overrides: {},
+    } : undefined);
     
     // Recovery logic for legacy nodes
     const originalImages: NonNullable<ImageNodeData['originalImages']> | undefined = nodeData.originalImages || nodeData.refImages?.map(img => {
@@ -935,7 +977,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             nodeData.model || 'gemini-3.1-flash-image-preview', 
             originalImages, 
             node.id,
-            nodeData.categoryBase,
+            savedProductionMaterials,
           );
         } : undefined,
         onAdjust: nodeData.type === 'generated' ? (mode: 'reference' | 'text' = 'reference') => {
@@ -952,7 +994,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 preview: `data:${img.mimeType};base64,${img.data}`,
                 sourceNodeId: img.sourceNodeId 
               })),
-              nodeData.categoryBase,
+              savedProductionMaterials,
             );
           }
         } : undefined,
@@ -1208,15 +1250,15 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     model: ImageModel,
     images?: { data: string; mimeType: string; sourceNodeId?: string }[],
     targetNodeId?: string,
-    categoryBase?: SelectedCategoryBase,
+    productionMaterials?: ProductionMaterialSelection,
   ) => {
     const manualImages = images || [];
     let requestPrompt = prompt;
     let requestImages = manualImages.map(image => ({ data: image.data, mimeType: image.mimeType }));
-    if (categoryBase) {
+    if (productionMaterials) {
       try {
-        const prepared = await loadCategoryBaseGeneration(categoryBase, manualImages);
-        requestPrompt = compileCategoryBasePrompt(prompt, prepared.context);
+        const prepared = await loadProductionMaterials(productionMaterials, manualImages, prompt);
+        requestPrompt = compileProductionMaterialsPrompt(prompt, prepared.context, manualImages.length);
         requestImages = [...requestImages, ...prepared.referenceImages];
       } catch (error) {
         alert(error instanceof Error ? error.message : '类目基座读取失败');
@@ -1396,7 +1438,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         layoutSlot: { x: posX, y: posY },
         refImages: images?.map(img => `data:${img.mimeType};base64,${img.data}`),
         originalImages: manualImages,
-        categoryBase,
+        productionMaterials,
         aspectRatio,
         imageSize,
         model,

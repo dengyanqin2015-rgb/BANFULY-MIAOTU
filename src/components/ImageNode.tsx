@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { ImageSliceEditor } from './ImageSliceEditor';
-import type { SelectedCategoryBase } from './GenerationBar';
+import type { ProductionMaterialSelection } from '../lib/categoryBaseGeneration';
 
 export interface ImageNodeData extends Record<string, unknown> {
   imageUrl?: string;
@@ -37,7 +37,8 @@ export interface ImageNodeData extends Record<string, unknown> {
   aspectRatio?: AspectRatio;
   imageSize?: ImageSize;
   model?: ImageModel;
-  categoryBase?: SelectedCategoryBase;
+  productionMaterials?: ProductionMaterialSelection;
+  categoryBase?: { id: string; versionId: string; name: string; version: number };
   analysisPrompt?: string;
   analysisTemplateName?: string;
   isAnalyzing?: boolean;
@@ -246,9 +247,9 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
           {!data.isLoading && (
             <div className="flex items-center gap-1.5 text-[9px] text-gray-500 font-bold uppercase">
               <span>{data.resolution || '1024 x 1024'}</span>
-              {data.categoryBase && (
+              {data.productionMaterials?.base && (
                 <span className="max-w-[170px] truncate rounded border border-orange-500/25 bg-orange-500/10 px-1.5 py-0.5 text-[8px] text-orange-300 normal-case">
-                  基座 · {data.categoryBase.name} V{data.categoryBase.version}
+                  基座 · {data.productionMaterials.base.name} V{data.productionMaterials.base.version}
                 </span>
               )}
             </div>

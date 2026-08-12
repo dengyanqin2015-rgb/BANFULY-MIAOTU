@@ -1316,6 +1316,7 @@ class DatabaseService {
       scene: 'scene',
       material: 'material',
       model: 'model',
+      copyLayout: 'copy_layout',
     };
     for (const key of Object.keys(expectedTypes) as Array<keyof CategoryBaseComponents>) {
       const reference = components[key];
@@ -1422,6 +1423,67 @@ class DatabaseService {
     return result.rows[0] ? mapCategoryBaseRecordRow(result.rows[0]) : null;
   }
 
+  async getAssetGenerationSlot(
+    userId: string,
+    assetId: string,
+    versionId: string,
+  ): Promise<CategoryBaseGenerationSlot | null> {
+    let assetName = '';
+    let assetType: AssetType | null = null;
+    let version: AssetVersion | null = null;
+    if (this.pool) {
+      const result = await this.pool.query(
+        `SELECT a.name, a.type, v.id, v.asset_id AS "assetId", v.user_id AS "userId", v.version,
+                v.source_kind AS "sourceKind", v.profile, v.image_refs AS "imageRefs",
+                v.change_note AS "changeNote", v.created_at AS "createdAt"
+         FROM asset_items a
+         JOIN asset_versions v ON v.asset_id = a.id
+         WHERE a.id = $1 AND a.user_id = $2 AND a.deleted_at IS NULL
+           AND v.id = $3 AND v.user_id = $2`,
+        [assetId, userId, versionId],
+      );
+      const row = result.rows[0];
+      if (row) {
+        assetName = String(row.name);
+        assetType = row.type as AssetType;
+        version = {
+          id: String(row.id), assetId: String(row.assetId), userId: String(row.userId),
+          version: toNumber(row.version), sourceKind: row.sourceKind,
+          profile: row.profile || {}, imageRefs: Array.isArray(row.imageRefs) ? row.imageRefs : [],
+          changeNote: String(row.changeNote || ''), createdAt: toNumber(row.createdAt),
+        };
+      }
+    } else {
+      const asset = this.fileData!.assets.find(item => item.id === assetId && item.userId === userId && !item.deletedAt);
+      const storedVersion = this.fileData!.assetVersions.find(item => item.id === versionId && item.assetId === assetId && item.userId === userId);
+      if (asset && storedVersion) {
+        assetName = asset.name;
+        assetType = asset.type;
+        version = structuredClone(storedVersion);
+      }
+    }
+    if (!version || !assetType) return null;
+    const keyByType: Record<AssetType, (typeof CATEGORY_BASE_SLOT_KEYS)[number]> = {
+      visual_system: 'visualSystem',
+      scene: 'scene',
+      material: 'material',
+      model: 'model',
+      copy_layout: 'copyLayout',
+    };
+    const rolePriority: Record<string, number> = { source: 0, reference: 1, thumbnail: 2 };
+    const representative = [...version.imageRefs].sort((left, right) =>
+      (rolePriority[left.role] ?? 9) - (rolePriority[right.role] ?? 9) || left.sortOrder - right.sortOrder
+    )[0];
+    return {
+      key: keyByType[assetType], assetId, assetName, assetType,
+      versionId: version.id, version: version.version, profile: version.profile,
+      referenceImage: representative ? {
+        ...representative,
+        viewUrl: `/api/storage/objects/${representative.objectId}/view`,
+      } : undefined,
+    };
+  }
+
   async getCategoryBaseGenerationContext(userId: string, id: string, versionId?: string): Promise<CategoryBaseGenerationContext | null> {
     const currentRecord = await this.getCategoryBase(userId, id);
     if (!currentRecord || (!versionId && currentRecord.base.status !== 'active')) return null;
@@ -1435,6 +1497,7 @@ class DatabaseService {
       scene: 'scene',
       material: 'material',
       model: 'model',
+      copyLayout: 'copy_layout',
     };
     const rolePriority: Record<string, number> = { source: 0, reference: 1, thumbnail: 2 };
     const slots: CategoryBaseGenerationSlot[] = [];
@@ -2200,6 +2263,18 @@ app.get('/api/category-bases/:id/versions', authenticateToken, async (req: AuthR
     const categoryBase = await db.getCategoryBase(req.user!.id, id);
     if (!categoryBase) return res.status(404).json({ message: '类目基座不存在' });
     res.json(await db.listCategoryBaseVersions(req.user!.id, id));
+  } catch (error) {
+    handleAssetApiError(res, error);
+  }
+});
+
+app.get('/api/assets/:id/generation-context', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const versionId = typeof req.query.versionId === 'string' ? req.query.versionId : '';
+    if (!versionId) return res.status(400).json({ message: '缺少资产版本' });
+    const slot = await db.getAssetGenerationSlot(req.user!.id, String(req.params.id), versionId);
+    if (!slot) return res.status(404).json({ message: '生产资料不存在' });
+    res.json(slot);
   } catch (error) {
     handleAssetApiError(res, error);
   }
