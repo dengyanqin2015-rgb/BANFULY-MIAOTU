@@ -76,6 +76,88 @@ export async function analyzeImageForPrompt(
   return text;
 }
 
+export interface CopyLayoutAnalysis {
+  promptFragment: string;
+  templateKind: 'main_image' | 'detail';
+  headlineFont: string;
+  headlineSize: string;
+  headlinePosition: string;
+  headlineMaxChars: number;
+  headlineDirection: string;
+  sellingPointPosition: string;
+  sellingPointMaxChars: number;
+  sellingPointDirection: string;
+  subcopyFont: string;
+  subcopySize: string;
+  subcopyPosition: string;
+  subcopyMaxChars: number;
+  subcopyDirection: string;
+}
+
+export async function analyzeCopyLayoutReference(file: File, apiKey?: string): Promise<CopyLayoutAnalysis> {
+  const key = apiKey || localStorage.getItem('user_gemini_api_key');
+  if (!key) throw new Error('请先配置 Gemini API Key');
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('文案排版参考图读取失败'));
+    reader.readAsDataURL(file);
+  });
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error('文案排版参考图格式无效');
+  const ai = new GoogleGenAI({ apiKey: key });
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: {
+      parts: [
+        { inlineData: { mimeType: match[1], data: match[2] } },
+        { text: `只分析这张电商图片的文案排版规则，不要复述或保存图片中的原文、品牌、商品和人物。输出 JSON：
+{
+  "promptFragment": "一段可直接用于生图的中文排版规则，包含视觉层级、留白、对齐和阅读顺序",
+  "templateKind": "main_image 或 detail",
+  "headlineFont": "主标题字体风格",
+  "headlineSize": "主标题相对画面的字号比例",
+  "headlinePosition": "主标题位置",
+  "headlineMaxChars": 10,
+  "headlineDirection": "主标题内容方向",
+  "sellingPointPosition": "核心卖点位置",
+  "sellingPointMaxChars": 16,
+  "sellingPointDirection": "核心卖点内容方向",
+  "subcopyFont": "副文案字体风格",
+  "subcopySize": "副文案相对主标题的比例",
+  "subcopyPosition": "副文案位置",
+  "subcopyMaxChars": 20,
+  "subcopyDirection": "副文案内容方向"
+}
+无法确认的字段填空字符串；字数必须为非负整数；只输出 JSON。` },
+      ],
+    },
+    config: { responseMimeType: 'application/json' },
+  });
+  const text = response.text?.trim();
+  if (!text) throw new Error('文案排版解析没有返回结果');
+  const parsed = JSON.parse(text) as Partial<CopyLayoutAnalysis>;
+  const numberValue = (value: unknown) => Math.max(0, Math.min(100, Number(value) || 0));
+  const textValue = (value: unknown) => String(value || '').trim();
+  return {
+    promptFragment: textValue(parsed.promptFragment),
+    templateKind: parsed.templateKind === 'detail' ? 'detail' : 'main_image',
+    headlineFont: textValue(parsed.headlineFont),
+    headlineSize: textValue(parsed.headlineSize),
+    headlinePosition: textValue(parsed.headlinePosition),
+    headlineMaxChars: numberValue(parsed.headlineMaxChars),
+    headlineDirection: textValue(parsed.headlineDirection),
+    sellingPointPosition: textValue(parsed.sellingPointPosition),
+    sellingPointMaxChars: numberValue(parsed.sellingPointMaxChars),
+    sellingPointDirection: textValue(parsed.sellingPointDirection),
+    subcopyFont: textValue(parsed.subcopyFont),
+    subcopySize: textValue(parsed.subcopySize),
+    subcopyPosition: textValue(parsed.subcopyPosition),
+    subcopyMaxChars: numberValue(parsed.subcopyMaxChars),
+    subcopyDirection: textValue(parsed.subcopyDirection),
+  };
+}
+
 // Extend Window interface for AI Studio specific functions
 declare global {
   interface Window {

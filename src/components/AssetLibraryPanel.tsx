@@ -24,6 +24,7 @@ import type {
   PaginatedAssetResult,
 } from '../lib/assetLibrary';
 import { detectAssetImageMimeType, type AssetImageMimeType } from '../lib/storageObjects';
+import { analyzeCopyLayoutReference } from '../lib/gemini';
 
 type LibraryTab = 'bases' | AssetType;
 
@@ -136,6 +137,8 @@ export const AssetLibraryPanel: React.FC = () => {
   const [assetForm, setAssetForm] = useState(emptyAssetForm('visual_system'));
   const [baseForm, setBaseForm] = useState(emptyBaseForm());
   const [files, setFiles] = useState<File[]>([]);
+  const [copyLayoutFile, setCopyLayoutFile] = useState<File | null>(null);
+  const [analyzingLayout, setAnalyzingLayout] = useState(false);
 
   const loadAll = async () => {
     setLoading(true);
@@ -191,6 +194,7 @@ export const AssetLibraryPanel: React.FC = () => {
     setEditingAsset(null);
     setAssetForm(emptyAssetForm(type));
     setFiles([]);
+    setCopyLayoutFile(null);
     setAssetModalOpen(true);
   };
 
@@ -222,7 +226,40 @@ export const AssetLibraryPanel: React.FC = () => {
       subcopyDirection: String(record.version.profile.attributes.subcopyDirection || ''),
     });
     setFiles([]);
+    setCopyLayoutFile(null);
     setAssetModalOpen(true);
+  };
+
+  const analyzeCopyLayout = async (file: File) => {
+    setAnalyzingLayout(true);
+    setError('');
+    try {
+      if (file.size > 15 * 1024 * 1024) throw new Error('文案排版参考图不能超过 15MB');
+      await detectFileMimeType(file);
+      const result = await analyzeCopyLayoutReference(file);
+      setAssetForm(current => ({
+        ...current,
+        promptFragment: result.promptFragment,
+        templateKind: result.templateKind,
+        headlineFont: result.headlineFont,
+        headlineSize: result.headlineSize,
+        headlinePosition: result.headlinePosition,
+        headlineMaxChars: String(result.headlineMaxChars || ''),
+        headlineDirection: result.headlineDirection,
+        sellingPointPosition: result.sellingPointPosition,
+        sellingPointMaxChars: String(result.sellingPointMaxChars || ''),
+        sellingPointDirection: result.sellingPointDirection,
+        subcopyFont: result.subcopyFont,
+        subcopySize: result.subcopySize,
+        subcopyPosition: result.subcopyPosition,
+        subcopyMaxChars: String(result.subcopyMaxChars || ''),
+        subcopyDirection: result.subcopyDirection,
+      }));
+    } catch (analysisError) {
+      setError(analysisError instanceof Error ? analysisError.message : '文案排版解析失败');
+    } finally {
+      setAnalyzingLayout(false);
+    }
   };
 
   const uploadFile = async (file: File, sortOrder: number): Promise<AssetImageReference> => {
@@ -260,7 +297,7 @@ export const AssetLibraryPanel: React.FC = () => {
     setSaving(true);
     setError('');
     try {
-      const existingRefs = editingAsset?.version.imageRefs || [];
+      const existingRefs = assetForm.type === 'copy_layout' ? [] : (editingAsset?.version.imageRefs || []);
       const uploadedRefs: AssetImageReference[] = [];
       for (let index = 0; index < files.length; index += 1) {
         uploadedRefs.push(await uploadFile(files[index], existingRefs.length + index));
@@ -522,13 +559,27 @@ export const AssetLibraryPanel: React.FC = () => {
           </div>
 
           {assetForm.type === 'copy_layout' && (
-            <div className="rounded-2xl border border-fuchsia-200 bg-fuchsia-50/50 p-4">
-              <Field label="模板类型">
-                <select value={assetForm.templateKind} onChange={e => setAssetForm({ ...assetForm, templateKind: e.target.value })} className={CONTROL_CLASS}>
-                  <option value="main_image">主图模板</option>
-                  <option value="detail">详情模板</option>
-                </select>
-              </Field>
+            <div className="space-y-4 rounded-2xl border border-fuchsia-200 bg-fuchsia-50/50 p-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <Field label="模板类型">
+                  <select value={assetForm.templateKind} onChange={e => setAssetForm({ ...assetForm, templateKind: e.target.value })} className={CONTROL_CLASS}>
+                    <option value="main_image">主图模板</option>
+                    <option value="detail">详情模板</option>
+                  </select>
+                </Field>
+                <Field label="上传图片自动提取规则">
+                  <label className="flex h-[46px] cursor-pointer items-center justify-center gap-2 rounded-xl border border-fuchsia-300 bg-white px-3 text-xs font-black text-fuchsia-700 transition hover:border-fuchsia-500">
+                    <Sparkles size={15} /> {analyzingLayout ? '正在解析…' : copyLayoutFile ? '重新选择参考图' : '选择排版参考图'}
+                    <input disabled={analyzingLayout} type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={e => {
+                      const file = e.target.files?.[0] || null;
+                      setCopyLayoutFile(file);
+                      if (file) void analyzeCopyLayout(file);
+                      e.currentTarget.value = '';
+                    }} />
+                  </label>
+                </Field>
+              </div>
+              <p className="text-[11px] leading-5 text-fuchsia-700/80">{copyLayoutFile ? `已从“${copyLayoutFile.name}”提取规则。保存时只保存下方规则，不上传或保留这张图片。` : '参考图只用于本次解析；保存时不上传、不保留图片，也不会在生图时发送。'}</p>
             </div>
           )}
 

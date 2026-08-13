@@ -28,11 +28,15 @@ const context: CategoryBaseGenerationContext = {
     {
       key: 'visualSystem', assetId: 'vi-1', assetName: '海岸VI', assetType: 'visual_system',
       versionId: 'vi-version-3', version: 3, profile: profile('蓝白品牌视觉', '不要脏色'),
-      referenceImage: { id: 'image-1', role: 'source', objectId: 'object-1', sortOrder: 0, viewUrl: '/view/1' },
+      referenceImages: [
+        { id: 'image-1', role: 'source', objectId: 'object-1', sortOrder: 0, viewUrl: '/view/1' },
+        { id: 'image-2', role: 'reference', objectId: 'object-2', sortOrder: 1, viewUrl: '/view/2' },
+      ],
     },
     {
       key: 'scene', assetId: 'scene-1', assetName: '海滩场景', assetType: 'scene',
       versionId: 'scene-version-1', version: 1, profile: profile('日光海滩'),
+      referenceImages: [],
     },
   ],
 };
@@ -44,7 +48,7 @@ assert.match(compiled, /【类目基座｜夏日泳装基座｜泳装｜V2】/);
 assert.match(compiled, /【VI视觉系统｜海岸VI｜V3】/);
 assert.match(compiled, /【场景｜海滩场景｜V1】/);
 assert.match(compiled, /不要水印；不要脏色/);
-assert.equal(getCategoryBaseReferenceCount(context), 1);
+assert.equal(getCategoryBaseReferenceCount(context), 2);
 assert.equal(getCategoryBaseReferenceCount(null), 0);
 assert.equal(shouldUseModelMaterial('纯产品平铺主图，不要人物'), false);
 assert.equal(shouldUseModelMaterial('生成一张白底商品主图'), false);
@@ -67,14 +71,20 @@ const copyLayoutContext = {
         subcopyMaxChars: 20, subcopyDirection: '使用场景佐证',
       },
     },
-    referenceImage: { id: 'copy-image', role: 'source' as const, objectId: 'copy-object', sortOrder: 0, viewUrl: '/view/copy' },
+    referenceImages: [],
   }],
 };
 const copyPrompt = compileProductionMaterialsPrompt('商品名称必须写“清透一夏”', copyLayoutContext, 2);
-assert.match(copyPrompt, /对应输入参考图：图3/);
+assert.doesNotMatch(copyPrompt, /对应输入参考图/);
 assert.match(copyPrompt, /主标题字体：现代黑体/);
 assert.match(copyPrompt, /主标题不超过10字/);
 assert.match(copyPrompt, /用户明确给出的文案必须原样保留/);
+
+const productContract = compileProductionMaterialsPrompt('卧室中的落地衣架盖布主图', context, 2);
+assert.match(productContract, /手动产品参考图｜图1—图2｜最高视觉优先级/);
+assert.match(productContract, /VI视觉系统[\s\S]*对应输入参考图：图3、图4/);
+assert.match(productContract, /不得复制参考图中的商品、人物、Logo、品牌名或具体文案/);
+assert.match(productContract, /场景[\s\S]*严禁复制场景参考图中的商品、人物、品牌和文字/);
 
 const suppressedModelPrompt = compileProductionMaterialsPrompt('纯产品平铺主图', {
   slots: [],

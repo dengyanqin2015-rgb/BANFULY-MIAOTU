@@ -1473,16 +1473,16 @@ class DatabaseService {
       copy_layout: 'copyLayout',
     };
     const rolePriority: Record<string, number> = { source: 0, reference: 1, thumbnail: 2 };
-    const representative = [...version.imageRefs].sort((left, right) =>
+    const referenceImages = [...version.imageRefs].sort((left, right) =>
       (rolePriority[left.role] ?? 9) - (rolePriority[right.role] ?? 9) || left.sortOrder - right.sortOrder
-    )[0];
+    );
     return {
       key: keyByType[assetType], assetId, assetName, assetType,
       versionId: version.id, version: version.version, profile: version.profile,
-      referenceImage: representative ? {
-        ...representative,
-        viewUrl: `/api/storage/objects/${representative.objectId}/view`,
-      } : undefined,
+      referenceImages: assetType === 'copy_layout' ? [] : referenceImages.map(reference => ({
+        ...reference,
+        viewUrl: `/api/storage/objects/${reference.objectId}/view`,
+      })),
     };
   }
 
@@ -1548,9 +1548,9 @@ class DatabaseService {
       if (!version || assetType !== expectedTypes[key]) {
         throw new AssetValidationError(`类目基座中的 ${key} 固定版本已不可用`);
       }
-      const representative = [...version.imageRefs].sort((left, right) =>
+      const referenceImages = [...version.imageRefs].sort((left, right) =>
         (rolePriority[left.role] ?? 9) - (rolePriority[right.role] ?? 9) || left.sortOrder - right.sortOrder
-      )[0];
+      );
       slots.push({
         key,
         assetId: version.assetId,
@@ -1559,10 +1559,10 @@ class DatabaseService {
         versionId: version.id,
         version: version.version,
         profile: version.profile,
-        referenceImage: representative ? {
-          ...representative,
-          viewUrl: `/api/storage/objects/${representative.objectId}/view`,
-        } : undefined,
+        referenceImages: assetType === 'copy_layout' ? [] : referenceImages.map(reference => ({
+          ...reference,
+          viewUrl: `/api/storage/objects/${reference.objectId}/view`,
+        })),
       });
     }
 

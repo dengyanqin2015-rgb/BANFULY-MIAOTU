@@ -36,7 +36,9 @@ import { ImageWriteCache, SerialTaskQueue, createProjectFingerprint, stripRuntim
 import {
   CATEGORY_BASE_SLOT_KEYS,
   compileProductionMaterialsPrompt,
+  PRODUCTION_REFERENCE_ORDER,
   shouldUseModelMaterial,
+  type CategoryBaseSlotKey,
   type CategoryBaseGenerationContext,
   type CategoryBaseGenerationSlot,
   type ProductionMaterialContext,
@@ -90,12 +92,23 @@ const loadProductionMaterials = async (
     };
   }, { count: 0, originalBytes: 0, analysisBytes: 0 });
   const remaining = Math.max(0, IMAGE_UPLOAD_LIMITS.maxFiles - manualImages.length);
-  const references = context.slots.flatMap(slot => slot.referenceImage ? [{ slot, image: slot.referenceImage }] : []).slice(0, remaining);
-  const includedReferenceSlots = new Set(references.map(({ slot }) => slot.key));
+  const slotReferenceLimits: Record<CategoryBaseSlotKey, number> = {
+    model: 3,
+    scene: 2,
+    material: 2,
+    visualSystem: 2,
+    copyLayout: 0,
+  };
+  const slotsByKey = new Map(context.slots.map(slot => [slot.key, slot]));
+  const references = PRODUCTION_REFERENCE_ORDER.flatMap(key => {
+    const slot = slotsByKey.get(key);
+    return slot
+      ? slot.referenceImages.slice(0, slotReferenceLimits[slot.key]).map(image => ({ slot, image }))
+      : [];
+  }).slice(0, remaining);
+  const includedReferenceIds = new Set(references.map(({ image }) => image.id));
   context.slots = context.slots.map(slot => (
-    slot.referenceImage && !includedReferenceSlots.has(slot.key)
-      ? { ...slot, referenceImage: undefined }
-      : slot
+    { ...slot, referenceImages: slot.referenceImages.filter(image => includedReferenceIds.has(image.id)) }
   ));
   const files = await Promise.all(references.map(async ({ slot, image }) => {
     const imageResponse = await fetch(image.viewUrl);

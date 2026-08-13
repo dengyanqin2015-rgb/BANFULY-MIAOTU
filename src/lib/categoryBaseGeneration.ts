@@ -7,6 +7,7 @@ import type {
 
 export const CATEGORY_BASE_SLOT_KEYS = ['visualSystem', 'scene', 'material', 'model', 'copyLayout'] as const;
 export type CategoryBaseSlotKey = (typeof CATEGORY_BASE_SLOT_KEYS)[number];
+export const PRODUCTION_REFERENCE_ORDER: readonly CategoryBaseSlotKey[] = ['model', 'scene', 'material', 'visualSystem', 'copyLayout'];
 
 export interface CategoryBaseGenerationSlot {
   key: CategoryBaseSlotKey;
@@ -16,7 +17,7 @@ export interface CategoryBaseGenerationSlot {
   versionId: string;
   version: number;
   profile: AssetProfile;
-  referenceImage?: AssetImageReference & { viewUrl: string };
+  referenceImages: Array<AssetImageReference & { viewUrl: string }>;
 }
 
 export interface CategoryBaseGenerationContext {
@@ -62,6 +63,14 @@ const SLOT_LABELS: Record<CategoryBaseSlotKey, string> = {
   copyLayout: '文案排版',
 };
 
+const SLOT_REFERENCE_RULES: Record<CategoryBaseSlotKey, string> = {
+  visualSystem: '只控制整张图的色彩体系、字体风格、光影、版式、品牌气质和留白。不得复制参考图中的商品、人物、Logo、品牌名或具体文案，不得改变产品主体。',
+  scene: '只参考符合当前任务的空间环境、室内风格、家居配色、家具、光线、镜头和构图。严禁复制场景参考图中的商品、人物、品牌和文字，不得改变产品主体。',
+  material: '只控制产品表面的面料、纹理、工艺和质感。不得改变产品外形、颜色、图案、结构、部件、比例或品牌身份。',
+  model: '仅在当前任务明确需要人物时使用。保持参考模特的面部、成年年龄特征、发型、体型和穿着方式；不得把模特图的背景、文案或其他商品带入成图。',
+  copyLayout: '只使用已保存的结构化排版规则，控制字体风格、字号层级、位置、字数和内容方向。不得复制来源图片中的原文、商品、人物或品牌。',
+};
+
 const compactText = (value: string | undefined, maxLength: number) => {
   const normalized = String(value || '').trim().replace(/\s+/g, ' ');
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
@@ -84,9 +93,15 @@ export const compileProductionMaterialsPrompt = (
   if (!context || (!context.base && context.slots.length === 0 && !context.modelMaterialSuppressed)) return userPrompt;
 
   let referenceIndex = manualReferenceCount;
-  const sections = context.slots.flatMap(slot => {
+  const manualProductContract = manualReferenceCount > 0
+    ? `【手动产品参考图｜图1${manualReferenceCount > 1 ? `—图${manualReferenceCount}` : ''}｜最高视觉优先级】\n这些图片共同定义本次商品主体。必须保持产品外形、颜色、图案、结构、部件和比例一致；多角度图属于同一产品，不得与其他模块中的商品混合或替换。`
+    : '';
+  const slotsByKey = new Map(context.slots.map(slot => [slot.key, slot]));
+  const sections = PRODUCTION_REFERENCE_ORDER.flatMap(key => {
+    const slot = slotsByKey.get(key);
+    if (!slot) return [];
     const primary = compactText(slot.profile.promptFragment, 1500) || compactText(slot.profile.summary, 500);
-    const referenceNumber = slot.referenceImage ? ++referenceIndex : null;
+    const referenceNumbers = slot.referenceImages.map(() => ++referenceIndex);
     const layout = slot.key === 'copyLayout' ? slot.profile.attributes : null;
     const layoutRules = layout ? [
       layout.templateKind && `模板用途：${layout.templateKind === 'detail' ? '详情模板' : '主图模板'}`,
@@ -105,7 +120,8 @@ export const compileProductionMaterialsPrompt = (
       layout.subcopyDirection && `副文案方向：${layout.subcopyDirection}`,
     ].filter(Boolean) : [];
     const details = [
-      referenceNumber && `对应输入参考图：图${referenceNumber}`,
+      referenceNumbers.length && `对应输入参考图：${referenceNumbers.map(number => `图${number}`).join('、')}（同一模块共同理解）`,
+      `模块边界：${SLOT_REFERENCE_RULES[slot.key]}`,
       primary && `正向约束：${primary}`,
       ...layoutRules,
       slot.profile.lockedFields.length && `必须保持：${slot.profile.lockedFields.slice(0, 12).join('、')}`,
@@ -129,10 +145,11 @@ export const compileProductionMaterialsPrompt = (
       ? `【类目基座｜${context.base.baseName}｜${context.base.category || '未分类'}｜V${context.base.version}】`
       : '【手动组合生产资料】',
     compactText(context.base?.description, 500),
+    manualProductContract,
     context.modelMaterialSuppressed ? '【模特资料】本次任务没有明确要求人物，模特参考图不参与，也不要擅自添加人物。' : '',
     ...sections,
     negatives.length ? `【避免事项】\n${[...new Set(negatives)].join('；')}` : '',
-    '【执行规则】用户当前任务决定本次画面内容；生产资料分别提供视觉、场景、材质、模特和文案排版约束。参考图必须按对应模块理解，不得相互越权。用户明确给出的文案必须原样保留；仅当用户没有提供具体文案时，才按文案排版模板的内容方向生成短文案。不要把参考图中的商品、文字或人物机械复制到成图中，除非用户明确要求。',
+    '【执行顺序】先理解用户当前任务，再锁定手动产品参考图；其后依次应用模特身份、场景环境、材质表现、VI整体风格和文案排版。各模块只在自己的作用范围内生效，不得相互越权。用户明确给出的文案必须原样保留；仅当用户没有提供具体文案时，才按排版规则生成短文案。',
   ].filter(Boolean).join('\n');
 };
 
@@ -156,4 +173,4 @@ export const compileCategoryBasePrompt = (
 );
 
 export const getCategoryBaseReferenceCount = (context?: CategoryBaseGenerationContext | null) =>
-  context?.slots.filter(slot => slot.referenceImage).length ?? 0;
+  context?.slots.reduce((count, slot) => count + slot.referenceImages.length, 0) ?? 0;

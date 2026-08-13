@@ -250,7 +250,8 @@ try {
   assert.equal(generationContextV1.status, 200);
   assert.equal(generationContextV1.body.versionId, createdBase.body.version.id);
   assert.deepEqual(generationContextV1.body.slots.map(slot => [slot.key, slot.version]), [['visualSystem', 1], ['scene', 1], ['copyLayout', 1]]);
-  assert.ok(generationContextV1.body.slots.every(slot => slot.referenceImage === undefined));
+  assert.ok(generationContextV1.body.slots.every(slot => Array.isArray(slot.referenceImages)));
+  assert.equal(generationContextV1.body.slots.find(slot => slot.key === 'copyLayout')?.referenceImages.length, 0);
   const hiddenGenerationContext = await request(
     `/api/category-bases/${createdBase.body.base.id}/generation-context?versionId=${createdBase.body.version.id}`,
     { token: tokenB },
