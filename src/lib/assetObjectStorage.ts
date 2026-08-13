@@ -36,7 +36,9 @@ let volumeRoot: string | null = null;
 
 const configuredVolumeRoot = () => {
   const configured = String(process.env.ASSET_VOLUME_PATH || '').trim();
-  return configured ? path.resolve(configured) : null;
+  if (configured) return path.resolve(configured);
+  const railwayMountPath = String(process.env.RAILWAY_VOLUME_MOUNT_PATH || '').trim();
+  return railwayMountPath ? path.resolve(railwayMountPath, 'asset-objects') : null;
 };
 
 const resolveVolumeObjectPath = (objectKey: string): string => {

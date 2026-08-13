@@ -14,6 +14,7 @@ import {
 
 const root = await mkdtemp(path.join(tmpdir(), 'banfuly-volume-storage-'));
 const previousPath = process.env.ASSET_VOLUME_PATH;
+const previousRailwayMountPath = process.env.RAILWAY_VOLUME_MOUNT_PATH;
 const objectKey = 'users/test-user/assets/storage-object-test.png';
 const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 
@@ -36,10 +37,19 @@ try {
 
   await deleteAssetStoredObject(objectKey);
   await assert.rejects(() => inspectAssetStoredObject(objectKey, 'image/png'), /图片文件不存在/);
+
+  resetAssetObjectStorageForTests();
+  delete process.env.ASSET_VOLUME_PATH;
+  process.env.RAILWAY_VOLUME_MOUNT_PATH = root;
+  assert.deepEqual(await initializeAssetObjectStorage(), { configured: true, provider: 'railway-volume' });
+  await writeVolumeObject(objectKey, pngBytes, 'image/png', pngBytes.length);
+  assert.equal((await getAssetReadTarget(objectKey)).kind, 'file');
   console.log('Railway Volume asset storage tests passed');
 } finally {
   resetAssetObjectStorageForTests();
   if (previousPath === undefined) delete process.env.ASSET_VOLUME_PATH;
   else process.env.ASSET_VOLUME_PATH = previousPath;
+  if (previousRailwayMountPath === undefined) delete process.env.RAILWAY_VOLUME_MOUNT_PATH;
+  else process.env.RAILWAY_VOLUME_MOUNT_PATH = previousRailwayMountPath;
   await rm(root, { recursive: true, force: true });
 }
