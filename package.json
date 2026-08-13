@@ -21,7 +21,7 @@
     "test:assets": "tsx tests/assetLibrary.test.ts",
     "test:base-generation": "tsx tests/categoryBaseGeneration.test.ts",
     "test:asset-api": "tsx tests/assetApi.test.ts",
-    "test:storage": "tsx tests/storageObjects.test.ts",
+    "test:storage": "tsx tests/storageObjects.test.ts && tsx tests/assetObjectStorage.test.ts",
     "storage:cors": "tsx scripts/configureBucketCors.ts",
     "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run test:assets && npm run test:base-generation && npm run test:asset-api && npm run test:storage && npm run typecheck && npm run lint && npm run build",
     "preview": "vite preview"

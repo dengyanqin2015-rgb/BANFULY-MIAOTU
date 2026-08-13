@@ -16,6 +16,7 @@ import type { CategoryBaseGenerationContext } from '../src/lib/categoryBaseGener
 const workspace = process.cwd();
 const tempRoot = await mkdtemp(path.join(tmpdir(), 'banfuly-asset-api-'));
 const dbPath = path.join(tempRoot, 'db.json');
+const assetVolumePath = path.join(tempRoot, 'asset-objects');
 const port = 31000 + Math.floor(Math.random() * 1000);
 const baseUrl = `http://127.0.0.1:${port}`;
 const tsxCli = path.join(workspace, 'node_modules', 'tsx', 'dist', 'cli.mjs');
@@ -25,6 +26,7 @@ delete childEnv.DATABASE_URL;
 Object.assign(childEnv, {
   PORT: String(port),
   DB_PATH: dbPath,
+  ASSET_VOLUME_PATH: assetVolumePath,
   NODE_ENV: 'production',
   ALLOW_FILE_DB: 'true',
   JWT_SECRET: 'asset-api-test-secret',
@@ -115,13 +117,41 @@ try {
 
   const storageStatus = await request<{ configured: boolean; provider: string }>('/api/storage/status', { token: tokenA });
   assert.equal(storageStatus.status, 200);
-  assert.deepEqual(storageStatus.body, { configured: false, provider: 'none' });
-  const unavailableUpload = await request('/api/storage/uploads/presign', {
+  assert.deepEqual(storageStatus.body, { configured: true, provider: 'railway-volume' });
+  const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00]);
+  const uploadTicket = await request<{ objectId: string; uploadUrl: string; headers: Record<string, string> }>('/api/storage/uploads/presign', {
     method: 'POST',
     token: tokenA,
-    body: JSON.stringify({ fileName: 'sample.png', mimeType: 'image/png', byteSize: 1024 }),
+    body: JSON.stringify({ fileName: 'sample.png', mimeType: 'image/png', byteSize: pngBytes.length }),
   });
-  assert.equal(unavailableUpload.status, 503);
+  assert.equal(uploadTicket.status, 201);
+  assert.equal(uploadTicket.body.uploadUrl, `/api/storage/uploads/${uploadTicket.body.objectId}/content`);
+  const deniedCrossUserUpload = await fetch(`${baseUrl}${uploadTicket.body.uploadUrl}`, {
+    method: 'PUT',
+    headers: { authorization: `Bearer ${tokenB}`, 'content-type': 'image/png' },
+    body: pngBytes,
+  });
+  assert.equal(deniedCrossUserUpload.status, 404);
+  const uploaded = await fetch(`${baseUrl}${uploadTicket.body.uploadUrl}`, {
+    method: 'PUT',
+    headers: { authorization: `Bearer ${tokenA}`, ...uploadTicket.body.headers },
+    body: pngBytes,
+  });
+  assert.equal(uploaded.status, 204);
+  const completedUpload = await request<{ previewUrl: string }>(`/api/storage/uploads/${uploadTicket.body.objectId}/complete`, {
+    method: 'POST', token: tokenA,
+  });
+  assert.equal(completedUpload.status, 200);
+  const preview = await fetch(`${baseUrl}${completedUpload.body.previewUrl}`, {
+    headers: { authorization: `Bearer ${tokenA}` },
+  });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get('content-type'), 'image/png');
+  assert.deepEqual(new Uint8Array(await preview.arrayBuffer()), pngBytes);
+  const deniedPreview = await fetch(`${baseUrl}${completedUpload.body.previewUrl}`, {
+    headers: { authorization: `Bearer ${tokenB}` },
+  });
+  assert.equal(deniedPreview.status, 404);
 
   const visual = await request<AssetRecord>('/api/assets', {
     method: 'POST', token: tokenA, body: JSON.stringify(assetPayload('visual_system', '清透海岸VI')),

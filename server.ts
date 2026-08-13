@@ -48,12 +48,14 @@ import {
   type UploadRequest,
 } from "./src/lib/storageObjects";
 import {
-  createReadUrl,
-  createUploadUrl,
-  deleteStoredObject,
-  getBucketStatus,
-  inspectStoredObject,
-} from "./src/lib/railwayBucket";
+  createAssetUploadTarget,
+  deleteAssetStoredObject,
+  getAssetReadTarget,
+  getAssetStorageStatus,
+  initializeAssetObjectStorage,
+  inspectAssetStoredObject,
+  writeVolumeObject,
+} from "./src/lib/assetObjectStorage";
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? "" : "banfuly-local-dev-secret-change-me");
@@ -1721,13 +1723,13 @@ const db = new DatabaseService();
 
 let storageCleanupRunning = false;
 const cleanupExpiredStorageObjects = async () => {
-  if (storageCleanupRunning || !getBucketStatus().configured) return;
+  if (storageCleanupRunning || !getAssetStorageStatus().configured) return;
   storageCleanupRunning = true;
   try {
     const expired = await db.getExpiredStorageObjects(100);
     for (const object of expired) {
       try {
-        await deleteStoredObject(object.objectKey);
+        await deleteAssetStoredObject(object.objectKey);
         await db.markStorageObjectDeleted(object.id);
       } catch (error) {
         console.error('Failed to cleanup abandoned storage object:', object.id, error);
@@ -1786,7 +1788,9 @@ app.use((req: AuthRequest, res: Response, next: NextFunction) => {
         authorization: req.get("authorization"),
         cookie: req.get("cookie")
       }) as Record<string, unknown>,
-      requestBody: sanitizeLogValue(req.body),
+      requestBody: /\/api\/storage\/uploads\/[^/]+\/content/.test(req.originalUrl)
+        ? '[BINARY_IMAGE]'
+        : sanitizeLogValue(req.body),
       responseBody: capturedResponse
     });
   });
@@ -1885,7 +1889,7 @@ app.put("/api/admin/image-analysis-templates", authenticateToken, isAdmin, (req:
 // --- API Routes (REGISTERED FIRST) ---
 
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", dbInitialized, dbMode: db.getMode(), objectStorage: getBucketStatus() });
+  res.json({ status: "ok", dbInitialized, dbMode: db.getMode(), objectStorage: getAssetStorageStatus() });
 });
 
 app.get("/api/test", async (req, res) => {
@@ -2120,27 +2124,54 @@ const handleAssetApiError = (res: Response, error: unknown) => {
 };
 
 app.get('/api/storage/status', authenticateToken, (_req: AuthRequest, res: Response) => {
-  res.json(getBucketStatus());
+  res.json(getAssetStorageStatus());
 });
 
 app.post('/api/storage/uploads/presign', authenticateToken, async (req: AuthRequest, res: Response) => {
-  if (!getBucketStatus().configured) return res.status(503).json({ message: '对象存储尚未配置' });
+  if (!getAssetStorageStatus().configured) return res.status(503).json({ message: '图片存储尚未配置' });
   let object: StorageObjectRecord | null = null;
   try {
     const upload = normalizeUploadRequest(req.body);
     object = await db.createStorageObject(req.user!.id, upload);
-    const uploadUrl = await createUploadUrl(object.objectKey, object.mimeType, object.byteSize);
+    const target = await createAssetUploadTarget(object.id, object.objectKey, object.mimeType, object.byteSize);
     res.status(201).json({
       objectId: object.id,
-      uploadUrl,
-      expiresIn: 10 * 60,
-      headers: { 'Content-Type': object.mimeType },
+      ...target,
     });
   } catch (error) {
     if (object) await db.markStorageObjectDeleted(object.id).catch(() => undefined);
     handleAssetApiError(res, error);
   }
 });
+
+app.put(
+  '/api/storage/uploads/:id/content',
+  authenticateToken,
+  express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: MAX_ASSET_IMAGE_BYTES }),
+  async (req: AuthRequest, res: Response) => {
+    let object: StorageObjectRecord | null = null;
+    try {
+      if (getAssetStorageStatus().provider !== 'railway-volume') {
+        return res.status(404).json({ message: '站内上传通道未启用' });
+      }
+      object = await db.getStorageObject(req.user!.id, String(req.params.id));
+      if (!object || object.status !== 'pending' || !isUserStorageKey(req.user!.id, object.objectKey)) {
+        return res.status(404).json({ message: '上传任务不存在' });
+      }
+      if (String(req.get('content-type') || '').toLowerCase().split(';')[0] !== object.mimeType) {
+        throw new StorageValidationError('图片格式与上传申请不一致');
+      }
+      await writeVolumeObject(object.objectKey, req.body as Buffer, object.mimeType, object.byteSize);
+      res.status(204).end();
+    } catch (error) {
+      if (object) {
+        await deleteAssetStoredObject(object.objectKey).catch(() => undefined);
+        await db.markStorageObjectDeleted(object.id).catch(() => undefined);
+      }
+      handleAssetApiError(res, error);
+    }
+  },
+);
 
 app.post('/api/storage/uploads/:id/complete', authenticateToken, async (req: AuthRequest, res: Response) => {
   let object: StorageObjectRecord | null = null;
@@ -2149,14 +2180,14 @@ app.post('/api/storage/uploads/:id/complete', authenticateToken, async (req: Aut
     if (!object || !isUserStorageKey(req.user!.id, object.objectKey)) {
       return res.status(404).json({ message: '上传任务不存在' });
     }
-    const actual = await inspectStoredObject(object.objectKey, object.mimeType);
+    const actual = await inspectAssetStoredObject(object.objectKey, object.mimeType);
     const completed = await db.markStorageObjectReady(req.user!.id, object.id, actual);
     if (!completed) return res.status(404).json({ message: '上传任务不存在' });
     res.json({ object: completed, previewUrl: `/api/storage/objects/${completed.id}/view` });
   } catch (error) {
     if (object && error instanceof StorageValidationError) {
       try {
-        await deleteStoredObject(object.objectKey);
+        await deleteAssetStoredObject(object.objectKey);
         await db.markStorageObjectDeleted(object.id);
       } catch (cleanupError) {
         console.error('Failed to remove rejected storage object:', object.id, cleanupError);
@@ -2173,7 +2204,11 @@ app.get('/api/storage/objects/:id/view', authenticateToken, async (req: AuthRequ
       return res.status(404).json({ message: '图片不存在' });
     }
     res.setHeader('Cache-Control', 'private, max-age=300');
-    res.redirect(302, await createReadUrl(object.objectKey));
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const target = await getAssetReadTarget(object.objectKey);
+    if (target.kind === 'redirect') return res.redirect(302, target.url);
+    res.type(object.mimeType);
+    res.sendFile(target.filePath);
   } catch (error) {
     handleAssetApiError(res, error);
   }
@@ -2939,6 +2974,7 @@ async function startServer() {
   // 1. Initialize Database
   try {
     await db.init();
+    await initializeAssetObjectStorage();
     dbInitialized = true;
     void cleanupExpiredStorageObjects();
     const storageCleanupTimer = setInterval(() => void cleanupExpiredStorageObjects(), 60 * 60 * 1000);

@@ -237,7 +237,7 @@ export const AssetLibraryPanel: React.FC = () => {
 
   const saveAsset = async () => {
     if (!assetForm.name.trim()) return setError('请填写资产名称');
-    if (files.length > 0 && !storageConfigured) return setError('测试站尚未绑定 Railway Bucket');
+    if (files.length > 0 && !storageConfigured) return setError('测试站图片存储尚未连接');
     setSaving(true);
     setError('');
     try {
@@ -389,7 +389,7 @@ export const AssetLibraryPanel: React.FC = () => {
         </div>
         <div className="flex items-center gap-3">
           <span className={`rounded-full border px-3 py-1.5 text-[11px] font-bold ${storageConfigured ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
-            {storageConfigured ? '私有图片库已连接' : '等待绑定 Railway Bucket'}
+            {storageConfigured ? '私有图片库已连接' : '等待连接 Railway Volume'}
           </span>
           <button
             onClick={() => tab === 'bases' ? openNewBase() : openNewAsset(tab)}
@@ -525,7 +525,7 @@ export const AssetLibraryPanel: React.FC = () => {
                 </div>
               )}
               <label className={`flex cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed px-4 py-6 text-xs font-bold transition ${storageConfigured ? 'border-black/15 bg-[#fafafa] text-[#444] hover:border-black/35 hover:bg-[#f5f5f7]' : 'cursor-not-allowed border-amber-300 bg-amber-50 text-amber-700'}`}>
-                <UploadCloud size={18} /> {storageConfigured ? (files.length ? `已选择 ${files.length} 张图片` : '上传参考图 · JPG / PNG / WebP · 单张不超过 15MB') : '请先在 Railway 测试环境绑定 Bucket'}
+                <UploadCloud size={18} /> {storageConfigured ? (files.length ? `已选择 ${files.length} 张图片` : '上传参考图 · JPG / PNG / WebP · 单张不超过 15MB') : '请先连接 Railway 测试环境 Volume'}
                 <input disabled={!storageConfigured} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={e => setFiles(Array.from(e.target.files || []).slice(0, 12 - (editingAsset?.version.imageRefs.length || 0)))} />
               </label>
             </Field>
