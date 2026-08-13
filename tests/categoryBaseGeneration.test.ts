@@ -53,6 +53,13 @@ assert.equal(getCategoryBaseReferenceCount(null), 0);
 assert.equal(shouldUseModelMaterial('纯产品平铺主图，不要人物'), false);
 assert.equal(shouldUseModelMaterial('生成一张白底商品主图'), false);
 assert.equal(shouldUseModelMaterial('成年女性模特穿着泳装拍摄全身主图'), true);
+assert.equal(shouldUseModelMaterial('一个女人站在海边展示泳装'), true);
+assert.equal(shouldUseModelMaterial('女性穿着连衣裙拍摄商品主图'), true);
+assert.equal(shouldUseModelMaterial('美女手持产品拍摄广告'), true);
+assert.equal(shouldUseModelMaterial('男士穿着夹克展示正面效果'), true);
+assert.equal(shouldUseModelMaterial('商品图不要女人，只展示产品'), false);
+assert.equal(shouldUseModelMaterial('画面不出现女性，产品平铺'), false);
+assert.equal(shouldUseModelMaterial('商品图不要出现女人，只保留手提包'), false);
 assert.equal(shouldUseModelMaterial('模特穿搭，但画面不要人物'), false);
 
 const copyLayoutContext = {

@@ -5,7 +5,7 @@ import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { cn } from '../lib/utils';
 import { assertImageUsage, processImageFiles } from '../lib/uploadProcessing';
 import type { AssetRecord, AssetType, CategoryBaseRecord, PaginatedAssetResult } from '../lib/assetLibrary';
-import type { CategoryBaseSlotKey, ProductionMaterialSelection, SelectedAssetMaterial } from '../lib/categoryBaseGeneration';
+import { shouldUseModelMaterial, type CategoryBaseSlotKey, type ProductionMaterialSelection, type SelectedAssetMaterial } from '../lib/categoryBaseGeneration';
 
 export interface SelectedCategoryBase {
   id: string;
@@ -305,6 +305,14 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       name: record.asset.name, type: record.asset.type,
     } : undefined;
   };
+  const selectedMaterialKeys = MATERIAL_SLOTS
+    .map(slot => slot.key)
+    .filter(key => Boolean(resolveMaterial(key)));
+  const modelMaterialWaiting = selectedMaterialKeys.includes('model') && !shouldUseModelMaterial(prompt);
+  const participatingMaterialCount = selectedMaterialKeys.length - (modelMaterialWaiting ? 1 : 0);
+  const productionMaterialStatus = selectedMaterialKeys.length === 0
+    ? '尚未选择资料'
+    : `本次参与 ${participatingMaterialCount} 项${modelMaterialWaiting ? ' · 模特待人物需求' : ''}`;
 
   useImperativeHandle(ref, () => ({
     addImage: (data, mimeType, preview, sourceNodeId, usage) => {
@@ -717,7 +725,9 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                           <span className="relative h-5 w-9 rounded-full bg-[#3a3a3d] transition peer-checked:bg-red-600 after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-gray-300 after:transition-transform peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
                           使用生产资料
                         </label>
-                        <span className="text-[8px] text-gray-600">{materialsEnabled ? '结构化资料随本次任务发送' : '已关闭 · 原始模型生图'}</span>
+                        <span className={cn('text-[8px]', materialsEnabled && modelMaterialWaiting ? 'text-amber-400' : materialsEnabled && participatingMaterialCount > 0 ? 'text-emerald-400' : 'text-gray-600')}>
+                          {materialsEnabled ? productionMaterialStatus : '已关闭 · 原始模型生图'}
+                        </span>
                       </div>
 
                       {!materialsEnabled ? (
@@ -749,7 +759,8 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                                     if (!reference) return [];
                                     const selected = resolveMaterial(slot.key);
                                     const Icon = slot.icon;
-                                    return [<div key={slot.key} className="min-w-0 rounded-lg border border-[#303034] bg-[#1d1d1f] px-2 py-1.5"><div className="flex items-center gap-1 text-[8px] font-black text-gray-400"><Icon size={10} className={slot.color} />{slot.label}</div><div className="mt-1 truncate text-[8px] text-gray-600">{selected?.name || `固定版本 V${reference.version}`}</div></div>];
+                                    const waiting = slot.key === 'model' && modelMaterialWaiting;
+                                    return [<div key={slot.key} className={cn('min-w-0 rounded-lg border bg-[#1d1d1f] px-2 py-1.5', waiting ? 'border-amber-500/30' : 'border-emerald-500/20')}><div className="flex items-center gap-1 text-[8px] font-black text-gray-400"><Icon size={10} className={slot.color} />{slot.label}<span className={cn('ml-auto h-1.5 w-1.5 rounded-full', waiting ? 'bg-amber-400' : 'bg-emerald-400')} /></div><div className="mt-1 truncate text-[8px] text-gray-600">{selected?.name || `固定版本 V${reference.version}`}</div><div className={cn('mt-0.5 truncate text-[7px]', waiting ? 'text-amber-400' : 'text-emerald-400')}>{waiting ? '当前未触发' : slot.key === 'copyLayout' ? '本次应用规则' : '本次引用'}</div></div>];
                                   })}
                                 </div>
                               )}
@@ -764,6 +775,8 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                                     <MaterialPicker
                                       key={slot.key} label={slot.label} caption={slot.caption} icon={slot.icon} color={slot.color}
                                       selected={selected ? `${selected.name} · V${selected.version}` : undefined}
+                                      status={selected ? (slot.key === 'model' && modelMaterialWaiting ? '当前未触发 · 输入女人、女性、模特等人物需求' : slot.key === 'copyLayout' ? '本次应用排版规则' : '本次将引用') : undefined}
+                                      statusTone={slot.key === 'model' && modelMaterialWaiting ? 'waiting' : 'active'}
                                       open={openMaterialMenu === slot.key} onToggle={() => setOpenMaterialMenu(value => value === slot.key ? null : slot.key)}
                                       onClear={() => selectMaterial(slot.key, null)} compact
                                     >
@@ -898,16 +911,18 @@ const MaterialPicker: React.FC<{
   icon: React.ElementType;
   color: string;
   selected?: string;
+  status?: string;
+  statusTone?: 'active' | 'waiting';
   open: boolean;
   onToggle: () => void;
   onClear: () => void;
   compact?: boolean;
   children: React.ReactNode;
-}> = ({ label, caption, icon: Icon, color, selected, open, onToggle, onClear, compact, children }) => (
+}> = ({ label, caption, icon: Icon, color, selected, status, statusTone = 'active', open, onToggle, onClear, compact, children }) => (
   <div className="relative">
     <button type="button" onClick={onToggle} className={cn('flex w-full items-center gap-2 rounded-lg border px-2.5 text-left transition', compact ? 'min-h-[48px] py-1.5' : 'min-h-[44px] py-2', selected ? 'border-white/30 bg-[#252525]' : 'border-[#333] bg-[#202020] hover:bg-[#292929]')}>
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#303030]"><Icon size={14} className={color} /></span>
-      <span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-black text-gray-100">{selected || label}</span><span className="block truncate text-[8px] text-gray-500">{selected ? `${label} · 固定版本` : caption}</span></span>
+      <span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-black text-gray-100">{selected || label}</span><span className={cn('block truncate text-[8px]', status ? (statusTone === 'waiting' ? 'text-amber-400' : 'text-emerald-400') : 'text-gray-500')}>{status || (selected ? `${label} · 固定版本` : caption)}</span></span>
       <ChevronDown size={12} className={cn('shrink-0 text-gray-500 transition-transform', open && 'rotate-180')} />
     </button>
     {selected && <button type="button" onClick={event => { event.stopPropagation(); onClear(); }} className="absolute right-7 top-1/2 -translate-y-1/2 rounded p-1 text-gray-600 hover:bg-black/30 hover:text-white"><X size={10} /></button>}

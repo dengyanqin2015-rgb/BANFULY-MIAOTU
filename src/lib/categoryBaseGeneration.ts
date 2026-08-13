@@ -76,8 +76,15 @@ const compactText = (value: string | undefined, maxLength: number) => {
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
 };
 
-const MODEL_EXCLUDED_PATTERN = /(?:不要|不需要|无需|禁止|去掉|移除)(?:任何)?(?:人物|人像|真人|模特)|(?:无人|无人物|不含人物|纯产品|产品平铺|静物平铺|only\s+product|product\s+only|no\s+(?:people|person|model))/i;
-const MODEL_REQUESTED_PATTERN = /(?:人物|人像|真人|模特|上身|试穿|穿着|穿搭|佩戴|手持|半身|全身|肖像|成年(?:男性|女性|男人|女人)|model|person|people|woman|women|man|men|wearing|try[- ]?on|portrait)/i;
+const MODEL_PERSON_TERMS = '(?:人物|人像|真人|模特|女人|女性|女士|女模特|美女|男人|男性|男士|男模特|成年人|成人|夫妻|情侣|新娘|新郎|妈妈|母亲|爸爸|父亲|孕妇)';
+const MODEL_EXCLUDED_PATTERN = new RegExp(
+  `(?:不要|不需要|无需|禁止|去掉|移除)(?:出现|展示|包含|加入|添加|有)?(?:任何|成年)?${MODEL_PERSON_TERMS}|(?:不出现|不展示|不包含)(?:任何|成年)?${MODEL_PERSON_TERMS}|(?:无人|无人物|不含人物|纯产品|产品平铺|静物平铺|only\\s+product|product\\s+only|no\\s+(?:people|person|model|woman|women|man|men))`,
+  'i',
+);
+const MODEL_REQUESTED_PATTERN = new RegExp(
+  `(?:${MODEL_PERSON_TERMS}|上身|试穿|穿着|穿搭|佩戴|手持|半身|全身|肖像|model|person|people|woman|women|man|men|wearing|try[- ]?on|portrait)`,
+  'i',
+);
 
 export const shouldUseModelMaterial = (prompt: string) => {
   const normalized = String(prompt || '').trim();
