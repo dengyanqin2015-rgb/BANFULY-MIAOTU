@@ -85,7 +85,10 @@ const emptyBaseForm = () => ({
 });
 
 const api = async <T,>(url: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(url, init);
+  const headers = new Headers(init?.headers);
+  const token = localStorage.getItem('auth_token');
+  if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+  const response = await fetch(url, { ...init, headers });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.message || `请求失败（${response.status}）`);
   return payload as T;
@@ -221,8 +224,16 @@ export const AssetLibraryPanel: React.FC = () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fileName: file.name, mimeType: file.type, byteSize: file.size, ...dimensions }),
     });
-    const uploadResponse = await fetch(presigned.uploadUrl, { method: 'PUT', body: file, headers: presigned.headers });
-    if (!uploadResponse.ok) throw new Error(`图片上传失败：${file.name}`);
+    const uploadHeaders = new Headers(presigned.headers);
+    if (presigned.uploadUrl.startsWith('/')) {
+      const token = localStorage.getItem('auth_token');
+      if (token) uploadHeaders.set('Authorization', `Bearer ${token}`);
+    }
+    const uploadResponse = await fetch(presigned.uploadUrl, { method: 'PUT', body: file, headers: uploadHeaders });
+    if (!uploadResponse.ok) {
+      const detail = await uploadResponse.json().catch(() => null) as { message?: string } | null;
+      throw new Error(detail?.message || `图片上传失败（${uploadResponse.status}）：${file.name}`);
+    }
     await api(`/api/storage/uploads/${presigned.objectId}/complete`, { method: 'POST' });
     return {
       id: `image-${presigned.objectId}`,
