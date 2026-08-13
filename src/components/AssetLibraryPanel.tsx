@@ -23,6 +23,7 @@ import type {
   CategoryBaseRecord,
   PaginatedAssetResult,
 } from '../lib/assetLibrary';
+import { detectAssetImageMimeType, type AssetImageMimeType } from '../lib/storageObjects';
 
 type LibraryTab = 'bases' | AssetType;
 
@@ -107,6 +108,13 @@ const imageDimensions = (file: File): Promise<{ width: number; height: number }>
   };
   image.src = url;
 });
+
+const detectFileMimeType = async (file: File): Promise<AssetImageMimeType> => {
+  const prefix = new Uint8Array(await file.slice(0, 32).arrayBuffer());
+  const mimeType = detectAssetImageMimeType(prefix);
+  if (!mimeType) throw new Error(`文件内容不是有效的 JPG、PNG 或 WebP 图片：${file.name}`);
+  return mimeType;
+};
 
 const splitList = (value: string) => value.split(/[,，\n]/).map(item => item.trim()).filter(Boolean);
 
@@ -218,11 +226,11 @@ export const AssetLibraryPanel: React.FC = () => {
   };
 
   const uploadFile = async (file: File, sortOrder: number): Promise<AssetImageReference> => {
-    const dimensions = await imageDimensions(file);
+    const [dimensions, mimeType] = await Promise.all([imageDimensions(file), detectFileMimeType(file)]);
     const presigned = await api<{ objectId: string; uploadUrl: string; headers: Record<string, string> }>('/api/storage/uploads/presign', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileName: file.name, mimeType: file.type, byteSize: file.size, ...dimensions }),
+      body: JSON.stringify({ fileName: file.name, mimeType, byteSize: file.size, ...dimensions }),
     });
     const uploadHeaders = new Headers(presigned.headers);
     if (presigned.uploadUrl.startsWith('/')) {

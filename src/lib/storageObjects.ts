@@ -100,3 +100,10 @@ export const matchesImageSignature = (mimeType: AssetImageMimeType, bytes: Uint8
     && String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF'
     && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
 };
+
+export const detectAssetImageMimeType = (bytes: Uint8Array): AssetImageMimeType | null => {
+  for (const mimeType of ASSET_IMAGE_MIME_TYPES) {
+    if (matchesImageSignature(mimeType, bytes)) return mimeType;
+  }
+  return null;
+};
