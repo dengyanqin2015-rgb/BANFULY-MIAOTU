@@ -3,7 +3,7 @@ export const WORKFLOW_LAYOUT = {
   verticalGap: 450,
   collisionX: 350,
   collisionY: 400,
-  gridColumns: 6,
+  gridColumns: 8,
   maxAttempts: 240,
 } as const;
 
@@ -48,8 +48,8 @@ export function findFreeGridPosition(
 }
 
 /**
- * Keeps derived nodes visually beside their parent. Collisions move the node
- * downward in a bounded lane instead of forming an endless row.
+ * Keeps derived nodes visually beside their parent. Repeated results fill the
+ * row from left to right and wrap after the shared workflow column count.
  */
 export function findDerivedNodePosition(
   parent: WorkflowPoint,
@@ -59,7 +59,27 @@ export function findDerivedNodePosition(
     x: parent.x + WORKFLOW_LAYOUT.horizontalGap,
     y: parent.y,
   };
-  return findFreeGridPosition(origin, nodes, 1);
+  return findFreeGridPosition(origin, nodes, WORKFLOW_LAYOUT.gridColumns);
+}
+
+/**
+ * Allocates a stable row-major batch without moving any existing node.
+ * The origin is always treated as the first cell of the batch.
+ */
+export function allocateGridPositions(
+  origin: WorkflowPoint,
+  count: number,
+  nodes: PositionedWorkflowNode[],
+  columns: number = WORKFLOW_LAYOUT.gridColumns,
+): WorkflowPoint[] {
+  const reserved = [...nodes];
+  const positions: WorkflowPoint[] = [];
+  for (let index = 0; index < Math.max(0, Math.floor(count)); index += 1) {
+    const position = findFreeGridPosition(origin, reserved, columns);
+    positions.push(position);
+    reserved.push({ position });
+  }
+  return positions;
 }
 
 /**

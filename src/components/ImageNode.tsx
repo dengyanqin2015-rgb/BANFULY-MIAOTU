@@ -32,6 +32,7 @@ export interface ImageNodeData extends Record<string, unknown> {
   type?: 'source' | 'generated';
   layoutMode?: 'grid' | 'reference';
   layoutSlot?: { x: number; y: number };
+  layoutRowStartX?: number;
   sourceNodeId?: string;
   // Context for regeneration
   aspectRatio?: AspectRatio;
@@ -267,6 +268,8 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
                 alt={data.prompt} 
                 className="w-full h-auto object-contain"
                 referrerPolicy="no-referrer"
+                loading="lazy"
+                decoding="async"
               />
               {data.isLoading ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/65 backdrop-blur-[1px]">

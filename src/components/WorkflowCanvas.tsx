@@ -29,8 +29,8 @@ import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
-import { allocatePasteBatchOrigin, getBatchImportPosition, IMAGE_UPLOAD_LIMITS, processImageFiles } from '../lib/uploadProcessing';
-import { advanceGenerationGrid, findDerivedNodePosition, findFreeGenerationPosition, findFreeGridPosition, WORKFLOW_LAYOUT } from '../lib/workflowLayout';
+import { IMAGE_UPLOAD_LIMITS, processCanvasImageFiles, processImageFiles, resolvePasteBatchOrigin } from '../lib/uploadProcessing';
+import { advanceGenerationGrid, allocateGridPositions, findDerivedNodePosition, findFreeGenerationPosition, WORKFLOW_LAYOUT } from '../lib/workflowLayout';
 import { GenerationTaskCoordinator, getGenerationErrorMessage, getGenerationProgress, type GenerationTaskToken } from '../lib/generationTasks';
 import { ImageWriteCache, SerialTaskQueue, createProjectFingerprint, stripRuntimeGraphState } from '../lib/projectPersistence';
 import {
@@ -220,27 +220,23 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const nodesRef = useRef<Node[]>([]);
-  const pasteLayoutCursorRef = useRef<{ x: number; y: number } | null>(null);
+  const pasteAnchorRef = useRef<{ x: number; y: number } | null>(null);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [hasApiKey, setHasApiKey] = useState(true);
   const [lastNodeId, setLastNodeId] = useState<string | null>(null);
   const [renamingProject, setRenamingProject] = useState<{ id: string, name: string } | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
-  const uploadUsageRef = useRef({ count: 0, originalBytes: 0, analysisBytes: 0 });
+  const [generationNotice, setGenerationNotice] = useState<{
+    nodeId: string;
+    kind: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const generationNoticeTimerRef = useRef<number | null>(null);
   const uploadQueueRef = useRef<Promise<void>>(Promise.resolve());
   const uploadIdCounterRef = useRef(0);
   const nextUploadBatchId = useCallback((prefix: string) => `${prefix}-${crypto.randomUUID?.() || `${Date.now()}-${++uploadIdCounterRef.current}`}`, []);
-  useEffect(() => {
-    nodesRef.current = nodes;
-    uploadUsageRef.current = nodes.reduce((usage, node) => {
-      const data = node.data as ImageNodeData;
-      const originalBytes = typeof data.uploadOriginalBytes === 'number' ? data.uploadOriginalBytes : 0;
-      const analysisBytes = typeof data.uploadAnalysisBytes === 'number' ? data.uploadAnalysisBytes : 0;
-      if (!originalBytes && !analysisBytes) return usage;
-      return { count: usage.count + 1, originalBytes: usage.originalBytes + originalBytes, analysisBytes: usage.analysisBytes + analysisBytes };
-    }, { count: 0, originalBytes: 0, analysisBytes: 0 });
-  }, [nodes]);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   const [paneMenu, setPaneMenu] = useState<{ show: boolean; x: number; y: number } | null>(null);
   const selectedNodes = nodes.filter(n => n.selected);
   
@@ -248,7 +244,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const assistantRef = useRef<AssistantRef>(null);
   const rfInstance = useRef<ReactFlowInstance | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const layoutCursorRef = useRef<{ nextX: number; nextY: number } | null>(null);
+  const layoutCursorRef = useRef<{ nextX: number; nextY: number; rowStartX: number } | null>(null);
   const placementReservationsRef = useRef<Map<string, { position: { x: number; y: number } }>>(new Map());
   const generationTasksRef = useRef(new GenerationTaskCoordinator());
   const generationProgressTimersRef = useRef(new Map<string, number>());
@@ -482,6 +478,11 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     const hydratedImageValues = new Map<string, string>();
     generationTasksRef.current.cancelAll();
     stopAllGenerationProgress();
+    if (generationNoticeTimerRef.current !== null) {
+      window.clearTimeout(generationNoticeTimerRef.current);
+      generationNoticeTimerRef.current = null;
+    }
+    setGenerationNotice(null);
     
     // Hydrate nodes with images from IndexedDB
     const hydratedNodes = await Promise.all((project.nodes || []).map(async (node) => {
@@ -549,14 +550,17 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setEdges(project.edges || []);
     setLastNodeId(project.lastNodeId || null);
     placementReservationsRef.current.clear();
+    pasteAnchorRef.current = null;
     const lastGridNode = [...hydratedNodes].reverse().find(node => {
       const data = node.data as ImageNodeData;
       const legacyReference = data.layoutMode === undefined && Boolean(data.originalImages?.length);
       return data.type === 'generated' && data.layoutMode !== 'reference' && !legacyReference;
     });
     if (lastGridNode) {
-      const next = advanceGenerationGrid((lastGridNode.data as ImageNodeData).layoutSlot || lastGridNode.position);
-      layoutCursorRef.current = { nextX: next.x, nextY: next.y };
+      const nodeData = lastGridNode.data as ImageNodeData;
+      const rowStartX = nodeData.layoutRowStartX ?? 100;
+      const next = advanceGenerationGrid(nodeData.layoutSlot || lastGridNode.position, rowStartX);
+      layoutCursorRef.current = { nextX: next.x, nextY: next.y, rowStartX };
     } else {
       layoutCursorRef.current = null;
     }
@@ -832,16 +836,22 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
   }, []);
 
-  const advanceLayoutCursor = useCallback((position: { x: number; y: number }) => {
-    const next = advanceGenerationGrid(position);
-    layoutCursorRef.current = { nextX: next.x, nextY: next.y };
+  const advanceLayoutCursor = useCallback((position: { x: number; y: number }, rowStartX = 100) => {
+    const next = advanceGenerationGrid(position, rowStartX);
+    layoutCursorRef.current = { nextX: next.x, nextY: next.y, rowStartX };
   }, []);
 
   const handleNodeDragStop: NodeMouseHandler = useCallback((_event, node) => {
     const nodeData = node.data as ImageNodeData;
     if (nodeData.type !== "generated") return;
+    const rowStartX = node.position.x;
     setLastNodeId(node.id);
-  }, []);
+    advanceLayoutCursor(node.position, rowStartX);
+    setNodes(current => current.map(item => item.id === node.id ? {
+      ...item,
+      data: { ...item.data, layoutSlot: node.position, layoutRowStartX: rowStartX },
+    } : item));
+  }, [advanceLayoutCursor, setNodes]);
 
   const fitAllNodes = useCallback(() => {
     rfInstance.current?.fitView({ padding: 0.16, duration: 450 });
@@ -872,9 +882,22 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }, 80);
   }, []);
 
-  const findSafePosition = (x: number, y: number, currentNodes: Array<{ position: { x: number; y: number } }>) => {
-    return findFreeGridPosition({ x, y }, currentNodes);
-  };
+  const showGenerationNotice = useCallback((notice: {
+    nodeId: string;
+    kind: 'success' | 'error';
+    message: string;
+  }) => {
+    if (generationNoticeTimerRef.current !== null) window.clearTimeout(generationNoticeTimerRef.current);
+    setGenerationNotice(notice);
+    generationNoticeTimerRef.current = window.setTimeout(() => {
+      setGenerationNotice(current => current?.nodeId === notice.nodeId ? null : current);
+      generationNoticeTimerRef.current = null;
+    }, 5000);
+  }, []);
+
+  useEffect(() => () => {
+    if (generationNoticeTimerRef.current !== null) window.clearTimeout(generationNoticeTimerRef.current);
+  }, []);
 
   const findSafePositionToRight = useCallback((x: number, y: number, currentNodes: Array<{ position: { x: number; y: number } }>) => {
     return findDerivedNodePosition({ x: x - WORKFLOW_LAYOUT.horizontalGap, y }, currentNodes);
@@ -1127,11 +1150,23 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
+    pasteAnchorRef.current = rfInstance.current?.screenToFlowPosition({
+      x: event.clientX,
+      y: event.clientY,
+    }) || null;
     setPaneMenu({
       show: true,
       x: event.clientX,
       y: event.clientY,
     });
+  }, []);
+
+  const onPaneClick = useCallback((event: React.MouseEvent) => {
+    pasteAnchorRef.current = rfInstance.current?.screenToFlowPosition({
+      x: event.clientX,
+      y: event.clientY,
+    }) || null;
+    setPaneMenu(null);
   }, []);
 
   const handleCreateNote = useCallback(() => {
@@ -1172,15 +1207,23 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
       uploadQueueRef.current = uploadQueueRef.current.then(async () => {
       try {
-        const images = await processImageFiles(files, uploadUsageRef.current);
-        uploadUsageRef.current = images.reduce((usage, image) => ({ count: usage.count + 1, originalBytes: usage.originalBytes + image.originalBytes, analysisBytes: usage.analysisBytes + image.analysisBytes }), uploadUsageRef.current);
+        const images = await processCanvasImageFiles(files);
+        const occupied = [
+          ...nodesRef.current,
+          ...placementReservationsRef.current.values(),
+        ];
+        const positions = allocateGridPositions(
+          { x: position?.x ?? 100, y: position?.y ?? 100 },
+          images.length,
+          occupied,
+        );
         const batchId = nextUploadBatchId('import');
         const importedNodes = images.map((image, i) => {
           const newNodeId = `${batchId}-${i}`;
           return attachNodeActions({
             id: newNodeId,
             type: 'imageNode',
-            position: getBatchImportPosition({ x: position?.x || 100, y: position?.y || 100 }, i),
+            position: positions[i],
             data: {
               prompt: image.file.name,
               imageUrl: image.originalDataUrl,
@@ -1191,7 +1234,9 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             },
           });
         });
+        importedNodes.forEach(node => placementReservationsRef.current.set(node.id, { position: node.position }));
         setNodes((nds) => [...nds, ...importedNodes]);
+        window.setTimeout(() => importedNodes.forEach(node => placementReservationsRef.current.delete(node.id)), 1000);
       } catch (error) {
         alert((error as Error).message);
       }
@@ -1214,17 +1259,19 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       event.preventDefault();
       uploadQueueRef.current = uploadQueueRef.current.then(async () => {
         try {
-          const images = await processImageFiles(files, uploadUsageRef.current);
-          uploadUsageRef.current = images.reduce((usage, image) => ({ count: usage.count + 1, originalBytes: usage.originalBytes + image.originalBytes, analysisBytes: usage.analysisBytes + image.analysisBytes }), uploadUsageRef.current);
+          const images = await processCanvasImageFiles(files);
           const center = rfInstance.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) || { x: 0, y: 0 };
-          const layout = allocatePasteBatchOrigin(center, nodesRef.current.map(node => node.position.y + 450), pasteLayoutCursorRef.current, images.length);
-          const origin = layout.origin;
-          pasteLayoutCursorRef.current = layout.nextCursor;
+          const origin = resolvePasteBatchOrigin(center, pasteAnchorRef.current);
+          const occupied = [
+            ...nodesRef.current,
+            ...placementReservationsRef.current.values(),
+          ];
+          const positions = allocateGridPositions(origin, images.length, occupied);
           const batchId = nextUploadBatchId('paste');
           const pastedNodes = images.map((image, index) => attachNodeActions({
                 id: `${batchId}-${index}`,
                 type: 'imageNode',
-                position: getBatchImportPosition(origin, index),
+                position: positions[index],
                 data: {
                   prompt: image.file.name || `粘贴图片 ${index + 1}`,
                   imageUrl: image.originalDataUrl,
@@ -1234,7 +1281,9 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                   analysisImageUrl: image.analysisDataUrl,
                 },
               }));
+          pastedNodes.forEach(node => placementReservationsRef.current.set(node.id, { position: node.position }));
           setNodes(nds => [...nds, ...pastedNodes]);
+          window.setTimeout(() => pastedNodes.forEach(node => placementReservationsRef.current.delete(node.id)), 1000);
         } catch (error) { alert((error as Error).message); }
       });
       await uploadQueueRef.current;
@@ -1295,7 +1344,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }) : n));
       startGenerationProgress(targetNodeId, task, model, requestImages.length);
       setLastNodeId(targetNodeId);
-      focusNode(targetNodeId);
 
       console.log(`[Workflow] Starting regeneration for node ${targetNodeId}`, { prompt, aspectRatio, imageSize, model, imagesCount: images?.length });
 
@@ -1322,6 +1370,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           ...n,
           data: { ...n.data, isLoading: false, imageUrl: urls[0], generationStatus: undefined, generationDetail: undefined }
         }) : n));
+        showGenerationNotice({ nodeId: targetNodeId, kind: 'success', message: '图片已重新生成' });
       } catch (err: unknown) {
         if (!generationTasksRef.current.isCurrent(task)) return;
         const error = err as Error;
@@ -1330,6 +1379,11 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           ...n,
           data: { ...n.data, isLoading: false, error: getGenerationErrorMessage(error, task.signal), generationStatus: undefined, generationDetail: undefined }
         } : n));
+        showGenerationNotice({
+          nodeId: targetNodeId,
+          kind: 'error',
+          message: task.signal.aborted ? '生成已停止' : '图片生成失败',
+        });
       } finally {
         stopGenerationProgress(targetNodeId);
         generationTasksRef.current.finish(task);
@@ -1348,6 +1402,15 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     
     const currentNodes = nodesRef.current;
     const occupiedNodes = [...currentNodes, ...placementReservationsRef.current.values()];
+    const uploadOrigin = layoutCursorRef.current
+      ? { x: layoutCursorRef.current.nextX, y: layoutCursorRef.current.nextY }
+      : currentNodes.length > 0
+        ? {
+            x: currentNodes[currentNodes.length - 1].position.x + WORKFLOW_LAYOUT.horizontalGap,
+            y: currentNodes[currentNodes.length - 1].position.y,
+          }
+        : { x: 100, y: 100 };
+    const newSourcePositions = allocateGridPositions(uploadOrigin, newUploads.length, occupiedNodes);
 
     // Create source nodes ONLY for new uploads
     const newSourceNodes: Node<ImageNodeData>[] = newUploads.map((img, i) => {
@@ -1359,21 +1422,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         images[imgIdx].sourceNodeId = sourceId;
       }
 
-      let basePosX = 100;
-      let basePosY = 100;
-      
-      if (currentNodes.length > 0) {
-        const lastNode = currentNodes[currentNodes.length - 1];
-        basePosX = lastNode.position.x;
-        basePosY = lastNode.position.y + 400;
-      }
-      
-      const pos = findSafePosition(basePosX, basePosY + i * 400, occupiedNodes);
-      
       return {
         id: `upload-${newNodeId}-${i}`,
         type: 'imageNode',
-        position: pos,
+        position: newSourcePositions[i],
         data: {
           prompt: 'Uploaded Reference',
           imageUrl: `data:${img.mimeType};base64,${img.data}`,
@@ -1388,7 +1440,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     // Reference-based generations form a horizontal chain to the right of their sources.
     // Generations without references continue on the predictable shared grid.
-    let posX = layoutCursorRef.current?.nextX ?? 100;
+    let rowStartX = layoutCursorRef.current?.rowStartX ?? 100;
+    let posX = layoutCursorRef.current?.nextX ?? rowStartX;
     let posY = layoutCursorRef.current?.nextY ?? 100;
     const sourceNodesInCanvas = currentNodes.filter(node => existingSourceIds.includes(node.id));
     const allSources = [...sourceNodesInCanvas, ...newSourceNodes];
@@ -1420,10 +1473,12 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           return data.type === 'generated' && data.layoutMode !== 'reference' && !legacyReference;
         });
       if (lastGenerated) {
-        const next = advanceGenerationGrid((lastGenerated.data as ImageNodeData).layoutSlot || lastGenerated.position);
+        const nodeData = lastGenerated.data as ImageNodeData;
+        rowStartX = nodeData.layoutRowStartX ?? 100;
+        const next = advanceGenerationGrid(nodeData.layoutSlot || lastGenerated.position, rowStartX);
         posX = next.x;
         posY = next.y;
-        layoutCursorRef.current = { nextX: posX, nextY: posY };
+        layoutCursorRef.current = { nextX: posX, nextY: posY, rowStartX };
       }
     }
 
@@ -1431,11 +1486,12 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       const safePos = findFreeGenerationPosition(
         { x: posX, y: posY },
         [...occupiedNodes, ...newSourceNodes],
+        rowStartX,
       );
       posX = safePos.x;
       posY = safePos.y;
     }
-    if (!hasReferences) advanceLayoutCursor({ x: posX, y: posY });
+    if (!hasReferences) advanceLayoutCursor({ x: posX, y: posY }, rowStartX);
 
     const newNode = attachNodeActions({
       id: newNodeId,
@@ -1447,6 +1503,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         type: 'generated',
         layoutMode: hasReferences ? 'reference' : 'grid',
         layoutSlot: { x: posX, y: posY },
+        layoutRowStartX: hasReferences ? undefined : rowStartX,
         refImages: images?.map(img => `data:${img.mimeType};base64,${img.data}`),
         originalImages: manualImages,
         productionMaterials,
@@ -1472,7 +1529,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }, 1000);
 
     setNodes((nds) => [...nds, ...newSourceNodes, newNode]);
-    focusNode(newNodeId);
 
     // Create edges from ALL sources (existing and new)
     const newEdges: Edge[] = [
@@ -1534,6 +1590,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           return node;
         })
       );
+      showGenerationNotice({ nodeId: newNodeId, kind: 'success', message: '新图片已生成' });
     } catch (err: unknown) {
       if (!generationTasksRef.current.isCurrent(task)) return;
       const error = err as Error;
@@ -1560,11 +1617,16 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           return node;
         })
       );
+      showGenerationNotice({
+        nodeId: newNodeId,
+        kind: 'error',
+        message: task.signal.aborted ? '生成已停止' : '图片生成失败',
+      });
     } finally {
       stopGenerationProgress(newNodeId);
       generationTasksRef.current.finish(task);
     }
-  }, [user, userApiKey, onDeductCredit, findSafePosition, findSafePositionToRight, attachNodeActions, advanceLayoutCursor, focusNode, lastNodeId, startGenerationProgress, stopGenerationProgress]);
+  }, [user, userApiKey, onDeductCredit, findSafePositionToRight, attachNodeActions, advanceLayoutCursor, lastNodeId, showGenerationNotice, startGenerationProgress, stopGenerationProgress]);
 
   const handleGenerateRef = useRef(handleGenerate);
   useEffect(() => {
@@ -1587,6 +1649,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         onNodeDoubleClick={handleNodeDoubleClick}
         onNodeDragStop={handleNodeDragStop}
         onInit={(instance) => { rfInstance.current = instance as unknown as ReactFlowInstance; }}
+        onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
         nodeTypes={nodeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
@@ -1596,6 +1659,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         selectionKeyCode="Shift"
         multiSelectionKeyCode="Control"
         fitView
+        onlyRenderVisibleElements
         colorMode="dark"
         style={{ width: '100%', height: '100%' }}
       >
@@ -1616,6 +1680,49 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             <LocateFixed size={14} />
           </ControlButton>
         </Controls>
+
+        <AnimatePresence>
+          {generationNotice && (
+            <Panel position="bottom-right" className="mb-40 mr-4" aria-live="polite">
+              <motion.button
+                type="button"
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                transition={{ duration: 0.18 }}
+                onClick={() => {
+                  if (generationNoticeTimerRef.current !== null) {
+                    window.clearTimeout(generationNoticeTimerRef.current);
+                    generationNoticeTimerRef.current = null;
+                  }
+                  const nodeId = generationNotice.nodeId;
+                  setGenerationNotice(null);
+                  focusNode(nodeId);
+                }}
+                className={cn(
+                  'flex min-w-[210px] items-center gap-2 rounded-xl border bg-[#1a1a1a]/95 px-3 py-2.5 text-left shadow-2xl backdrop-blur-xl transition-colors',
+                  generationNotice.kind === 'success'
+                    ? 'border-emerald-500/35 hover:bg-[#222]'
+                    : 'border-red-500/40 hover:bg-[#222]'
+                )}
+                aria-label={`${generationNotice.message}，点击定位图片`}
+              >
+                <span className={cn(
+                  'h-2 w-2 shrink-0 rounded-full',
+                  generationNotice.kind === 'success' ? 'bg-emerald-400' : 'bg-red-500'
+                )} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[11px] font-bold text-white">{generationNotice.message}</span>
+                  <span className="block text-[9px] text-gray-500">当前画面保持不变</span>
+                </span>
+                <span className="flex items-center gap-1 text-[10px] font-bold text-blue-400">
+                  查看
+                  <LocateFixed size={12} />
+                </span>
+              </motion.button>
+            </Panel>
+          )}
+        </AnimatePresence>
 
         <AnimatePresence>
           {selectedNodes.length > 1 && (

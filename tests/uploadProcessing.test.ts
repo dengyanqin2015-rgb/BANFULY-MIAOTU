@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { allocatePasteBatchOrigin, assertImageUsage, DOCUMENT_UPLOAD_LIMITS, getBatchImportPosition, IMAGE_UPLOAD_LIMITS, processImageFiles, reserveImageUsage, validateDocumentFiles } from '../src/lib/uploadProcessing';
+import { assertImageUsage, DOCUMENT_UPLOAD_LIMITS, getBatchImportPosition, IMAGE_UPLOAD_LIMITS, processCanvasImageFiles, processImageFiles, reserveImageUsage, resolvePasteBatchOrigin, validateDocumentFiles } from '../src/lib/uploadProcessing';
 
 const fakeFile = (name: string, size: number, type: string) => ({ name, size, type } as File);
 
@@ -68,13 +68,14 @@ assert.equal(processed[0].originalMimeType, 'image/png');
 assert.equal(processed[0].analysisDataUrl, 'data:image/jpeg;base64,QU5BTFlTSVM=');
 assert.notEqual(processed[0].originalDataUrl, processed[0].analysisDataUrl, '原图和分析副本不得混用');
 
-assert.deepEqual([0, 1, 2, 3, 4].map(index => getBatchImportPosition({ x: 100, y: 200 }, index)), [
-  { x: 100, y: 200 }, { x: 450, y: 200 }, { x: 800, y: 200 },
-  { x: 100, y: 650 }, { x: 450, y: 650 },
+const canvasBatch = await processCanvasImageFiles(Array.from({ length: 9 }, (_, index) => fakeFile(`canvas-${index}.png`, 16, 'image/png')));
+assert.equal(canvasBatch.length, 9, '画布导入不应复用 AI 参考图 8 张限制');
+
+assert.deepEqual([0, 1, 7, 8, 9].map(index => getBatchImportPosition({ x: 100, y: 200 }, index)), [
+  { x: 100, y: 200 }, { x: 500, y: 200 }, { x: 2900, y: 200 },
+  { x: 100, y: 650 }, { x: 500, y: 650 },
 ]);
-const firstPasteLayout = allocatePasteBatchOrigin({ x: 100, y: 100 }, [550, 1000], null, 4);
-const secondPasteLayout = allocatePasteBatchOrigin({ x: 100, y: 100 }, [550, 1000], firstPasteLayout.nextCursor, 2);
-assert.deepEqual(firstPasteLayout.origin, { x: 100, y: 1000 });
-assert.deepEqual(secondPasteLayout.origin, { x: 100, y: 1900 }, '连续粘贴批次不得复用同一原点');
+assert.deepEqual(resolvePasteBatchOrigin({ x: 100, y: 100 }, { x: 720, y: 360 }), { x: 720, y: 360 });
+assert.deepEqual(resolvePasteBatchOrigin({ x: 100, y: 100 }, null), { x: 100, y: 100 });
 
 console.log('uploadProcessing limits regression passed');

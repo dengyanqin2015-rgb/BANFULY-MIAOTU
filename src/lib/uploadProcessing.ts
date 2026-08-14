@@ -1,8 +1,17 @@
-export const IMAGE_UPLOAD_LIMITS = {
+export const AI_REFERENCE_LIMITS = {
   maxFiles: 8,
   maxFileBytes: 8 * 1024 * 1024,
   maxOriginalBytes: 40 * 1024 * 1024,
   maxAnalysisBytes: 12 * 1024 * 1024,
+  maxLongEdge: 2560,
+} as const;
+
+// Backwards-compatible name for existing callers. This limit applies only to
+// images that will actually be sent to an AI model, not canvas assets.
+export const IMAGE_UPLOAD_LIMITS = AI_REFERENCE_LIMITS;
+
+export const CANVAS_IMAGE_UPLOAD_LIMITS = {
+  maxFileBytes: 8 * 1024 * 1024,
   maxLongEdge: 2560,
 } as const;
 
@@ -35,7 +44,7 @@ export interface ExistingImageUsage {
 }
 
 export function assertImageUsage(existing: ExistingImageUsage, additions: Required<ExistingImageUsage>): void {
-  if ((existing.count || 0) + additions.count > IMAGE_UPLOAD_LIMITS.maxFiles) throw new Error(`图片最多 ${IMAGE_UPLOAD_LIMITS.maxFiles} 张`);
+  if ((existing.count || 0) + additions.count > AI_REFERENCE_LIMITS.maxFiles) throw new Error(`AI 参考图最多 ${AI_REFERENCE_LIMITS.maxFiles} 张`);
   if ((existing.originalBytes || 0) + additions.originalBytes > IMAGE_UPLOAD_LIMITS.maxOriginalBytes) throw new Error('图片原始总量超过 40MB');
   if ((existing.analysisBytes || 0) + additions.analysisBytes > IMAGE_UPLOAD_LIMITS.maxAnalysisBytes) throw new Error('模型分析副本总量超过 12MB，请减少图片或降低图片尺寸');
 }
@@ -70,9 +79,13 @@ const dataUrlBytes = (value: string) => {
   return Math.ceil(payload.length * 3 / 4);
 };
 
-async function makeAnalysisCopy(file: File, originalDataUrl: string): Promise<Omit<ProcessedImage, 'file'>> {
+async function makeAnalysisCopy(
+  file: File,
+  originalDataUrl: string,
+  maxLongEdge: number = AI_REFERENCE_LIMITS.maxLongEdge,
+): Promise<Omit<ProcessedImage, 'file'>> {
   const image = await loadImage(originalDataUrl, file.name);
-  const scale = Math.min(1, IMAGE_UPLOAD_LIMITS.maxLongEdge / Math.max(image.naturalWidth, image.naturalHeight));
+  const scale = Math.min(1, maxLongEdge / Math.max(image.naturalWidth, image.naturalHeight));
   const width = Math.max(1, Math.round(image.naturalWidth * scale));
   const height = Math.max(1, Math.round(image.naturalHeight * scale));
   const originalData = originalDataUrl.split(',')[1];
@@ -121,6 +134,29 @@ export async function processImageFiles(files: Iterable<File>, existing: Existin
   return results;
 }
 
+/**
+ * Processes images that only become canvas assets. The eight-image ceiling is
+ * an AI request constraint, so canvas imports intentionally have no cumulative
+ * count or total-byte cap. Per-file validation remains to prevent one file from
+ * freezing the browser during decoding.
+ */
+export async function processCanvasImageFiles(files: Iterable<File>): Promise<ProcessedImage[]> {
+  const list = Array.from(files);
+  if (!list.length) return [];
+  const invalidType = list.find(file => !file.type.startsWith('image/'));
+  if (invalidType) throw new Error(`“${invalidType.name}”不是图片文件`);
+  const oversized = list.find(file => file.size > CANVAS_IMAGE_UPLOAD_LIMITS.maxFileBytes);
+  if (oversized) throw new Error(`“${oversized.name}”超过单张 8MB 限制`);
+
+  const results: ProcessedImage[] = [];
+  for (const file of list) {
+    const original = await readFile(file, 'dataUrl') as string;
+    const copy = await makeAnalysisCopy(file, original, CANVAS_IMAGE_UPLOAD_LIMITS.maxLongEdge);
+    results.push({ file, ...copy });
+  }
+  return results;
+}
+
 export function validateDocumentFiles(files: Iterable<File>, existingCount = 0, existingBytes = 0): File[] {
   const list = Array.from(files);
   if (existingCount + list.length > DOCUMENT_UPLOAD_LIMITS.maxFiles) throw new Error(`文档最多 ${DOCUMENT_UPLOAD_LIMITS.maxFiles} 个`);
@@ -134,17 +170,13 @@ export const readFileAsDataUrl = (file: File) => readFile(file, 'dataUrl') as Pr
 export const readFileAsArrayBuffer = (file: File) => readFile(file, 'arrayBuffer') as Promise<ArrayBuffer>;
 
 export const getBatchImportPosition = (origin: { x: number; y: number }, index: number) => ({
-  x: origin.x + (index % 3) * 350,
-  y: origin.y + Math.floor(index / 3) * 450,
+  x: origin.x + (index % 8) * 400,
+  y: origin.y + Math.floor(index / 8) * 450,
 });
 
-export function allocatePasteBatchOrigin(
+export function resolvePasteBatchOrigin(
   center: { x: number; y: number },
-  existingNodeBottoms: number[],
-  cursor: { x: number; y: number } | null,
-  imageCount: number,
+  canvasAnchor: { x: number; y: number } | null,
 ) {
-  const nextFreeY = existingNodeBottoms.reduce((maxY, bottom) => Math.max(maxY, bottom), center.y);
-  const origin = { x: cursor?.x ?? center.x, y: Math.max(cursor?.y ?? center.y, nextFreeY) };
-  return { origin, nextCursor: { x: origin.x, y: origin.y + Math.ceil(imageCount / 3) * 450 } };
+  return canvasAnchor || center;
 }
