@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { assertImageUsage, DOCUMENT_UPLOAD_LIMITS, getBatchImportPosition, IMAGE_UPLOAD_LIMITS, processCanvasImageFiles, processImageFiles, reserveImageUsage, resolvePasteBatchOrigin, validateDocumentFiles } from '../src/lib/uploadProcessing';
+import { assertImageUsage, DOCUMENT_UPLOAD_LIMITS, getBatchImportPosition, IMAGE_UPLOAD_LIMITS, processCanvasImageFiles, processImageFiles, processProductionMaterialImage, PRODUCTION_MATERIAL_IMAGE_LIMITS, reserveImageUsage, resolvePasteBatchOrigin, validateDocumentFiles } from '../src/lib/uploadProcessing';
 
 const fakeFile = (name: string, size: number, type: string) => ({ name, size, type } as File);
 
@@ -70,6 +70,10 @@ assert.notEqual(processed[0].originalDataUrl, processed[0].analysisDataUrl, '原
 
 const canvasBatch = await processCanvasImageFiles(Array.from({ length: 9 }, (_, index) => fakeFile(`canvas-${index}.png`, 16, 'image/png')));
 assert.equal(canvasBatch.length, 9, '画布导入不应复用 AI 参考图 8 张限制');
+
+const preparedMaterial = await processProductionMaterialImage(fakeFile('material.png', 16, 'image/png'));
+assert.equal(preparedMaterial.width, PRODUCTION_MATERIAL_IMAGE_LIMITS.maxLongEdge, '生产资料应生成较轻的模型专用副本');
+assert.equal(preparedMaterial.height, PRODUCTION_MATERIAL_IMAGE_LIMITS.maxLongEdge / 2);
 
 assert.deepEqual([0, 1, 7, 8, 9].map(index => getBatchImportPosition({ x: 100, y: 200 }, index)), [
   { x: 100, y: 200 }, { x: 500, y: 200 }, { x: 2900, y: 200 },

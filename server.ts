@@ -2203,7 +2203,11 @@ app.get('/api/storage/objects/:id/view', authenticateToken, async (req: AuthRequ
     if (!object || object.status === 'pending' || !isUserStorageKey(req.user!.id, object.objectKey)) {
       return res.status(404).json({ message: '图片不存在' });
     }
-    res.setHeader('Cache-Control', 'private, max-age=300');
+    // Storage object IDs are immutable. A new upload/version receives a new ID,
+    // so authenticated browsers can safely reuse the same object long-term.
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.vary('Authorization');
+    res.vary('Cookie');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     const target = await getAssetReadTarget(object.objectKey);
     if (target.kind === 'redirect') return res.redirect(302, target.url);

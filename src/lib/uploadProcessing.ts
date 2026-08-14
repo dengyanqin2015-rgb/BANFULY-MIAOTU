@@ -15,6 +15,12 @@ export const CANVAS_IMAGE_UPLOAD_LIMITS = {
   maxLongEdge: 2560,
 } as const;
 
+export const PRODUCTION_MATERIAL_IMAGE_LIMITS = {
+  maxFileBytes: 15 * 1024 * 1024,
+  maxLongEdge: 1920,
+  jpegQuality: 0.86,
+} as const;
+
 export const DOCUMENT_UPLOAD_LIMITS = {
   maxFiles: 5,
   maxFileBytes: 10 * 1024 * 1024,
@@ -83,13 +89,15 @@ async function makeAnalysisCopy(
   file: File,
   originalDataUrl: string,
   maxLongEdge: number = AI_REFERENCE_LIMITS.maxLongEdge,
+  jpegQuality = 0.82,
+  passthroughMaxBytes = IMAGE_UPLOAD_LIMITS.maxAnalysisBytes,
 ): Promise<Omit<ProcessedImage, 'file'>> {
   const image = await loadImage(originalDataUrl, file.name);
   const scale = Math.min(1, maxLongEdge / Math.max(image.naturalWidth, image.naturalHeight));
   const width = Math.max(1, Math.round(image.naturalWidth * scale));
   const height = Math.max(1, Math.round(image.naturalHeight * scale));
   const originalData = originalDataUrl.split(',')[1];
-  if (scale === 1 && dataUrlBytes(originalDataUrl) <= IMAGE_UPLOAD_LIMITS.maxAnalysisBytes) {
+  if (scale === 1 && dataUrlBytes(originalDataUrl) <= passthroughMaxBytes) {
     return {
       originalDataUrl, originalData, originalMimeType: file.type, originalBytes: file.size,
       analysisDataUrl: originalDataUrl, analysisData: originalData, analysisMimeType: file.type,
@@ -103,7 +111,7 @@ async function makeAnalysisCopy(
   if (!context) throw new Error(`无法处理“${file.name}”`);
   context.drawImage(image, 0, 0, width, height);
   const mimeType = file.type === 'image/png' && file.size < 2 * 1024 * 1024 ? 'image/png' : 'image/jpeg';
-  const compressed = canvas.toDataURL(mimeType, mimeType === 'image/jpeg' ? 0.82 : undefined);
+  const compressed = canvas.toDataURL(mimeType, mimeType === 'image/jpeg' ? jpegQuality : undefined);
   return {
     originalDataUrl, originalData, originalMimeType: file.type, originalBytes: file.size,
     analysisDataUrl: compressed, analysisData: compressed.split(',')[1], analysisMimeType: mimeType,
@@ -155,6 +163,22 @@ export async function processCanvasImageFiles(files: Iterable<File>): Promise<Pr
     results.push({ file, ...copy });
   }
   return results;
+}
+
+export async function processProductionMaterialImage(file: File): Promise<ProcessedImage> {
+  if (!file.type.startsWith('image/')) throw new Error(`“${file.name}”不是图片文件`);
+  if (file.size > PRODUCTION_MATERIAL_IMAGE_LIMITS.maxFileBytes) {
+    throw new Error(`“${file.name}”超过生产资料单张 15MB 限制`);
+  }
+  const original = await readFile(file, 'dataUrl') as string;
+  const copy = await makeAnalysisCopy(
+    file,
+    original,
+    PRODUCTION_MATERIAL_IMAGE_LIMITS.maxLongEdge,
+    PRODUCTION_MATERIAL_IMAGE_LIMITS.jpegQuality,
+    2 * 1024 * 1024,
+  );
+  return { file, ...copy };
 }
 
 export function validateDocumentFiles(files: Iterable<File>, existingCount = 0, existingBytes = 0): File[] {

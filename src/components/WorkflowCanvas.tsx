@@ -29,7 +29,8 @@ import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from '../types';
-import { IMAGE_UPLOAD_LIMITS, processCanvasImageFiles, processImageFiles, resolvePasteBatchOrigin } from '../lib/uploadProcessing';
+import { assertImageUsage, IMAGE_UPLOAD_LIMITS, processCanvasImageFiles, resolvePasteBatchOrigin } from '../lib/uploadProcessing';
+import { loadPreparedProductionMaterialImage } from '../lib/productionMaterialImageCache';
 import { advanceGenerationGrid, allocateGridPositions, findDerivedNodePosition, findFreeGenerationPosition, WORKFLOW_LAYOUT } from '../lib/workflowLayout';
 import { GenerationTaskCoordinator, getGenerationErrorMessage, getGenerationProgress, type GenerationTaskToken } from '../lib/generationTasks';
 import { ImageWriteCache, SerialTaskQueue, createProjectFingerprint, stripRuntimeGraphState } from '../lib/projectPersistence';
@@ -50,7 +51,9 @@ const loadProductionMaterials = async (
   selected: ProductionMaterialSelection,
   manualImages: { data: string; mimeType: string; sourceNodeId?: string }[],
   prompt: string,
+  userId: string,
 ) => {
+  const preparationStartedAt = performance.now();
   let baseContext: CategoryBaseGenerationContext | undefined;
   if (selected.base) {
     const response = await fetch(`/api/category-bases/${encodeURIComponent(selected.base.id)}/generation-context?versionId=${encodeURIComponent(selected.base.versionId)}`);
@@ -105,16 +108,36 @@ const loadProductionMaterials = async (
   context.slots = context.slots.map(slot => (
     { ...slot, referenceImages: slot.referenceImages.filter(image => includedReferenceIds.has(image.id)) }
   ));
-  const files = await Promise.all(references.map(async ({ slot, image }) => {
-    const imageResponse = await fetch(image.viewUrl);
-    if (!imageResponse.ok) throw new Error(`${slot.assetName} 的基座参考图读取失败`);
-    const blob = await imageResponse.blob();
-    return new File([blob], `${slot.key}-${image.id}`, { type: blob.type || image.mimeType || 'image/png' });
+  const processed = await Promise.all(references.map(async ({ slot, image }) => {
+    try {
+      return await loadPreparedProductionMaterialImage({
+        userId,
+        objectId: image.objectId,
+        viewUrl: image.viewUrl,
+        fallbackMimeType: image.mimeType,
+      });
+    } catch (error) {
+      throw new Error(`${slot.assetName} 的基座参考图读取失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
   }));
-  const processed = await processImageFiles(files, manualUsage);
+  const productionUsage = processed.reduce((usage, image) => ({
+    count: usage.count + 1,
+    originalBytes: usage.originalBytes + image.originalBytes,
+    analysisBytes: usage.analysisBytes + image.analysisBytes,
+  }), { count: 0, originalBytes: 0, analysisBytes: 0 });
+  assertImageUsage(manualUsage, productionUsage);
+  console.log('[ProductionMaterialTiming]', JSON.stringify({
+    elapsedMs: Math.round(performance.now() - preparationStartedAt),
+    imageCount: processed.length,
+    analysisBytes: productionUsage.analysisBytes,
+    sources: processed.reduce<Record<string, number>>((counts, image) => {
+      counts[image.cacheSource] = (counts[image.cacheSource] || 0) + 1;
+      return counts;
+    }, {}),
+  }));
   return {
     context,
-    referenceImages: processed.map(image => ({ data: image.analysisData, mimeType: image.analysisMimeType })),
+    referenceImages: processed.map(image => ({ data: image.data, mimeType: image.mimeType })),
     trace: buildProductionMaterialTrace(selectedSlots, context.slots, manualImages.length, modelMaterialSuppressed),
   };
 };
@@ -1316,7 +1339,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     let productionMaterialTrace: ImageNodeData['productionMaterialTrace'];
     if (productionMaterials) {
       try {
-        const prepared = await loadProductionMaterials(productionMaterials, manualImages, prompt);
+        if (!user?.id) throw new Error('登录状态已失效，请重新登录后再生成');
+        const prepared = await loadProductionMaterials(productionMaterials, manualImages, prompt, user.id);
         requestPrompt = compileProductionMaterialsPrompt(prompt, prepared.context, manualImages.length);
         requestImages = [...requestImages, ...prepared.referenceImages];
         productionMaterialTrace = prepared.trace;
@@ -1345,7 +1369,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       startGenerationProgress(targetNodeId, task, model, requestImages.length);
       setLastNodeId(targetNodeId);
 
-      console.log(`[Workflow] Starting regeneration for node ${targetNodeId}`, { prompt, aspectRatio, imageSize, model, imagesCount: images?.length });
+      const providerStartedAt = performance.now();
+      console.log('[WorkflowTiming]', JSON.stringify({ event: 'regeneration_started', nodeId: targetNodeId, model, imageSize, referenceImageCount: requestImages.length }));
 
       try {
         const urls = await generateImage({ 
@@ -1359,7 +1384,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           requestId: task.id,
         });
         if (!generationTasksRef.current.isCurrent(task)) return;
-        console.log(`[Workflow] Regeneration success for node ${targetNodeId}`, { url: urls[0] });
+        console.log('[WorkflowTiming]', JSON.stringify({ event: 'regeneration_succeeded', nodeId: targetNodeId, model, referenceImageCount: requestImages.length, providerElapsedMs: Math.round(performance.now() - providerStartedAt) }));
         
         if (onDeductCredit) {
           await onDeductCredit(cost);
@@ -1374,6 +1399,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       } catch (err: unknown) {
         if (!generationTasksRef.current.isCurrent(task)) return;
         const error = err as Error;
+        console.log('[WorkflowTiming]', JSON.stringify({ event: 'regeneration_failed', nodeId: targetNodeId, model, referenceImageCount: requestImages.length, providerElapsedMs: Math.round(performance.now() - providerStartedAt), aborted: task.signal.aborted }));
         console.error(`[Workflow] Regeneration failed for node ${targetNodeId}:`, error);
         setNodes((nds) => nds.map(n => n.id === targetNodeId ? {
           ...n,
@@ -1551,7 +1577,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setLastNodeId(newNodeId);
     const task = generationTasksRef.current.start(newNodeId);
     startGenerationProgress(newNodeId, task, model, requestImages.length);
-    console.log(`[Workflow] Starting generation for node ${newNodeId}`, { prompt, aspectRatio, imageSize, model, imagesCount: images?.length });
+    const providerStartedAt = performance.now();
+    console.log('[WorkflowTiming]', JSON.stringify({ event: 'generation_started', nodeId: newNodeId, model, imageSize, referenceImageCount: requestImages.length }));
 
     try {
       const urls = await generateImage({ 
@@ -1565,7 +1592,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         requestId: task.id,
       });
       if (!generationTasksRef.current.isCurrent(task)) return;
-      console.log(`[Workflow] Generation success for node ${newNodeId}`, { url: urls[0] });
+      console.log('[WorkflowTiming]', JSON.stringify({ event: 'generation_succeeded', nodeId: newNodeId, model, referenceImageCount: requestImages.length, providerElapsedMs: Math.round(performance.now() - providerStartedAt) }));
       
       // Deduct credit on success
       if (onDeductCredit) {
@@ -1594,6 +1621,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     } catch (err: unknown) {
       if (!generationTasksRef.current.isCurrent(task)) return;
       const error = err as Error;
+      console.log('[WorkflowTiming]', JSON.stringify({ event: 'generation_failed', nodeId: newNodeId, model, referenceImageCount: requestImages.length, providerElapsedMs: Math.round(performance.now() - providerStartedAt), aborted: task.signal.aborted }));
       console.error(`[Workflow] Generation failed for node ${newNodeId}:`, error);
       const isKeyError = error.message === "API_KEY_REQUIRED";
       if (isKeyError) {

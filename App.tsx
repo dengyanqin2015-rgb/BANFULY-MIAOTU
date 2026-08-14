@@ -21,6 +21,7 @@ import { AssetLibraryPanel } from './src/components/AssetLibraryPanel';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { processImageFiles } from './src/lib/uploadProcessing';
 import { buildGenerationTrendSeries, type GenerationTrendBucket } from './src/lib/generationStats';
+import { clearProductionMaterialImageCache } from './src/lib/productionMaterialImageCache';
 
 const BBOX_COLORS = [
   'border-blue-400 bg-blue-400/20',
@@ -492,6 +493,7 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
+    await clearProductionMaterialImageCache();
     localStorage.removeItem('auth_token');
     setAuth({ user: null, token: null, loading: false });
     setStep(AppStep.FULL_PLAN);

@@ -25,6 +25,7 @@ import type {
 } from '../lib/assetLibrary';
 import { detectAssetImageMimeType, type AssetImageMimeType } from '../lib/storageObjects';
 import { analyzeCopyLayoutReference } from '../lib/gemini';
+import { mapWithConcurrency } from '../lib/asyncPool';
 
 type LibraryTab = 'bases' | AssetType;
 
@@ -128,6 +129,7 @@ export const AssetLibraryPanel: React.FC = () => {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saveProgress, setSaveProgress] = useState('');
   const [error, setError] = useState('');
   const [storageConfigured, setStorageConfigured] = useState(false);
   const [assetModalOpen, setAssetModalOpen] = useState(false);
@@ -274,12 +276,28 @@ export const AssetLibraryPanel: React.FC = () => {
       const token = localStorage.getItem('auth_token');
       if (token) uploadHeaders.set('Authorization', `Bearer ${token}`);
     }
-    const uploadResponse = await fetch(presigned.uploadUrl, { method: 'PUT', body: file, headers: uploadHeaders });
+    let uploadResponse: Response;
+    try {
+      uploadResponse = await fetch(presigned.uploadUrl, {
+        method: 'PUT',
+        body: file,
+        headers: uploadHeaders,
+        signal: AbortSignal.timeout(3 * 60 * 1000),
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'TimeoutError') {
+        throw new Error(`图片上传超过 3 分钟，请检查网络或压缩后重试：${file.name}`);
+      }
+      throw error;
+    }
     if (!uploadResponse.ok) {
       const detail = await uploadResponse.json().catch(() => null) as { message?: string } | null;
       throw new Error(detail?.message || `图片上传失败（${uploadResponse.status}）：${file.name}`);
     }
-    await api(`/api/storage/uploads/${presigned.objectId}/complete`, { method: 'POST' });
+    await api(`/api/storage/uploads/${presigned.objectId}/complete`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(3 * 60 * 1000),
+    });
     return {
       id: `image-${presigned.objectId}`,
       objectId: presigned.objectId,
@@ -295,13 +313,17 @@ export const AssetLibraryPanel: React.FC = () => {
     if (!assetForm.name.trim()) return setError('请填写资产名称');
     if (files.length > 0 && !storageConfigured) return setError('测试站图片存储尚未连接');
     setSaving(true);
+    setSaveProgress(files.length ? `正在上传 0/${files.length}` : '正在保存资料');
     setError('');
     try {
       const existingRefs = assetForm.type === 'copy_layout' ? [] : (editingAsset?.version.imageRefs || []);
-      const uploadedRefs: AssetImageReference[] = [];
-      for (let index = 0; index < files.length; index += 1) {
-        uploadedRefs.push(await uploadFile(files[index], existingRefs.length + index));
-      }
+      const uploadedRefs = await mapWithConcurrency(
+        files,
+        2,
+        (file, index) => uploadFile(file, existingRefs.length + index),
+        (completed, total) => setSaveProgress(`正在上传 ${completed}/${total}`),
+      );
+      setSaveProgress('正在保存资料');
       const body = {
         type: assetForm.type,
         name: assetForm.name,
@@ -346,6 +368,7 @@ export const AssetLibraryPanel: React.FC = () => {
       setError(saveError instanceof Error ? saveError.message : '保存资产失败');
     } finally {
       setSaving(false);
+      setSaveProgress('');
     }
   };
 
@@ -614,7 +637,7 @@ export const AssetLibraryPanel: React.FC = () => {
           </Field>
           <div className="flex justify-end gap-3 pt-2">
             <button onClick={() => setAssetModalOpen(false)} disabled={saving} className="rounded-xl px-4 py-2.5 text-xs font-bold text-[#6e6e73]">取消</button>
-            <button onClick={saveAsset} disabled={saving} className="flex items-center gap-2 rounded-xl bg-black px-5 py-2.5 text-xs font-black text-white disabled:opacity-50"><Save size={14} />{saving ? '保存中…' : '保存资产'}</button>
+            <button onClick={saveAsset} disabled={saving} className="flex items-center gap-2 rounded-xl bg-black px-5 py-2.5 text-xs font-black text-white disabled:opacity-50"><Save size={14} />{saving ? saveProgress || '保存中…' : '保存资产'}</button>
           </div>
         </Modal>
       )}
