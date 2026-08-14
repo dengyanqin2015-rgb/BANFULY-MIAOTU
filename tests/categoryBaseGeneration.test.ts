@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  buildProductionMaterialTrace,
   compileCategoryBasePrompt,
   compileProductionMaterialsPrompt,
   getCategoryBaseReferenceCount,
@@ -98,5 +99,30 @@ const suppressedModelPrompt = compileProductionMaterialsPrompt('纯产品平铺�
   modelMaterialSuppressed: true,
 });
 assert.match(suppressedModelPrompt, /模特参考图不参与，也不要擅自添加人物/);
+
+const selectedTraceSlots = context.slots;
+const includedTraceSlots = [
+  { ...context.slots[0], referenceImages: context.slots[0].referenceImages.slice(0, 1) },
+  context.slots[1],
+];
+const materialTrace = buildProductionMaterialTrace(selectedTraceSlots, includedTraceSlots, 2);
+assert.equal(materialTrace.moduleCount, 2);
+assert.equal(materialTrace.materialImageCount, 1);
+assert.equal(materialTrace.totalInputImageCount, 3);
+assert.deepEqual(materialTrace.items.map(item => [item.key, item.status, item.imageCount]), [
+  ['visualSystem', 'referenced', 1],
+  ['scene', 'rules_only', 0],
+]);
+
+const modelTraceSlot = {
+  key: 'model' as const,
+  assetId: 'model-1', assetName: '优雅女性模特', assetType: 'model' as const,
+  versionId: 'model-version-1', version: 1, profile: profile('保持成年女性模特身份'),
+  referenceImages: [{ id: 'model-image-1', role: 'source' as const, objectId: 'model-object-1', sortOrder: 0, viewUrl: '/view/model-1' }],
+};
+const waitingModelTrace = buildProductionMaterialTrace([modelTraceSlot], [], 0, true);
+assert.equal(waitingModelTrace.moduleCount, 0);
+assert.equal(waitingModelTrace.items[0].status, 'waiting');
+assert.match(waitingModelTrace.items[0].note, /未发送模特图片和规则/);
 
 console.log('category base generation tests passed');

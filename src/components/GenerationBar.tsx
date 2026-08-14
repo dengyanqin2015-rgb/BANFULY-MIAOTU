@@ -3,9 +3,9 @@ import { Send, ChevronDown, Key, Image as ImageIcon, X, Boxes, Loader2, SlidersH
 import { motion, AnimatePresence } from 'motion/react';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { cn } from '../lib/utils';
-import { assertImageUsage, processImageFiles } from '../lib/uploadProcessing';
+import { assertImageUsage, IMAGE_UPLOAD_LIMITS, processImageFiles } from '../lib/uploadProcessing';
 import type { AssetRecord, AssetType, CategoryBaseRecord, PaginatedAssetResult } from '../lib/assetLibrary';
-import { shouldUseModelMaterial, type CategoryBaseSlotKey, type ProductionMaterialSelection, type SelectedAssetMaterial } from '../lib/categoryBaseGeneration';
+import { PRODUCTION_REFERENCE_ORDER, PRODUCTION_SLOT_REFERENCE_LIMITS, shouldUseModelMaterial, type CategoryBaseSlotKey, type ProductionMaterialSelection, type SelectedAssetMaterial } from '../lib/categoryBaseGeneration';
 
 export interface SelectedCategoryBase {
   id: string;
@@ -310,9 +310,37 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
     .filter(key => Boolean(resolveMaterial(key)));
   const modelMaterialWaiting = selectedMaterialKeys.includes('model') && !shouldUseModelMaterial(prompt);
   const participatingMaterialCount = selectedMaterialKeys.length - (modelMaterialWaiting ? 1 : 0);
+  const previewReferenceCounts = new Map<CategoryBaseSlotKey, number | undefined>();
+  let previewRemaining = Math.max(0, IMAGE_UPLOAD_LIMITS.maxFiles - images.length);
+  PRODUCTION_REFERENCE_ORDER.forEach(key => {
+    const selected = resolveMaterial(key);
+    if (!selected || (key === 'model' && modelMaterialWaiting)) return void previewReferenceCounts.set(key, 0);
+    if (key === 'copyLayout') return void previewReferenceCounts.set(key, 0);
+    const record = assetLookup.get(selected.assetId);
+    if (!record || record.version.id !== selected.versionId) return void previewReferenceCounts.set(key, undefined);
+    const desired = Math.min(record.version.imageRefs.length, PRODUCTION_SLOT_REFERENCE_LIMITS[key]);
+    const allocated = Math.min(desired, previewRemaining);
+    previewRemaining -= allocated;
+    previewReferenceCounts.set(key, allocated);
+  });
+  const activePreviewCounts = selectedMaterialKeys
+    .filter(key => !(key === 'model' && modelMaterialWaiting))
+    .map(key => previewReferenceCounts.get(key));
+  const previewCountsKnown = activePreviewCounts.every(count => typeof count === 'number');
+  const materialPreviewImageCount = activePreviewCounts.reduce<number>((count, value) => count + (typeof value === 'number' ? value : 0), 0);
+  const totalPreviewImageCount = images.length + materialPreviewImageCount;
+  const getPreviewStatus = (key: CategoryBaseSlotKey) => {
+    if (key === 'model' && modelMaterialWaiting) return { text: '待触发', tone: 'waiting' as const };
+    const count = previewReferenceCounts.get(key);
+    if (count === undefined) return { text: '将参与', tone: 'active' as const };
+    if (count === 0) return { text: '仅规则', tone: 'rules' as const };
+    return { text: `${count}图`, tone: 'active' as const };
+  };
   const productionMaterialStatus = selectedMaterialKeys.length === 0
     ? '尚未选择资料'
-    : `本次参与 ${participatingMaterialCount} 项${modelMaterialWaiting ? ' · 模特待人物需求' : ''}`;
+    : participatingMaterialCount === 0 && modelMaterialWaiting
+      ? '模特待人物需求'
+      : `本次 ${participatingMaterialCount}项${previewCountsKnown ? totalPreviewImageCount > 0 ? ` · ${totalPreviewImageCount}图` : ' · 仅规则' : ''}${modelMaterialWaiting ? ' · 模特待触发' : ''}`;
 
   useImperativeHandle(ref, () => ({
     addImage: (data, mimeType, preview, sourceNodeId, usage) => {
@@ -759,8 +787,8 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                                     if (!reference) return [];
                                     const selected = resolveMaterial(slot.key);
                                     const Icon = slot.icon;
-                                    const waiting = slot.key === 'model' && modelMaterialWaiting;
-                                    return [<div key={slot.key} className={cn('min-w-0 rounded-lg border bg-[#1d1d1f] px-2 py-1.5', waiting ? 'border-amber-500/30' : 'border-emerald-500/20')}><div className="flex items-center gap-1 text-[8px] font-black text-gray-400"><Icon size={10} className={slot.color} />{slot.label}<span className={cn('ml-auto h-1.5 w-1.5 rounded-full', waiting ? 'bg-amber-400' : 'bg-emerald-400')} /></div><div className="mt-1 truncate text-[8px] text-gray-600">{selected?.name || `固定版本 V${reference.version}`}</div><div className={cn('mt-0.5 truncate text-[7px]', waiting ? 'text-amber-400' : 'text-emerald-400')}>{waiting ? '当前未触发' : slot.key === 'copyLayout' ? '本次应用规则' : '本次引用'}</div></div>];
+                                    const status = getPreviewStatus(slot.key);
+                                    return [<div key={slot.key} className={cn('min-w-0 rounded-lg border bg-[#1d1d1f] px-2 py-1.5', status.tone === 'waiting' ? 'border-amber-500/30' : status.tone === 'rules' ? 'border-violet-500/25' : 'border-emerald-500/20')}><div className="flex items-center gap-1 text-[8px] font-black text-gray-400"><Icon size={10} className={slot.color} /><span className="truncate">{slot.label}</span><span className={cn('ml-auto shrink-0 text-[7px]', status.tone === 'waiting' ? 'text-amber-400' : status.tone === 'rules' ? 'text-violet-300' : 'text-emerald-400')}>{status.text}</span></div><div className="mt-1 truncate text-[8px] text-gray-600">{selected?.name || `固定版本 V${reference.version}`}</div></div>];
                                   })}
                                 </div>
                               )}
@@ -771,12 +799,13 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
                               <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                                 {MATERIAL_SLOTS.map(slot => {
                                   const selected = resolveMaterial(slot.key);
+                                  const status = getPreviewStatus(slot.key);
                                   return (
                                     <MaterialPicker
                                       key={slot.key} label={slot.label} caption={slot.caption} icon={slot.icon} color={slot.color}
                                       selected={selected ? `${selected.name} · V${selected.version}` : undefined}
-                                      status={selected ? (slot.key === 'model' && modelMaterialWaiting ? '当前未触发 · 输入女人、女性、模特等人物需求' : slot.key === 'copyLayout' ? '本次应用排版规则' : '本次将引用') : undefined}
-                                      statusTone={slot.key === 'model' && modelMaterialWaiting ? 'waiting' : 'active'}
+                                      status={selected ? `${slot.label} · ${status.text}` : undefined}
+                                      statusTone={status.tone}
                                       open={openMaterialMenu === slot.key} onToggle={() => setOpenMaterialMenu(value => value === slot.key ? null : slot.key)}
                                       onClear={() => selectMaterial(slot.key, null)} compact
                                     >
@@ -912,7 +941,7 @@ const MaterialPicker: React.FC<{
   color: string;
   selected?: string;
   status?: string;
-  statusTone?: 'active' | 'waiting';
+  statusTone?: 'active' | 'waiting' | 'rules';
   open: boolean;
   onToggle: () => void;
   onClear: () => void;
@@ -922,7 +951,7 @@ const MaterialPicker: React.FC<{
   <div className="relative">
     <button type="button" onClick={onToggle} className={cn('flex w-full items-center gap-2 rounded-lg border px-2.5 text-left transition', compact ? 'min-h-[48px] py-1.5' : 'min-h-[44px] py-2', selected ? 'border-white/30 bg-[#252525]' : 'border-[#333] bg-[#202020] hover:bg-[#292929]')}>
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#303030]"><Icon size={14} className={color} /></span>
-      <span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-black text-gray-100">{selected || label}</span><span className={cn('block truncate text-[8px]', status ? (statusTone === 'waiting' ? 'text-amber-400' : 'text-emerald-400') : 'text-gray-500')}>{status || (selected ? `${label} · 固定版本` : caption)}</span></span>
+      <span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-black text-gray-100">{selected || label}</span><span className={cn('block truncate text-[8px]', status ? (statusTone === 'waiting' ? 'text-amber-400' : statusTone === 'rules' ? 'text-violet-300' : 'text-emerald-400') : 'text-gray-500')}>{status || (selected ? `${label} · 固定版本` : caption)}</span></span>
       <ChevronDown size={12} className={cn('shrink-0 text-gray-500 transition-transform', open && 'rotate-180')} />
     </button>
     {selected && <button type="button" onClick={event => { event.stopPropagation(); onClear(); }} className="absolute right-7 top-1/2 -translate-y-1/2 rounded p-1 text-gray-600 hover:bg-black/30 hover:text-white"><X size={10} /></button>}

@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position, NodeProps, type Node } from '@xyflow/react';
-import { Download, Trash2, Loader2, Search, RefreshCw, Settings2, FileImage, X, Copy, Check, Sparkles, Scissors, Brush } from 'lucide-react';
+import { Download, Trash2, Loader2, Search, RefreshCw, Settings2, FileImage, X, Copy, Check, Sparkles, Scissors, Brush, Library, Images, FileText, Clock3 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
 import { ImageSliceEditor } from './ImageSliceEditor';
-import type { ProductionMaterialSelection } from '../lib/categoryBaseGeneration';
+import type { ProductionMaterialSelection, ProductionMaterialTrace } from '../lib/categoryBaseGeneration';
 
 export interface ImageNodeData extends Record<string, unknown> {
   imageUrl?: string;
@@ -38,6 +38,7 @@ export interface ImageNodeData extends Record<string, unknown> {
   imageSize?: ImageSize;
   model?: ImageModel;
   productionMaterials?: ProductionMaterialSelection;
+  productionMaterialTrace?: ProductionMaterialTrace;
   categoryBase?: { id: string; versionId: string; name: string; version: number };
   analysisPrompt?: string;
   analysisTemplateName?: string;
@@ -54,7 +55,9 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
   const [analysisCopied, setAnalysisCopied] = useState(false);
   const [showAdjustChoice, setShowAdjustChoice] = useState(false);
   const [showSliceEditor, setShowSliceEditor] = useState(false);
+  const [showMaterialTrace, setShowMaterialTrace] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const materialTraceRef = useRef<HTMLDivElement>(null);
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -82,6 +85,16 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMenu]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (materialTraceRef.current && !materialTraceRef.current.contains(event.target as HTMLElement)) {
+        setShowMaterialTrace(false);
+      }
+    };
+    if (showMaterialTrace) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showMaterialTrace]);
 
   const handleDownload = (format: 'png' | 'jpg' = 'png') => {
     if (!data.imageUrl) return;
@@ -134,13 +147,84 @@ export const ImageNode = ({ data, selected, id }: NodeProps<Node<ImageNodeData>>
   const headerText = data.type === 'generated' 
     ? `图片生成${data.sourceNodeId ? ` (由图片${data.sourceNodeId.split('-').pop()})` : ''}`
     : '图片';
+  const materialTrace = data.productionMaterialTrace;
+  const waitingTraceCount = materialTrace?.items.filter(item => item.status === 'waiting').length ?? 0;
+  const materialTraceLabel = materialTrace
+    ? materialTrace.moduleCount > 0
+      ? materialTrace.totalInputImageCount > 0
+        ? `${materialTrace.moduleCount}项 · ${materialTrace.totalInputImageCount}图`
+        : `${materialTrace.moduleCount}项 · 仅规则`
+      : waitingTraceCount > 0 ? '模特待触发' : '仅规则'
+    : '';
 
   return (
     <div className="flex flex-col gap-1.5 w-[320px]" onContextMenu={handleContextMenu}>
       <div className="flex items-center justify-between px-1">
-        <div className="flex items-center gap-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+        <div className="flex min-w-0 items-center gap-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
           <span className="w-1.5 h-1.5 bg-green-500 rounded-full shadow-[0_0_5px_rgba(34,197,94,0.5)]" />
-          {headerText}
+          <span className="truncate">{headerText}</span>
+          {materialTrace && (
+            <div ref={materialTraceRef} className="nodrag nopan relative normal-case tracking-normal">
+              <button
+                type="button"
+                aria-label="查看本次生产资料实际发送记录"
+                aria-expanded={showMaterialTrace}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => { event.stopPropagation(); setShowMaterialTrace(value => !value); }}
+                className={cn(
+                  'flex h-5 items-center gap-1 rounded border px-1.5 text-[8px] font-bold transition-colors',
+                  waitingTraceCount > 0 && materialTrace.moduleCount === 0
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15'
+                    : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/15'
+                )}
+              >
+                <Library size={9} />
+                资料 {materialTraceLabel}
+              </button>
+              <AnimatePresence>
+                {showMaterialTrace && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -3 }}
+                    transition={{ duration: 0.16 }}
+                    className="absolute left-0 top-6 z-50 w-[270px] rounded-lg border border-[#3b3b3f] bg-[#171719] p-2.5 text-left shadow-2xl"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-[10px] font-black text-gray-100">本次实际发送</span>
+                      <span className="text-[8px] font-medium text-gray-500">共 {materialTrace.totalInputImageCount} 张输入图</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {materialTrace.manualImageCount > 0 && (
+                        <div className="flex items-center gap-2 rounded-md bg-[#202023] px-2 py-1.5">
+                          <Images size={11} className="shrink-0 text-red-300" />
+                          <span className="min-w-0 flex-1 truncate text-[9px] font-bold text-gray-200">产品主体参考图</span>
+                          <span className="text-[8px] font-bold text-red-300">{materialTrace.manualImageCount}图</span>
+                        </div>
+                      )}
+                      {materialTrace.items.map(item => {
+                        const StatusIcon = item.status === 'referenced' ? Images : item.status === 'waiting' ? Clock3 : FileText;
+                        const statusText = item.status === 'referenced' ? `${item.imageCount}图` : item.status === 'waiting' ? '未触发' : '仅规则';
+                        const statusColor = item.status === 'referenced' ? 'text-emerald-300' : item.status === 'waiting' ? 'text-amber-300' : 'text-violet-300';
+                        return (
+                          <div key={item.key} className="rounded-md bg-[#202023] px-2 py-1.5">
+                            <div className="flex items-center gap-2">
+                              <StatusIcon size={11} className={cn('shrink-0', statusColor)} />
+                              <span className="min-w-0 flex-1 truncate text-[9px] font-bold text-gray-200">{item.label} · {item.assetName}</span>
+                              <span className={cn('text-[8px] font-bold', statusColor)}>{statusText}</span>
+                            </div>
+                            <div className="mt-1 pl-[19px] text-[8px] leading-3.5 text-gray-500">{item.note}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
         </div>
         {data.type === 'generated' && (
           <button 

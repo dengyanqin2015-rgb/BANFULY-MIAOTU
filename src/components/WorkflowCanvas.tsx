@@ -35,10 +35,11 @@ import { GenerationTaskCoordinator, getGenerationErrorMessage, getGenerationProg
 import { ImageWriteCache, SerialTaskQueue, createProjectFingerprint, stripRuntimeGraphState } from '../lib/projectPersistence';
 import {
   CATEGORY_BASE_SLOT_KEYS,
+  buildProductionMaterialTrace,
   compileProductionMaterialsPrompt,
   PRODUCTION_REFERENCE_ORDER,
+  PRODUCTION_SLOT_REFERENCE_LIMITS,
   shouldUseModelMaterial,
-  type CategoryBaseSlotKey,
   type CategoryBaseGenerationContext,
   type CategoryBaseGenerationSlot,
   type ProductionMaterialContext,
@@ -71,6 +72,7 @@ const loadProductionMaterials = async (
     if (slot.key !== key || slot.versionId !== override.versionId) throw new Error(`${override.name}版本校验失败`);
     slots.set(key, slot);
   }));
+  const selectedSlots = CATEGORY_BASE_SLOT_KEYS.flatMap(key => slots.get(key) ? [slots.get(key)!] : []);
   const modelMaterialSuppressed = slots.has('model') && !shouldUseModelMaterial(prompt);
   if (modelMaterialSuppressed) slots.delete('model');
   const context: ProductionMaterialContext = {
@@ -92,18 +94,11 @@ const loadProductionMaterials = async (
     };
   }, { count: 0, originalBytes: 0, analysisBytes: 0 });
   const remaining = Math.max(0, IMAGE_UPLOAD_LIMITS.maxFiles - manualImages.length);
-  const slotReferenceLimits: Record<CategoryBaseSlotKey, number> = {
-    model: 3,
-    scene: 2,
-    material: 2,
-    visualSystem: 2,
-    copyLayout: 0,
-  };
   const slotsByKey = new Map(context.slots.map(slot => [slot.key, slot]));
   const references = PRODUCTION_REFERENCE_ORDER.flatMap(key => {
     const slot = slotsByKey.get(key);
     return slot
-      ? slot.referenceImages.slice(0, slotReferenceLimits[slot.key]).map(image => ({ slot, image }))
+      ? slot.referenceImages.slice(0, PRODUCTION_SLOT_REFERENCE_LIMITS[slot.key]).map(image => ({ slot, image }))
       : [];
   }).slice(0, remaining);
   const includedReferenceIds = new Set(references.map(({ image }) => image.id));
@@ -120,6 +115,7 @@ const loadProductionMaterials = async (
   return {
     context,
     referenceImages: processed.map(image => ({ data: image.analysisData, mimeType: image.analysisMimeType })),
+    trace: buildProductionMaterialTrace(selectedSlots, context.slots, manualImages.length, modelMaterialSuppressed),
   };
 };
 
@@ -1268,11 +1264,13 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     const manualImages = images || [];
     let requestPrompt = prompt;
     let requestImages = manualImages.map(image => ({ data: image.data, mimeType: image.mimeType }));
+    let productionMaterialTrace: ImageNodeData['productionMaterialTrace'];
     if (productionMaterials) {
       try {
         const prepared = await loadProductionMaterials(productionMaterials, manualImages, prompt);
         requestPrompt = compileProductionMaterialsPrompt(prompt, prepared.context, manualImages.length);
         requestImages = [...requestImages, ...prepared.referenceImages];
+        productionMaterialTrace = prepared.trace;
       } catch (error) {
         alert(error instanceof Error ? error.message : '类目基座读取失败');
         return;
@@ -1293,7 +1291,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       // Update existing node to loading state
       setNodes((nds) => nds.map(n => n.id === targetNodeId ? attachNodeActions({
         ...n,
-        data: { ...n.data, isLoading: true, error: undefined }
+        data: { ...n.data, isLoading: true, error: undefined, productionMaterials, productionMaterialTrace }
       }) : n));
       startGenerationProgress(targetNodeId, task, model, requestImages.length);
       setLastNodeId(targetNodeId);
@@ -1452,6 +1450,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         refImages: images?.map(img => `data:${img.mimeType};base64,${img.data}`),
         originalImages: manualImages,
         productionMaterials,
+        productionMaterialTrace,
         aspectRatio,
         imageSize,
         model,

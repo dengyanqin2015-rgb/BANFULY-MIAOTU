@@ -8,6 +8,13 @@ import type {
 export const CATEGORY_BASE_SLOT_KEYS = ['visualSystem', 'scene', 'material', 'model', 'copyLayout'] as const;
 export type CategoryBaseSlotKey = (typeof CATEGORY_BASE_SLOT_KEYS)[number];
 export const PRODUCTION_REFERENCE_ORDER: readonly CategoryBaseSlotKey[] = ['model', 'scene', 'material', 'visualSystem', 'copyLayout'];
+export const PRODUCTION_SLOT_REFERENCE_LIMITS: Readonly<Record<CategoryBaseSlotKey, number>> = {
+  model: 3,
+  scene: 2,
+  material: 2,
+  visualSystem: 2,
+  copyLayout: 0,
+};
 
 export interface CategoryBaseGenerationSlot {
   key: CategoryBaseSlotKey;
@@ -55,6 +62,25 @@ export interface ProductionMaterialContext {
   modelMaterialSuppressed?: boolean;
 }
 
+export type ProductionMaterialParticipationStatus = 'referenced' | 'rules_only' | 'waiting';
+
+export interface ProductionMaterialParticipationItem {
+  key: CategoryBaseSlotKey;
+  label: string;
+  assetName: string;
+  status: ProductionMaterialParticipationStatus;
+  imageCount: number;
+  note: string;
+}
+
+export interface ProductionMaterialTrace {
+  manualImageCount: number;
+  moduleCount: number;
+  materialImageCount: number;
+  totalInputImageCount: number;
+  items: ProductionMaterialParticipationItem[];
+}
+
 const SLOT_LABELS: Record<CategoryBaseSlotKey, string> = {
   visualSystem: 'VI视觉系统',
   scene: '场景',
@@ -90,6 +116,61 @@ export const shouldUseModelMaterial = (prompt: string) => {
   const normalized = String(prompt || '').trim();
   if (!normalized || MODEL_EXCLUDED_PATTERN.test(normalized)) return false;
   return MODEL_REQUESTED_PATTERN.test(normalized);
+};
+
+export const buildProductionMaterialTrace = (
+  selectedSlots: CategoryBaseGenerationSlot[],
+  includedSlots: CategoryBaseGenerationSlot[],
+  manualImageCount: number,
+  modelMaterialSuppressed = false,
+): ProductionMaterialTrace => {
+  const includedByKey = new Map(includedSlots.map(slot => [slot.key, slot]));
+  const items = selectedSlots.map<ProductionMaterialParticipationItem>(selectedSlot => {
+    if (selectedSlot.key === 'model' && modelMaterialSuppressed) {
+      return {
+        key: selectedSlot.key,
+        label: SLOT_LABELS[selectedSlot.key],
+        assetName: selectedSlot.assetName,
+        status: 'waiting',
+        imageCount: 0,
+        note: '当前提示词没有人物需求，未发送模特图片和规则',
+      };
+    }
+
+    const included = includedByKey.get(selectedSlot.key);
+    const imageCount = included?.referenceImages.length ?? 0;
+    if (imageCount > 0) {
+      return {
+        key: selectedSlot.key,
+        label: SLOT_LABELS[selectedSlot.key],
+        assetName: selectedSlot.assetName,
+        status: 'referenced',
+        imageCount,
+        note: `已发送${imageCount}张参考图并应用结构化规则`,
+      };
+    }
+
+    const hadReferenceImages = selectedSlot.referenceImages.length > 0;
+    return {
+      key: selectedSlot.key,
+      label: SLOT_LABELS[selectedSlot.key],
+      assetName: selectedSlot.assetName,
+      status: 'rules_only',
+      imageCount: 0,
+      note: hadReferenceImages
+        ? '参考图因总图片上限未发送，结构化规则仍然参与'
+        : '该资料只应用结构化规则',
+    };
+  });
+  const activeItems = items.filter(item => item.status !== 'waiting');
+  const materialImageCount = activeItems.reduce((count, item) => count + item.imageCount, 0);
+  return {
+    manualImageCount,
+    moduleCount: activeItems.length,
+    materialImageCount,
+    totalInputImageCount: manualImageCount + materialImageCount,
+    items,
+  };
 };
 
 export const compileProductionMaterialsPrompt = (
