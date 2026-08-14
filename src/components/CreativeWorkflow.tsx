@@ -48,7 +48,7 @@ export const CreativeWorkflow: React.FC<CreativeWorkflowProps> = ({
 
     try {
       // Step 1: Refine Prompt
-      const refined = await refinePrompt(concept, 'gemini-3-flash-preview', userApiKey);
+      const refined = await refinePrompt(concept, 'gemini-3.6-flash', userApiKey);
       
       setSteps(prev => prev.map(s => s.id === '2' ? { ...s, status: 'done', result: refined } : s));
       

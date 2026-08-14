@@ -101,7 +101,7 @@ export const generateEcomImage = async ({ prompt, model, aspectRatio, refImageB6
   }
 
   const response = await ai.models.generateContent({
-    model: model === 'nanobanana pro' ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image',
+    model: model === 'nanobanana pro' ? 'gemini-3-pro-image' : 'gemini-2.5-flash-image',
     contents: [{ parts: contents }],
     config: {
       imageConfig: {

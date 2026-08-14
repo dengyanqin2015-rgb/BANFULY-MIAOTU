@@ -23,7 +23,7 @@ import { MaskEditNode, type MaskEditNodeData } from './MaskEditNode';
 import { NoteNode, NoteNodeData } from './NoteNode';
 import { GenerationBar, GenerationBarRef } from './GenerationBar';
 import { Assistant, AssistantRef } from './Assistant';
-import { generateImage, analyzeImageForPrompt, getDefaultImageAnalysisTemplate, AspectRatio, ImageSize, ImageModel, checkApiKey, openApiKeyDialog } from '../lib/gemini';
+import { generateImage, analyzeImageForPrompt, getDefaultImageAnalysisTemplate, AspectRatio, DEFAULT_IMAGE_MODEL, ImageSize, ImageModel, checkApiKey, normalizeImageModel, openApiKeyDialog } from '../lib/gemini';
 import { ImageStorage } from '../lib/storage';
 import { Trash2, ChevronDown, Plus, Download, Upload, Edit2, FileText, Clipboard, LocateFixed, Maximize2 } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -185,7 +185,7 @@ const MODEL_COSTS: Record<ImageModel, ModelCost> = {
       '1K': { cost: 0.039, rmb: 0.3 }
     }
   },
-  'gemini-3.1-flash-image-preview': { 
+  'gemini-3.1-flash-image': {
     name: 'FLASH 3.1', 
     label: 'HIGH FIDELITY',
     resolutions: {
@@ -195,8 +195,8 @@ const MODEL_COSTS: Record<ImageModel, ModelCost> = {
       '4K': { cost: 0.151, rmb: 1.1 }
     }
   },
-  'gemini-3-pro-image-preview': { 
-    name: 'PRO 3.0', 
+  'gemini-3-pro-image': {
+    name: 'PRO 3',
     label: 'CINEMA GRADE',
     resolutions: {
       '1K': { cost: 0.134, rmb: 1.0 },
@@ -225,6 +225,7 @@ MODEL_COSTS['gpt-image-2'] = {
 
 interface WorkflowCanvasProps {
   userApiKey?: string;
+  paidImageApiKey?: string;
   user?: User | null;
   onDeductCredit?: (amount: number) => Promise<boolean>;
   isActive?: boolean;
@@ -232,6 +233,7 @@ interface WorkflowCanvasProps {
 
 export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ 
   userApiKey,
+  paidImageApiKey,
   user,
   onDeductCredit,
   isActive = true,
@@ -335,6 +337,14 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               const nodeData = node.data as ImageNodeData;
               const newNodeData = { ...nodeData };
               let nodeChanged = false;
+
+              if (nodeData.model) {
+                const normalizedModel = normalizeImageModel(nodeData.model);
+                if (normalizedModel !== nodeData.model) {
+                  newNodeData.model = normalizedModel;
+                  nodeChanged = true;
+                }
+              }
 
               // Extract imageUrl
               if (nodeData.imageUrl && !nodeData.imageUrl?.startsWith('db://') && nodeData.imageUrl?.startsWith('data:')) {
@@ -516,6 +526,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
         const nodeData = node.data as ImageNodeData;
         const newNodeData = { ...nodeData };
+        if (nodeData.model) newNodeData.model = normalizeImageModel(nodeData.model);
         if (newNodeData.isLoading) {
           newNodeData.isLoading = false;
           newNodeData.error = '上次生成任务已中断，请重新生成';
@@ -1029,7 +1040,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             nodeData.prompt, 
             nodeData.aspectRatio || '1:1', 
             nodeData.imageSize || '1K', 
-            nodeData.model || 'gemini-3.1-flash-image-preview', 
+            normalizeImageModel(nodeData.model || DEFAULT_IMAGE_MODEL),
             originalImages, 
             node.id,
             savedProductionMaterials,
@@ -1042,7 +1053,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               mode === 'text' && nodeData.analysisPrompt ? nodeData.analysisPrompt : nodeData.prompt,
               nodeData.aspectRatio || '1:1', 
               nodeData.imageSize || '1K', 
-              nodeData.model || 'gemini-3.1-flash-image-preview', 
+              normalizeImageModel(nodeData.model || DEFAULT_IMAGE_MODEL),
               mode === 'text' ? [] : originalImages?.map(img => ({
                 data: img.data, 
                 mimeType: img.mimeType, 
@@ -1380,6 +1391,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           model, 
           images: requestImages,
           apiKey: userApiKey,
+          paidApiKey: paidImageApiKey,
           signal: task.signal,
           requestId: task.id,
         });
@@ -1588,6 +1600,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         model, 
         images: requestImages,
         apiKey: userApiKey,
+        paidApiKey: paidImageApiKey,
         signal: task.signal,
         requestId: task.id,
       });
@@ -1654,7 +1667,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       stopGenerationProgress(newNodeId);
       generationTasksRef.current.finish(task);
     }
-  }, [user, userApiKey, onDeductCredit, findSafePositionToRight, attachNodeActions, advanceLayoutCursor, lastNodeId, showGenerationNotice, startGenerationProgress, stopGenerationProgress]);
+  }, [user, userApiKey, paidImageApiKey, onDeductCredit, findSafePositionToRight, attachNodeActions, advanceLayoutCursor, lastNodeId, showGenerationNotice, startGenerationProgress, stopGenerationProgress]);
 
   const handleGenerateRef = useRef(handleGenerate);
   useEffect(() => {

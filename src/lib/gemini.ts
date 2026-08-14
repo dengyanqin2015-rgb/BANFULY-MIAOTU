@@ -1,8 +1,10 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { buildStructuredAssistantMessage, ensureRequiredCopyInPromptBlocks, IMAGE_ANALYSIS_SYSTEM_INSTRUCTION, isVisualPromptTask, VISUAL_PROMPT_STRUCTURE_INSTRUCTION } from './visualPromptStructure';
+import { normalizeImageModel, selectImageApiKey, type ImageModel } from './geminiModels';
 
-export type ImageModel = "gemini-2.5-flash-image" | "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "gpt-image-2";
-export type ChatModel = "gemini-3-flash-preview" | "gemini-3.1-pro-preview";
+export type { ImageModel } from './geminiModels';
+export { DEFAULT_IMAGE_MODEL, isLegacyImageModel, normalizeImageModel, selectImageApiKey } from './geminiModels';
+export type ChatModel = "gemini-3.6-flash" | "gemini-3.1-pro-preview";
 export type ImageSize = "512px" | "1K" | "2K" | "4K";
 export type AspectRatio = "AUTO" | "1:1" | "3:4" | "4:3" | "4:5" | "5:4" | "9:16" | "16:9" | "21:9" | "2:5" | "5:2" | "3:2" | "2:3" | "1:4" | "1:8" | "4:1" | "8:1";
 
@@ -14,6 +16,7 @@ export interface GenerationParams {
   images?: { data: string; mimeType: string }[];
   mask?: { data: string; mimeType: string };
   apiKey?: string;
+  paidApiKey?: string;
   quality?: "low" | "medium" | "high";
   signal?: AbortSignal;
   requestId?: string;
@@ -60,7 +63,7 @@ export async function analyzeImageForPrompt(
   if (!key) throw new Error("请先配置 Gemini API Key");
   const ai = new GoogleGenAI({ apiKey: key });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-3.6-flash",
     contents: {
       parts: [
         { inlineData: { mimeType: match[1], data: match[2] } },
@@ -107,7 +110,7 @@ export async function analyzeCopyLayoutReference(file: File, apiKey?: string): P
   if (!match) throw new Error('文案排版参考图格式无效');
   const ai = new GoogleGenAI({ apiKey: key });
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-3.6-flash',
     contents: {
       parts: [
         { inlineData: { mimeType: match[1], data: match[2] } },
@@ -186,7 +189,7 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
   const apiKey = params.apiKey || localStorage.getItem('user_gemini_api_key');
   const ai = new GoogleGenAI({ apiKey: apiKey as string });
   
-  const modelName = params.mode === 'deep' ? 'gemini-3.1-pro-preview' : 'gemini-3-flash-preview';
+  const modelName = params.mode === 'deep' ? 'gemini-3.1-pro-preview' : 'gemini-3.6-flash';
   
   const hasImages = Boolean(params.images?.length);
   let analysisTemplate: ImageAnalysisTemplate | undefined;
@@ -240,7 +243,7 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
       return ensureRequiredCopyInPromptBlocks(response.text || "抱歉，我无法生成回复。", params.message);
     } catch (deepError) {
       if (params.mode !== 'deep') throw deepError;
-      const fallback = await request('gemini-3-flash-preview');
+      const fallback = await request('gemini-3.6-flash');
       return ensureRequiredCopyInPromptBlocks(`> 深度模型当前不可用，已自动使用 Flash 高思考模式完成本次任务。\n\n${fallback.text || "抱歉，我无法生成回复。"}`, params.message);
     }
   } catch (err: unknown) {
@@ -254,7 +257,8 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
 }
 
 export async function generateImage(params: GenerationParams): Promise<string[]> {
-  if (params.model === 'gpt-image-2') {
+  const resolvedModel = normalizeImageModel(params.model);
+  if (resolvedModel === 'gpt-image-2') {
     const apiKey = localStorage.getItem('user_openai_api_key');
     const savedQuality = localStorage.getItem('user_openai_image_quality');
     const quality = params.quality || (savedQuality === 'medium' || savedQuality === 'high' ? savedQuality : 'low');
@@ -330,13 +334,17 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
     }
   }
 
-  // 自动切换逻辑：
-  // 1. 优先检查环境变量中配置的付费生图专用 Key (VITE_PAID_IMAGE_API_KEY)
-  // 2. 其次检查用户在浏览器本地存储中设置的付费 Key (user_paid_image_api_key)
-  // 3. 然后使用用户在 UI 中手动传入的 Key (params.apiKey)
-  // 4. 最后回退到系统默认的免费 Key
+  // 生图优先使用用户明确配置的付费 Key，再回退到普通 Gemini Key。
+  // 不从 VITE_* 注入共享密钥，避免把服务端密钥打进公开浏览器包。
   const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
-  const apiKey = localPaidKey || params.apiKey || localStorage.getItem('user_gemini_api_key');
+  const localUserKey = typeof window !== 'undefined' ? localStorage.getItem('user_gemini_api_key') : null;
+  const apiKey = selectImageApiKey({
+    paidApiKey: params.paidApiKey,
+    storedPaidApiKey: localPaidKey,
+    userApiKey: params.apiKey,
+    storedUserApiKey: localUserKey,
+  });
+  if (!apiKey) throw new Error('API_KEY_REQUIRED');
   
   const ai = new GoogleGenAI({ apiKey: apiKey as string });
   
@@ -362,12 +370,12 @@ export async function generateImage(params: GenerationParams): Promise<string[]>
     };
 
     // Only 3.1 and 3 Pro support imageSize
-    if (params.model !== 'gemini-2.5-flash-image') {
+    if (resolvedModel !== 'gemini-2.5-flash-image') {
       config.imageConfig.imageSize = params.imageSize;
     }
 
     const response = await ai.models.generateContent({
-      model: params.model,
+      model: resolvedModel,
       contents: {
         parts: parts,
       },

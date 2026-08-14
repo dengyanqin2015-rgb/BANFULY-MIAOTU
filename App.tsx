@@ -86,7 +86,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
 
 const App: React.FC = () => {
   const [step, setStep] = useState<AppStep>(AppStep.WORKFLOW);
-  const [model, setModel] = useState('gemini-3-flash-preview');
+  const [model, setModel] = useState('gemini-3.6-flash');
   const [loading, setLoading] = useState(false);
   const [userApiKey, setUserApiKey] = useState<string>(() => {
     return localStorage.getItem('user_gemini_api_key') || '';
@@ -1683,7 +1683,7 @@ ${p.prompt}
             onChange={(e) => setModel(e.target.value)}
             className="bg-white border border-black/10 px-3 py-1.5 rounded-lg text-[11px] font-bold outline-none cursor-pointer shadow-sm hover:border-[#0071e3]/30 transition-all"
           >
-            <option value="gemini-3-flash-preview">FLASH 3.0 (极速引擎)</option>
+            <option value="gemini-3.6-flash">FLASH 3.6（当前正式版）</option>
             <option value="gemini-3.1-pro-preview">PRO 3.1 (高保真引擎)</option>
           </select>
         </div>
@@ -3539,6 +3539,7 @@ ${p.prompt}
         <div className={step === AppStep.WORKFLOW ? "contents" : "hidden"} aria-hidden={step !== AppStep.WORKFLOW}>
           <WorkflowCanvas 
             userApiKey={userApiKey} 
+            paidImageApiKey={paidImageApiKey}
             user={auth.user}
             onDeductCredit={deductCredit}
             isActive={step === AppStep.WORKFLOW}

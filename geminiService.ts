@@ -15,7 +15,7 @@ const getAiClient = (apiKey?: string) => {
   return new GoogleGenAI({ apiKey: key });
 };
 
-export const decodeStyle = async (imageB64: string, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<VisualConstitution> => {
+export const decodeStyle = async (imageB64: string, modelName: string = 'gemini-3.6-flash', apiKey?: string): Promise<VisualConstitution> => {
   const ai = getAiClient(apiKey);
   const { mimeType, data } = parseB64(imageB64);
   
@@ -53,7 +53,7 @@ export const decodeStyle = async (imageB64: string, modelName: string = 'gemini-
   }
 };
 
-export const analyzeProduct = async (imagesB64: string[], extraInfo: string, strategyType: StrategyType, modelName: string = 'gemini-3-flash-preview', compositionRefImageB64?: string | null, apiKey?: string): Promise<ProductAnalysis> => {
+export const analyzeProduct = async (imagesB64: string[], extraInfo: string, strategyType: StrategyType, modelName: string = 'gemini-3.6-flash', compositionRefImageB64?: string | null, apiKey?: string): Promise<ProductAnalysis> => {
   const ai = getAiClient(apiKey);
   
   const imageParts = imagesB64.map(b64 => {
@@ -155,7 +155,7 @@ export const analyzeProduct = async (imagesB64: string[], extraInfo: string, str
   }
 };
 
-export const fusePrompts = async (constitution: VisualConstitution, analysis: ProductAnalysis, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<FinalPrompt[]> => {
+export const fusePrompts = async (constitution: VisualConstitution, analysis: ProductAnalysis, modelName: string = 'gemini-3.6-flash', apiKey?: string): Promise<FinalPrompt[]> => {
   const ai = getAiClient(apiKey);
   
   const response = await ai.models.generateContent({
@@ -222,13 +222,9 @@ export const generateEcomImage = async (params: {
   productImagesB64?: string[], // Support multiple product images
   apiKey?: string
 }): Promise<string | undefined> => {
-  // 自动切换逻辑：
-  // 1. 优先检查环境变量中配置的付费生图专用 Key (VITE_PAID_IMAGE_API_KEY)
-  // 2. 其次检查用户在浏览器本地存储中设置的付费 Key (user_paid_image_api_key)
-  // 3. 然后使用传入的 apiKey
-  // 4. 最后回退到系统默认的免费 Key
+  // 生图优先使用用户在浏览器中配置的付费 Key，再回退到普通 Gemini Key。
   const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
-  const finalApiKey = localPaidKey || params.apiKey;
+  const finalApiKey = localPaidKey?.trim() || params.apiKey?.trim();
 
   if (params.model === 'gpt-image-2') {
     const apiKey = typeof window !== 'undefined' ? localStorage.getItem('user_openai_api_key') : null;
@@ -342,9 +338,9 @@ export const generateEcomImage = async (params: {
 
   let actualModel = 'gemini-2.5-flash-image';
   if (params.model === 'nanobanana2') {
-    actualModel = 'gemini-3.1-flash-image-preview';
+    actualModel = 'gemini-3.1-flash-image';
   } else if (params.model === 'nanobanana pro') {
-    actualModel = 'gemini-3-pro-image-preview';
+    actualModel = 'gemini-3-pro-image';
   } else if (params.model === 'imagen') {
     actualModel = 'imagen-4.0-generate-001';
   }
@@ -426,7 +422,7 @@ export const generateEcomImage = async (params: {
   }
 };
 
-export const regenerateSinglePrompt = async (constitution: VisualConstitution, storyboard: Storyboard, analysis: ProductAnalysis, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<string> => {
+export const regenerateSinglePrompt = async (constitution: VisualConstitution, storyboard: Storyboard, analysis: ProductAnalysis, modelName: string = 'gemini-3.6-flash', apiKey?: string): Promise<string> => {
   const ai = getAiClient(apiKey);
 
   const response = await ai.models.generateContent({
@@ -455,7 +451,7 @@ export const regenerateSinglePrompt = async (constitution: VisualConstitution, s
   return response.text || storyboard.visual_description;
 };
 
-export const refinePrompt = async (concept: string, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<string> => {
+export const refinePrompt = async (concept: string, modelName: string = 'gemini-3.6-flash', apiKey?: string): Promise<string> => {
   const ai = getAiClient(apiKey);
 
   const response = await ai.models.generateContent({
@@ -479,7 +475,7 @@ export const refinePrompt = async (concept: string, modelName: string = 'gemini-
   return response.text || concept;
 };
 
-export const segmentImage = async (imageB64: string, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<SegmentedObject[]> => {
+export const segmentImage = async (imageB64: string, modelName: string = 'gemini-3.6-flash', apiKey?: string): Promise<SegmentedObject[]> => {
   const ai = getAiClient(apiKey);
   const { mimeType, data } = parseB64(imageB64);
 
@@ -541,7 +537,7 @@ export const segmentImage = async (imageB64: string, modelName: string = 'gemini
   }
 };
 
-export const deconstructImage = async (imageB64: string, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<ImageDeconstruction> => {
+export const deconstructImage = async (imageB64: string, modelName: string = 'gemini-3.6-flash', apiKey?: string): Promise<ImageDeconstruction> => {
   console.log("deconstructImage called with model:", modelName, "apiKey provided:", !!apiKey);
   const ai = getAiClient(apiKey);
   const { mimeType, data } = parseB64(imageB64);
@@ -629,7 +625,7 @@ export const deconstructImage = async (imageB64: string, modelName: string = 'ge
   }
 };
 
-export const detailAssistantStep1 = async (imagesB64: string[], keywords: string = '', modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<string> => {
+export const detailAssistantStep1 = async (imagesB64: string[], keywords: string = '', modelName: string = 'gemini-3.6-flash', apiKey?: string): Promise<string> => {
   const ai = getAiClient(apiKey);
   const imageParts = imagesB64.map(b64 => {
     const { mimeType, data } = parseB64(b64);
@@ -653,7 +649,7 @@ export const detailAssistantStep1 = async (imagesB64: string[], keywords: string
   return response.text || "未能生成分析报告";
 };
 
-export const detailAssistantStep2 = async (productAnalysis: string, keywords: string = '', modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<string> => {
+export const detailAssistantStep2 = async (productAnalysis: string, keywords: string = '', modelName: string = 'gemini-3.6-flash', apiKey?: string): Promise<string> => {
   const ai = getAiClient(apiKey);
 
   const response = await ai.models.generateContent({
@@ -680,7 +676,7 @@ export const detailAssistantStep2 = async (productAnalysis: string, keywords: st
   return response.text || "未能生成设计规范";
 };
 
-export const detailAssistantStep3 = async (designGuide: string, keywords: string = '', screenCount: number = 6, modelName: string = 'gemini-3-flash-preview', apiKey?: string): Promise<DetailStoryboard[]> => {
+export const detailAssistantStep3 = async (designGuide: string, keywords: string = '', screenCount: number = 6, modelName: string = 'gemini-3.6-flash', apiKey?: string): Promise<DetailStoryboard[]> => {
   const ai = getAiClient(apiKey);
 
   const prompt = `基于以下设计规范${keywords ? `和关键词（${keywords}）` : ''}，为详情页生成 ${screenCount} 屏的要素和框架结构参考，并为每一屏生成一个高质量的 AI 生图提示词 (prompt)：\n${designGuide}`;
@@ -773,7 +769,7 @@ export const regenerateSingleDetailStoryboard = async (
   designGuide: string,
   currentStoryboard: DetailStoryboard,
   keywords: string = '',
-  modelName: string = 'gemini-3-flash-preview',
+  modelName: string = 'gemini-3.6-flash',
   apiKey?: string
 ): Promise<DetailStoryboard> => {
   const ai = getAiClient(apiKey);
@@ -833,7 +829,7 @@ export const regenerateSingleDetailStoryboard = async (
 export const updateDetailPromptFromFields = async (
   designGuide: string,
   storyboard: DetailStoryboard,
-  modelName: string = 'gemini-3-flash-preview',
+  modelName: string = 'gemini-3.6-flash',
   apiKey?: string
 ): Promise<string> => {
   const ai = getAiClient(apiKey);

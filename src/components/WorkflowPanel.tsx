@@ -10,12 +10,14 @@ interface WorkflowPanelProps {
 }
 
 export const WorkflowPanel: React.FC<WorkflowPanelProps> = ({
-  userApiKey
+  userApiKey,
+  paidImageApiKey,
 }) => {
   return (
     <div className="h-full w-full animate-slide-up">
       <WorkflowCanvas 
         userApiKey={userApiKey}
+        paidImageApiKey={paidImageApiKey}
       />
     </div>
   );

@@ -15,7 +15,7 @@ import {
 
 export const useAppLogic = () => {
   const [step, setStep] = useState<AppStep>(AppStep.WORKFLOW);
-  const [model, setModel] = useState('gemini-3-flash-preview');
+  const [model, setModel] = useState('gemini-3.6-flash');
   const [loading, setLoading] = useState(false);
   const [userApiKey, setUserApiKey] = useState<string>(() => {
     return localStorage.getItem('user_gemini_api_key') || process.env.GEMINI_API_KEY || '';

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, Minimize2, Paintbrush, Redo2, Sparkles, Square, Trash2, Type, Undo2 } from 'lucide-react';
-import { generateImage, type AspectRatio, type ImageModel } from '../lib/gemini';
+import { generateImage, normalizeImageModel, type AspectRatio, type ImageModel } from '../lib/gemini';
 
 type Box = { x: number; y: number; width: number; height: number };
 export type EditMode = 'text' | 'content';
@@ -23,8 +23,8 @@ interface ImageTextEditorProps {
 const AI_TEXT_MODELS: { id: ImageModel; label: string; price: number }[] = [
   { id: 'gpt-image-2', label: 'GPT Image 2（快速）', price: 0.04 },
   { id: 'gemini-2.5-flash-image', label: 'Google Flash 2.5', price: 0.30 },
-  { id: 'gemini-3.1-flash-image-preview', label: 'Google Flash 3.1', price: 0.50 },
-  { id: 'gemini-3-pro-image-preview', label: 'Google Pro 3.0', price: 1.00 },
+  { id: 'gemini-3.1-flash-image', label: 'Google Flash 3.1（正式版）', price: 0.50 },
+  { id: 'gemini-3-pro-image', label: 'Google Pro 3（正式版）', price: 1.00 },
 ];
 
 const DEFAULT_GPT_GLOBAL_INSTRUCTION = '基于完整原图进行自然编辑，重点修改用户标记的指定区域。允许为了消除接缝而自然协调修改区域边缘附近的光影、颜色、纹理和过渡，但不要重构整张图片，也不要改变与任务无关的人物、商品、背景、构图、图标和文字。文字任务应逐字准确，并尽量继承原位置的字体风格、字号、颜色、材质、描边、阴影和排版；内容任务只执行对应编号中明确描述的变化。';
@@ -99,9 +99,10 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
   const [brushSize, setBrushSize] = useState(initialDraft?.brushSize || 0.035);
   const [draftPoints, setDraftPoints] = useState<Point[]>([]);
   const [model, setModel] = useState<ImageModel>(() => {
-    if (initialDraft?.model) return initialDraft.model;
-    const saved = localStorage.getItem('image_text_ai_model') as ImageModel | null;
-    return AI_TEXT_MODELS.some(item => item.id === saved) ? saved! : 'gpt-image-2';
+    if (initialDraft?.model) return normalizeImageModel(initialDraft.model);
+    const saved = localStorage.getItem('image_text_ai_model');
+    const normalized = saved ? normalizeImageModel(saved) : null;
+    return normalized && AI_TEXT_MODELS.some(item => item.id === normalized) ? normalized : 'gpt-image-2';
   });
   const [gptGlobalInstruction, setGptGlobalInstruction] = useState(() => initialDraft?.gptGlobalInstruction || localStorage.getItem('gpt_text_edit_global_instruction') || DEFAULT_GPT_GLOBAL_INSTRUCTION);
   const [working, setWorking] = useState(false);

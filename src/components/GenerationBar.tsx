@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
 import { Send, ChevronDown, Key, Image as ImageIcon, X, Boxes, Loader2, SlidersHorizontal, Library, Palette, Mountain, Layers3, UserRound, Type, LockKeyhole, Unlink, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AspectRatio, ImageSize, ImageModel } from '../lib/gemini';
+import { AspectRatio, DEFAULT_IMAGE_MODEL, ImageSize, ImageModel, normalizeImageModel } from '../lib/gemini';
 import { cn } from '../lib/utils';
 import { assertImageUsage, IMAGE_UPLOAD_LIMITS, processImageFiles } from '../lib/uploadProcessing';
 import type { AssetRecord, AssetType, CategoryBaseRecord, PaginatedAssetResult } from '../lib/assetLibrary';
@@ -44,7 +44,7 @@ const MODEL_COSTS: Record<ImageModel, ModelCost> = {
       '1K': { cost: 0.039, rmb: 0.3 }
     }
   },
-  'gemini-3.1-flash-image-preview': { 
+  'gemini-3.1-flash-image': {
     name: 'FLASH 3.1', 
     label: 'HIGH FIDELITY',
     resolutions: {
@@ -54,8 +54,8 @@ const MODEL_COSTS: Record<ImageModel, ModelCost> = {
       '4K': { cost: 0.151, rmb: 1.1 }
     }
   },
-  'gemini-3-pro-image-preview': { 
-    name: 'PRO 3.0', 
+  'gemini-3-pro-image': {
+    name: 'PRO 3',
     label: 'CINEMA GRADE',
     resolutions: {
       '1K': { cost: 0.134, rmb: 1.0 },
@@ -94,8 +94,8 @@ const USD_TO_CNY = 6.78;
 
 const GOOGLE_INPUT_USD_PER_MILLION: Partial<Record<ImageModel, number>> = {
   "gemini-2.5-flash-image": 0.3,
-  "gemini-3.1-flash-image-preview": 0.5,
-  "gemini-3-pro-image-preview": 2,
+  "gemini-3.1-flash-image": 0.5,
+  "gemini-3-pro-image": 2,
 };
 
 const estimateGoogleImagePrice = (
@@ -150,8 +150,8 @@ const estimateGptImagePrice = (
 
 const MODELS: { id: ImageModel; name: string; version: string; desc: string }[] = [
   { id: "gemini-2.5-flash-image", name: "FLASH", version: "2.5", desc: "BALANCED" },
-  { id: "gemini-3.1-flash-image-preview", name: "FLASH", version: "3.1", desc: "HIGH FIDELITY" },
-  { id: "gemini-3-pro-image-preview", name: "PRO", version: "3.0", desc: "CINEMA GRADE" },
+  { id: "gemini-3.1-flash-image", name: "FLASH", version: "3.1 正式版", desc: "HIGH FIDELITY" },
+  { id: "gemini-3-pro-image", name: "PRO", version: "3 正式版", desc: "CINEMA GRADE" },
   { id: "gpt-image-2", name: "GPT IMAGE", version: "2", desc: "LINKAI" },
 ];
 
@@ -167,7 +167,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
   const [prompt, setPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
   const [imageSize, setImageSize] = useState<ImageSize>("1K");
-  const [model, setModel] = useState<ImageModel>("gemini-3.1-flash-image-preview");
+  const [model, setModel] = useState<ImageModel>(DEFAULT_IMAGE_MODEL);
   const [gptQuality, setGptQuality] = useState<GptImageQuality>(() => {
     const saved = localStorage.getItem("user_openai_image_quality");
     return saved === "medium" || saved === "high" ? saved : "low";
@@ -260,9 +260,10 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
     setMaterialMode('base');
     setProductionMaterials({ base: { id: record.base.id, versionId: record.version.id, name: record.base.name, version: record.version.version }, overrides: {} });
     const defaults = record.version.defaults;
-    if (MODELS.some(item => item.id === defaults.modelId)) setModel(defaults.modelId as ImageModel);
+    const normalizedDefaultModel = normalizeImageModel(defaults.modelId);
+    if (defaults.modelId) setModel(normalizedDefaultModel);
     if (IMAGE_SIZES.some(item => item.id === defaults.imageSize)) setImageSize(defaults.imageSize as ImageSize);
-    const nextModel = MODELS.some(item => item.id === defaults.modelId) ? defaults.modelId as ImageModel : model;
+    const nextModel = defaults.modelId ? normalizedDefaultModel : model;
     const compatibleRatios = nextModel === 'gpt-image-2' ? GPT_ASPECT_RATIOS : GOOGLE_ASPECT_RATIOS;
     if (compatibleRatios.includes(defaults.aspectRatio as AspectRatio)) setAspectRatio(defaults.aspectRatio as AspectRatio);
   };
@@ -377,7 +378,7 @@ export const GenerationBar = forwardRef<GenerationBarRef, GenerationBarProps>(({
       setPrompt(p);
       setAspectRatio(ar);
       setImageSize(is);
-      setModel(m);
+      setModel(normalizeImageModel(m));
       setProductionMaterials(selectedMaterials || { overrides: {} });
       setMaterialsEnabled(Boolean(selectedMaterials?.base || Object.keys(selectedMaterials?.overrides || {}).length));
       setMaterialMode(selectedMaterials?.base ? 'base' : 'flexible');

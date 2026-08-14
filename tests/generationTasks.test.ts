@@ -48,7 +48,7 @@ assert.match(getGenerationProgress('gpt-image-2', 2, 1).label, /上传参考图/
 assert.match(getGenerationProgress('gpt-image-2', 20).detail, /不返回中间进度/);
 assert.match(getGenerationProgress('gpt-image-2', 75, 1).detail, /参考图或高分辨率/);
 assert.match(getGenerationProgress('gpt-image-2', 130).detail, /不会在后台自动重复生成/);
-assert.deepEqual(getGenerationProgress('gemini-3.1-flash-image-preview', 12), { label: '正在生成', detail: '已等待 12 秒' });
+assert.deepEqual(getGenerationProgress('gemini-3.1-flash-image', 12), { label: '正在生成', detail: '已等待 12 秒' });
 
 const deduplicator = new ImageRequestDeduplicator(100, 10);
 assert.deepEqual(deduplicator.begin('user:request-1', 'diag-1', 1000), { accepted: true });
