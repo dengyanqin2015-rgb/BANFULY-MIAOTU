@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test:upload": "tsx tests/uploadProcessing.test.ts",
     "test:layout": "tsx tests/workflowLayout.test.ts",
+    "test:floating-dropdown": "tsx tests/floatingDropdown.test.ts",
     "test:generation": "tsx tests/generationTasks.test.ts",
     "test:gemini-models": "tsx tests/geminiModels.test.ts",
     "test:persistence": "tsx tests/projectPersistence.test.ts",
@@ -26,7 +27,7 @@
     "test:material-cache": "tsx tests/productionMaterialImageCache.test.ts",
     "test:async-pool": "tsx tests/asyncPool.test.ts",
     "storage:cors": "tsx scripts/configureBucketCors.ts",
-    "check": "npm run test:upload && npm run test:layout && npm run test:generation && npm run test:gemini-models && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run test:assets && npm run test:base-generation && npm run test:asset-api && npm run test:storage && npm run test:material-cache && npm run test:async-pool && npm run typecheck && npm run lint && npm run build",
+    "check": "npm run test:upload && npm run test:layout && npm run test:floating-dropdown && npm run test:generation && npm run test:gemini-models && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run test:assets && npm run test:base-generation && npm run test:asset-api && npm run test:storage && npm run test:material-cache && npm run test:async-pool && npm run typecheck && npm run lint && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {

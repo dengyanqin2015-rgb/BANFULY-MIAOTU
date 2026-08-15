@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Send, ChevronDown, Key, Image as ImageIcon, X, Boxes, Loader2, SlidersHorizontal, Library, Palette, Mountain, Layers3, UserRound, Type, LockKeyhole, Unlink, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AspectRatio, DEFAULT_IMAGE_MODEL, ImageSize, ImageModel, normalizeImageModel } from '../lib/gemini';
@@ -6,6 +7,7 @@ import { cn } from '../lib/utils';
 import { assertImageUsage, IMAGE_UPLOAD_LIMITS, processImageFiles } from '../lib/uploadProcessing';
 import type { AssetRecord, AssetType, CategoryBaseRecord, PaginatedAssetResult } from '../lib/assetLibrary';
 import { PRODUCTION_REFERENCE_ORDER, PRODUCTION_SLOT_REFERENCE_LIMITS, shouldUseModelMaterial, type CategoryBaseSlotKey, type ProductionMaterialSelection, type SelectedAssetMaterial } from '../lib/categoryBaseGeneration';
+import { calculateFloatingDropdownPlacement, type FloatingDropdownPlacement } from '../lib/floatingDropdown';
 
 export interface SelectedCategoryBase {
   id: string;
@@ -948,17 +950,94 @@ const MaterialPicker: React.FC<{
   onClear: () => void;
   compact?: boolean;
   children: React.ReactNode;
-}> = ({ label, caption, icon: Icon, color, selected, status, statusTone = 'active', open, onToggle, onClear, compact, children }) => (
+}> = ({ label, caption, icon: Icon, color, selected, status, statusTone = 'active', open, onToggle, onClear, compact, children }) => {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [placement, setPlacement] = useState<FloatingDropdownPlacement | null>(null);
+  const optionCount = React.Children.count(children) + 1;
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) {
+      setPlacement(null);
+      return;
+    }
+
+    const measurePlacement = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const estimatedHeight = Math.min(176, optionCount * 40 + 8);
+      const contentHeight = menuRef.current?.scrollHeight || estimatedHeight;
+      setPlacement(calculateFloatingDropdownPlacement({
+        triggerTop: rect.top,
+        triggerBottom: rect.bottom,
+        triggerLeft: rect.left,
+        triggerWidth: rect.width,
+        contentHeight,
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth,
+      }));
+    };
+
+    let animationFrame: number | null = null;
+    const schedulePlacement = () => {
+      if (animationFrame !== null) return;
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = null;
+        measurePlacement();
+      });
+    };
+
+    measurePlacement();
+    window.addEventListener('resize', schedulePlacement);
+    window.addEventListener('scroll', schedulePlacement, true);
+    const resizeObserver = new ResizeObserver(schedulePlacement);
+    resizeObserver.observe(triggerRef.current);
+    if (menuRef.current) resizeObserver.observe(menuRef.current);
+    return () => {
+      window.removeEventListener('resize', schedulePlacement);
+      window.removeEventListener('scroll', schedulePlacement, true);
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+    };
+  }, [open, optionCount]);
+
+  return (
   <div className="relative">
-    <button type="button" onClick={onToggle} className={cn('flex w-full items-center gap-2 rounded-lg border px-2.5 text-left transition', compact ? 'min-h-[48px] py-1.5' : 'min-h-[44px] py-2', selected ? 'border-white/30 bg-[#252525]' : 'border-[#333] bg-[#202020] hover:bg-[#292929]')}>
+    <button ref={triggerRef} type="button" onClick={onToggle} aria-expanded={open} className={cn('flex w-full items-center gap-2 rounded-lg border px-2.5 text-left transition', compact ? 'min-h-[48px] py-1.5' : 'min-h-[44px] py-2', selected ? 'border-white/30 bg-[#252525]' : 'border-[#333] bg-[#202020] hover:bg-[#292929]')}>
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#303030]"><Icon size={14} className={color} /></span>
       <span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-black text-gray-100">{selected || label}</span><span className={cn('block truncate text-[8px]', status ? (statusTone === 'waiting' ? 'text-amber-400' : statusTone === 'rules' ? 'text-violet-300' : 'text-emerald-400') : 'text-gray-500')}>{status || (selected ? `${label} · 固定版本` : caption)}</span></span>
       <ChevronDown size={12} className={cn('shrink-0 text-gray-500 transition-transform', open && 'rotate-180')} />
     </button>
     {selected && <button type="button" onClick={event => { event.stopPropagation(); onClear(); }} className="absolute right-7 top-1/2 -translate-y-1/2 rounded p-1 text-gray-600 hover:bg-black/30 hover:text-white"><X size={10} /></button>}
-    <AnimatePresence>{open && <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} className="absolute z-40 left-0 right-0 mt-1 max-h-44 overflow-y-auto rounded-lg border border-[#3b3b3b] bg-[#181818] p-1 shadow-2xl">{children}<button type="button" onClick={onClear} className="w-full rounded-md px-2.5 py-2 text-left text-[10px] text-gray-500 hover:bg-[#272727]">不使用此项</button></motion.div>}</AnimatePresence>
+    {open && typeof document !== 'undefined' && createPortal(
+      <AnimatePresence>
+        <motion.div
+          ref={menuRef}
+          data-placement={placement?.direction}
+          initial={{ opacity: 0, y: placement?.direction === 'up' ? 4 : -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: placement?.direction === 'up' ? 4 : -4 }}
+          style={{
+            position: 'fixed',
+            top: placement?.top ?? 0,
+            left: placement?.left ?? 0,
+            width: placement?.width ?? triggerRef.current?.getBoundingClientRect().width ?? 0,
+            maxHeight: placement?.maxHeight ?? 176,
+            visibility: placement ? 'visible' : 'hidden',
+            zIndex: 10000,
+          }}
+          className="overflow-y-auto overscroll-contain rounded-lg border border-[#3b3b3b] bg-[#181818] p-1 shadow-2xl"
+        >
+          {children}
+          <button type="button" onClick={onClear} className="w-full rounded-md px-2.5 py-2 text-left text-[10px] text-gray-500 hover:bg-[#272727]">不使用此项</button>
+        </motion.div>
+      </AnimatePresence>,
+      document.body,
+    )}
   </div>
-);
+  );
+};
 
 const PickerOption: React.FC<{ title: string; meta: string; onClick: () => void }> = ({ title, meta, onClick }) => (
   <button type="button" onClick={onClick} className="flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2 text-left hover:bg-[#272727]"><span className="min-w-0"><span className="block truncate text-[10px] font-bold text-gray-100">{title}</span><span className="block truncate text-[8px] text-gray-500">{meta}</span></span></button>
