@@ -9,6 +9,13 @@ import cors from "cors";
 import pg from "pg";
 import { randomUUID } from "node:crypto";
 import { ImageRequestDeduplicator, OPENAI_IMAGE_TOTAL_TIMEOUT_MS, normalizeImageRequestId } from "./src/lib/openAiImageRuntime";
+import {
+  appendVaeloGptEditFields,
+  buildVaeloJsonRequest,
+  extractVaeloImages,
+  normalizeVaeloBaseUrl,
+  type VaeloImageRequest,
+} from "./src/lib/vaeloImageProvider";
 import { aggregateGenerationTrend, type GenerationTrendBucket, type GenerationTrendGranularity } from "./src/lib/generationStats";
 import {
   AssetValidationError,
@@ -72,6 +79,8 @@ const IMAGE_ANALYSIS_TEMPLATES_FILE = path.resolve(process.env.IMAGE_ANALYSIS_TE
 const REQUEST_LOG_FILE = path.resolve(process.env.REQUEST_LOG_PATH || "data/request-logs.jsonl");
 const DATABASE_URL = process.env.DATABASE_URL;
 const openAiImageRequestDeduplicator = new ImageRequestDeduplicator();
+const vaeloImageRequestDeduplicator = new ImageRequestDeduplicator();
+const IMAGE_PROVIDER = String(process.env.IMAGE_PROVIDER || "direct").trim().toLowerCase();
 
 interface RequestLogEntry {
   id: string;
@@ -1889,7 +1898,11 @@ app.put("/api/admin/image-analysis-templates", authenticateToken, isAdmin, (req:
 // --- API Routes (REGISTERED FIRST) ---
 
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", dbInitialized, dbMode: db.getMode(), objectStorage: getAssetStorageStatus() });
+  res.json({ status: "ok", dbInitialized, dbMode: db.getMode(), objectStorage: getAssetStorageStatus(), imageProvider: IMAGE_PROVIDER === "vaelo" ? "vaelo" : "direct" });
+});
+
+app.get("/api/ai/image-provider", authenticateToken, (_req: AuthRequest, res: Response) => {
+  res.json({ provider: IMAGE_PROVIDER === "vaelo" ? "vaelo" : "direct" });
 });
 
 app.get("/api/test", async (req, res) => {
@@ -2484,6 +2497,122 @@ const compileGptImagePrompt = (originalPrompt: string): PromptSafetyCompilation 
     blocked
   };
 };
+
+app.post("/api/ai/vaelo/images", authenticateToken, async (req: AuthRequest, res: Response) => {
+  if (IMAGE_PROVIDER !== "vaelo") return res.status(404).json({ message: "Vaelo 生图线路未启用" });
+  const { prompt, model, aspectRatio, imageSize, size, quality, images = [], mask, requestId: rawRequestId } = req.body;
+  const diagnosticId = `vaelo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const requestId = normalizeImageRequestId(rawRequestId, diagnosticId);
+  const requestStartedAt = Date.now();
+  const apiKey = String(process.env.VAELO_API_KEY || "").trim().replace(/^Bearer\s+/i, "");
+  const allowedModels = new Set(["gpt-image-2", "gemini-3.1-flash-image", "gemini-3-pro-image"]);
+  if (!apiKey) return res.status(503).json({ code: "VAELO_NOT_CONFIGURED", message: "测试分站尚未配置 Vaelo 专用令牌" });
+  if (!allowedModels.has(String(model))) return res.status(400).json({ message: "Vaelo 测试分站仅允许三个指定生图模型" });
+  if (!prompt || typeof prompt !== "string" || prompt.length > 20000) return res.status(400).json({ message: "提示词为空或过长" });
+  if (!Array.isArray(images) || images.length > 10) return res.status(400).json({ message: "参考图格式不正确或数量超过 10 张" });
+
+  let baseUrl: string;
+  try {
+    baseUrl = normalizeVaeloBaseUrl(process.env.VAELO_BASE_URL);
+  } catch (error) {
+    return res.status(500).json({ code: "VAELO_CONFIG_INVALID", message: error instanceof Error ? error.message : "Vaelo 地址无效" });
+  }
+
+  const vaeloRequest: VaeloImageRequest = {
+    model,
+    prompt,
+    aspectRatio: aspectRatio || "1:1",
+    imageSize: imageSize || "1K",
+    size,
+    quality,
+    images,
+    mask,
+  };
+  const dedupeKey = `${req.user?.id || "unknown"}:${requestId}`;
+  const beginResult = vaeloImageRequestDeduplicator.begin(dedupeKey, diagnosticId);
+  if (!beginResult.accepted) {
+    return res.status(409).json({
+      code: beginResult.state === "running" ? "IMAGE_REQUEST_IN_PROGRESS" : "IMAGE_REQUEST_ALREADY_FINISHED",
+      message: beginResult.state === "running" ? "同一生图任务仍在处理中，请等待原任务完成" : "该生图任务已经处理过，请新建任务后再试",
+      requestId,
+      diagnosticId: beginResult.diagnosticId,
+    });
+  }
+
+  const disconnectController = new AbortController();
+  const handleDisconnect = () => {
+    if (!res.writableEnded && !disconnectController.signal.aborted) disconnectController.abort(new Error("Client disconnected"));
+  };
+  res.once("close", handleDisconnect);
+  res.setHeader("X-Image-Request-Id", requestId);
+  res.setHeader("X-Image-Diagnostic-Id", diagnosticId);
+  try {
+    const signal = AbortSignal.any([AbortSignal.timeout(OPENAI_IMAGE_TOTAL_TIMEOUT_MS), disconnectController.signal]);
+    const headers = { Authorization: `Bearer ${apiKey}` };
+    let endpoint: string;
+    let upstreamResponse: globalThis.Response;
+    if (model === "gpt-image-2" && (images.length > 0 || mask?.data)) {
+      endpoint = "/v1/images/edits";
+      const form = new FormData();
+      appendVaeloGptEditFields(form, vaeloRequest);
+      for (const [index, image] of images.entries()) {
+        const rawData = String(image?.data || "").replace(/^data:[^;]+;base64,/, "");
+        const bytes = Buffer.from(rawData, "base64");
+        if (!bytes.length || bytes.length > 50 * 1024 * 1024) return res.status(400).json({ message: `第 ${index + 1} 张参考图无效或超过 50MB` });
+        const mimeType = String(image?.mimeType || "image/png");
+        const extension = mimeType.includes("jpeg") ? "jpg" : mimeType.includes("webp") ? "webp" : "png";
+        form.append("image[]", new Blob([bytes], { type: mimeType }), `reference-${index + 1}.${extension}`);
+      }
+      if (mask?.data) {
+        const rawData = String(mask.data).replace(/^data:[^;]+;base64,/, "");
+        const bytes = Buffer.from(rawData, "base64");
+        if (!bytes.length || bytes.length > 50 * 1024 * 1024) return res.status(400).json({ message: "编辑遮罩无效或超过 50MB" });
+        const mimeType = String(mask.mimeType || "image/png");
+        form.append("mask", new Blob([bytes], { type: mimeType }), "mask.png");
+      }
+      upstreamResponse = await fetch(`${baseUrl}${endpoint}`, { method: "POST", headers, body: form, signal });
+    } else {
+      const built = buildVaeloJsonRequest(vaeloRequest);
+      endpoint = built.endpoint;
+      upstreamResponse = await fetch(`${baseUrl}${endpoint}`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(built.body),
+        signal,
+      });
+    }
+
+    const payload: any = await upstreamResponse.json().catch(() => ({}));
+    console.log("[ImageDiagnostic]", JSON.stringify({
+      diagnosticId,
+      requestId,
+      event: "vaelo_provider_response",
+      model,
+      endpoint,
+      status: upstreamResponse.status,
+      ok: upstreamResponse.ok,
+      elapsedMs: Date.now() - requestStartedAt,
+      providerRequestId: upstreamResponse.headers.get("x-request-id"),
+    }));
+    if (!upstreamResponse.ok) {
+      const message = payload?.error?.message || payload?.message || upstreamResponse.statusText;
+      return res.status(upstreamResponse.status).json({ code: payload?.error?.code || "VAELO_UPSTREAM_ERROR", message: `Vaelo 生图失败：${message}`, requestId, diagnosticId });
+    }
+    const imageUrls = extractVaeloImages(model, payload);
+    if (!imageUrls.length) return res.status(502).json({ code: "VAELO_EMPTY_IMAGE", message: "Vaelo 请求成功，但没有返回图片数据", requestId, diagnosticId });
+    return res.json({ images: imageUrls.map(url => ({ url })), provider: "vaelo", requestId, diagnosticId, elapsedMs: Date.now() - requestStartedAt });
+  } catch (error) {
+    if (disconnectController.signal.aborted || res.destroyed) return;
+    const err = error as Error;
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      return res.status(504).json({ code: "VAELO_UPSTREAM_TIMEOUT", message: "Vaelo 生图超过 3 分 30 秒仍未完成，本次不会自动重复生成", requestId, diagnosticId });
+    }
+    return res.status(502).json({ code: "VAELO_NETWORK_ERROR", message: "无法连接 Vaelo 图像服务，本次不会自动重复生成", requestId, diagnosticId });
+  } finally {
+    res.off("close", handleDisconnect);
+    vaeloImageRequestDeduplicator.finish(dedupeKey);
+  }
+});
 
 app.post("/api/ai/openai/images", authenticateToken, async (req: AuthRequest, res: Response) => {
   const { prompt, size, quality: rawQuality, images = [], mask: rawMask, apiKey: rawApiKey, requestId: rawRequestId } = req.body;

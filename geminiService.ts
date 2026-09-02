@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, Part } from "@google/genai";
 import { VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, ImageDeconstruction, SegmentedObject, DetailStoryboard } from "./types";
+import { generateImageViaVaelo, getConfiguredImageProvider, getGptImageSize, toVaeloImageModel } from "./src/lib/imageProviderRouting";
 
 const parseB64 = (b64: string) => {
   const matches = b64.match(/^data:([^;]+);base64,(.+)$/);
@@ -222,6 +223,26 @@ export const generateEcomImage = async (params: {
   productImagesB64?: string[], // Support multiple product images
   apiKey?: string
 }): Promise<string | undefined> => {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const imageProvider = await getConfiguredImageProvider(token);
+  if (imageProvider === 'vaelo') {
+    const vaeloModel = toVaeloImageModel(params.model);
+    if (!vaeloModel) throw new Error(`Vaelo 测试分站不支持模型：${params.model}`);
+    const referenceImages = [
+      params.refImageB64,
+      params.productImageB64,
+      ...(params.productImagesB64 || []),
+    ].filter((value): value is string => Boolean(value)).map(parseB64);
+    const [image] = await generateImageViaVaelo({
+      prompt: params.prompt,
+      model: vaeloModel,
+      aspectRatio: params.aspectRatio,
+      imageSize: params.imageSize || '1K',
+      images: referenceImages,
+    }, token);
+    return image;
+  }
+
   // 生图优先使用用户在浏览器中配置的付费 Key，再回退到普通 Gemini Key。
   const localPaidKey = typeof window !== 'undefined' ? localStorage.getItem('user_paid_image_api_key') : null;
   const finalApiKey = localPaidKey?.trim() || params.apiKey?.trim();
@@ -230,17 +251,10 @@ export const generateEcomImage = async (params: {
     const apiKey = typeof window !== 'undefined' ? localStorage.getItem('user_openai_api_key') : null;
     const savedQuality = typeof window !== 'undefined' ? localStorage.getItem('user_openai_image_quality') : null;
     const quality = savedQuality === 'medium' || savedQuality === 'high' ? savedQuality : 'low';
-    const sizeTable: Record<string, Record<string, string>> = {
-      '512px': { '1:1': '1024x1024', '3:4': '1024x1360', '4:3': '1360x1024', '9:16': '1024x1824', '16:9': '1824x1024', '2:5': '1024x2560', '5:2': '2560x1024', '3:2': '1536x1024', '2:3': '1024x1536', 'AUTO': 'auto' },
-      '1K': { '1:1': '1024x1024', '3:4': '1024x1360', '4:3': '1360x1024', '9:16': '1024x1824', '16:9': '1824x1024', '2:5': '1024x2560', '5:2': '2560x1024', '3:2': '1536x1024', '2:3': '1024x1536', 'AUTO': 'auto' },
-      '2K': { '1:1': '2048x2048', '3:4': '1536x2048', '4:3': '2048x1536', '9:16': '1152x2048', '16:9': '2048x1152', '2:5': '1280x3200', '5:2': '3200x1280', '3:2': '2048x1360', '2:3': '1360x2048', 'AUTO': 'auto' },
-      '4K': { '1:1': '2880x2880', '3:4': '2480x3312', '4:3': '3312x2480', '9:16': '2160x3840', '16:9': '3840x2160', '2:5': '1536x3840', '5:2': '3840x1536', '3:2': '3520x2352', '2:3': '2352x3520', 'AUTO': 'auto' }
-    };
     if (['1:4', '1:8', '4:1', '8:1'].includes(params.aspectRatio)) {
       throw new Error('GPT Image 2 官方接口最大支持 3:1 比例，请改用 9:16、16:9 或其他模型');
     }
-    const size = sizeTable[params.imageSize || '1K']?.[params.aspectRatio] || '1024x1024';
-    const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+    const size = getGptImageSize(params.imageSize || '1K', params.aspectRatio);
     const referenceImages = [
       params.refImageB64,
       params.productImageB64,

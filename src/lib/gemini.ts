@@ -1,6 +1,7 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { buildStructuredAssistantMessage, ensureRequiredCopyInPromptBlocks, IMAGE_ANALYSIS_SYSTEM_INSTRUCTION, isVisualPromptTask, VISUAL_PROMPT_STRUCTURE_INSTRUCTION } from './visualPromptStructure';
 import { normalizeImageModel, selectImageApiKey, type ImageModel } from './geminiModels';
+import { generateImageViaVaelo, getConfiguredImageProvider, getGptImageSize } from './imageProviderRouting';
 
 export type { ImageModel } from './geminiModels';
 export { DEFAULT_IMAGE_MODEL, isLegacyImageModel, normalizeImageModel, selectImageApiKey } from './geminiModels';
@@ -258,21 +259,29 @@ export async function chatWithAssistant(params: ChatParams): Promise<string> {
 
 export async function generateImage(params: GenerationParams): Promise<string[]> {
   const resolvedModel = normalizeImageModel(params.model);
+  const token = localStorage.getItem('auth_token');
+  const imageProvider = await getConfiguredImageProvider(token);
+  if (imageProvider === 'vaelo') {
+    return generateImageViaVaelo({
+      prompt: params.prompt,
+      model: resolvedModel,
+      aspectRatio: params.aspectRatio,
+      imageSize: params.imageSize,
+      quality: params.quality,
+      images: params.images,
+      mask: params.mask,
+      requestId: params.requestId,
+      signal: params.signal,
+    }, token);
+  }
   if (resolvedModel === 'gpt-image-2') {
     const apiKey = localStorage.getItem('user_openai_api_key');
     const savedQuality = localStorage.getItem('user_openai_image_quality');
     const quality = params.quality || (savedQuality === 'medium' || savedQuality === 'high' ? savedQuality : 'low');
-    const sizeTable: Record<string, Record<string, string>> = {
-      '512px': { '1:1': '1024x1024', '3:4': '1024x1360', '4:3': '1360x1024', '9:16': '1024x1824', '16:9': '1824x1024', '2:5': '1024x2560', '5:2': '2560x1024', '3:2': '1536x1024', '2:3': '1024x1536', 'AUTO': 'auto' },
-      '1K': { '1:1': '1024x1024', '3:4': '1024x1360', '4:3': '1360x1024', '9:16': '1024x1824', '16:9': '1824x1024', '2:5': '1024x2560', '5:2': '2560x1024', '3:2': '1536x1024', '2:3': '1024x1536', 'AUTO': 'auto' },
-      '2K': { '1:1': '2048x2048', '3:4': '1536x2048', '4:3': '2048x1536', '9:16': '1152x2048', '16:9': '2048x1152', '2:5': '1280x3200', '5:2': '3200x1280', '3:2': '2048x1360', '2:3': '1360x2048', 'AUTO': 'auto' },
-      '4K': { '1:1': '2880x2880', '3:4': '2480x3312', '4:3': '3312x2480', '9:16': '2160x3840', '16:9': '3840x2160', '2:5': '1536x3840', '5:2': '3840x1536', '3:2': '3520x2352', '2:3': '2352x3520', 'AUTO': 'auto' }
-    };
     if (['1:4', '1:8', '4:1', '8:1'].includes(params.aspectRatio)) {
       throw new Error('GPT Image 2 官方接口最大支持 3:1 比例，请改用 9:16、16:9 或其他模型');
     }
-    const size = sizeTable[params.imageSize]?.[params.aspectRatio] || '1024x1024';
-    const token = localStorage.getItem('auth_token');
+    const size = getGptImageSize(params.imageSize, params.aspectRatio);
     const response = await fetch('/api/ai/openai/images', {
       method: 'POST',
       headers: {
