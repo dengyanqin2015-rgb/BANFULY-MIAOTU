@@ -14,6 +14,7 @@ import {
   buildVaeloJsonRequest,
   extractVaeloImages,
   normalizeVaeloBaseUrl,
+  resolveVaeloApiKey,
   type VaeloImageRequest,
 } from "./src/lib/vaeloImageProvider";
 import { aggregateGenerationTrend, type GenerationTrendBucket, type GenerationTrendGranularity } from "./src/lib/generationStats";
@@ -2504,10 +2505,10 @@ app.post("/api/ai/vaelo/images", authenticateToken, async (req: AuthRequest, res
   const diagnosticId = `vaelo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const requestId = normalizeImageRequestId(rawRequestId, diagnosticId);
   const requestStartedAt = Date.now();
-  const apiKey = String(process.env.VAELO_API_KEY || "").trim().replace(/^Bearer\s+/i, "");
   const allowedModels = new Set(["gpt-image-2", "gemini-3.1-flash-image", "gemini-3-pro-image"]);
-  if (!apiKey) return res.status(503).json({ code: "VAELO_NOT_CONFIGURED", message: "测试分站尚未配置 Vaelo 专用令牌" });
   if (!allowedModels.has(String(model))) return res.status(400).json({ message: "Vaelo 测试分站仅允许三个指定生图模型" });
+  const apiKey = resolveVaeloApiKey(String(model), process.env);
+  if (!apiKey) return res.status(503).json({ code: "VAELO_NOT_CONFIGURED", message: `测试分站尚未配置 ${model === "gpt-image-2" ? "GPT" : "谷歌"} 专用令牌` });
   if (!prompt || typeof prompt !== "string" || prompt.length > 20000) return res.status(400).json({ message: "提示词为空或过长" });
   if (!Array.isArray(images) || images.length > 10) return res.status(400).json({ message: "参考图格式不正确或数量超过 10 张" });
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   VAELO_MODEL_MAP,
+  resolveVaeloApiKey,
   appendVaeloGptEditFields,
   buildVaeloJsonRequest,
   extractVaeloImages,
@@ -14,6 +15,15 @@ assert.throws(() => normalizeVaeloBaseUrl('http://vaelo.8t.chat'), /HTTPS/);
 assert.throws(() => normalizeVaeloBaseUrl('https://user:pass@vaelo.8t.chat'), /不能包含/);
 
 assert.equal(VAELO_MODEL_MAP['gpt-image-2'], 'gpt-image-2k');
+const splitKeys = { VAELO_GPT_IMAGE_API_KEY: ' Bearer fake-gpt ', VAELO_GOOGLE_API_KEY: 'fake-google', VAELO_API_KEY: 'fake-shared' };
+assert.equal(resolveVaeloApiKey('gpt-image-2', splitKeys), 'fake-gpt');
+for (const model of ['gemini-3.1-flash-image', 'gemini-3-pro-image']) {
+  assert.equal(resolveVaeloApiKey(model, splitKeys), 'fake-google');
+  assert.equal(resolveVaeloApiKey(model, { VAELO_GPT_IMAGE_API_KEY: 'fake-gpt', VAELO_API_KEY: 'fake-shared' }), '');
+}
+assert.equal(resolveVaeloApiKey('gpt-image-2', { VAELO_GOOGLE_API_KEY: 'fake-google' }), '');
+assert.equal(resolveVaeloApiKey('gpt-image-2', { VAELO_API_KEY: 'fake-shared' }), 'fake-shared');
+assert.equal(resolveVaeloApiKey('invalid-model', splitKeys), '');
 assert.equal(toVaeloImageModel('nanobanana2'), 'gemini-3.1-flash-image');
 assert.equal(toVaeloImageModel('nanobanana pro'), 'gemini-3-pro-image');
 assert.equal(toVaeloImageModel('imagen'), null);

@@ -2,6 +2,15 @@ import type { AspectRatio, ImageSize } from './gemini';
 import type { ImageModel } from './geminiModels';
 
 export const VAELO_DEFAULT_BASE_URL = 'https://vaelo.8t.chat';
+export const resolveVaeloApiKey = (model: string, env: Record<string, string | undefined>): string => {
+  const clean = (value?: string) => String(value || '').trim().replace(/^Bearer\s+/i, '').trim();
+  const gpt = clean(env.VAELO_GPT_IMAGE_API_KEY);
+  const google = clean(env.VAELO_GOOGLE_API_KEY);
+  if (!['gpt-image-2', 'gemini-3.1-flash-image', 'gemini-3-pro-image'].includes(model)) return '';
+  // Split credentials fail closed: never use another platform's key.
+  if (gpt || google) return model === 'gpt-image-2' ? gpt : google;
+  return clean(env.VAELO_API_KEY);
+};
 export const VAELO_MODEL_MAP: Partial<Record<ImageModel, string>> = {
   'gemini-3.1-flash-image': 'gemini-3.1-flash-image',
   'gemini-3-pro-image': 'gemini-3-pro-image',
