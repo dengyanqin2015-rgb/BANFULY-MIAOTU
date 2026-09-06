@@ -17,6 +17,11 @@ import {
   resolveVaeloApiKey,
   type VaeloImageRequest,
 } from "./src/lib/vaeloImageProvider";
+import {
+  buildVaeloTextRequest,
+  extractVaeloText,
+  resolveVaeloTextApiKey,
+} from "./src/lib/vaeloTextProvider";
 import { aggregateGenerationTrend, type GenerationTrendBucket, type GenerationTrendGranularity } from "./src/lib/generationStats";
 import {
   AssetValidationError,
@@ -1906,6 +1911,13 @@ app.get("/api/ai/image-provider", authenticateToken, (_req: AuthRequest, res: Re
   res.json({ provider: IMAGE_PROVIDER === "vaelo" ? "vaelo" : "direct" });
 });
 
+app.get("/api/ai/text-provider", authenticateToken, (_req: AuthRequest, res: Response) => {
+  res.json({
+    provider: "vaelo",
+    configured: Boolean(resolveVaeloTextApiKey(process.env) && process.env.VAELO_TEXT_MODEL),
+  });
+});
+
 app.get("/api/test", async (req, res) => {
   console.log("API Test hit");
   res.json({ 
@@ -2612,6 +2624,75 @@ app.post("/api/ai/vaelo/images", authenticateToken, async (req: AuthRequest, res
   } finally {
     res.off("close", handleDisconnect);
     vaeloImageRequestDeduplicator.finish(dedupeKey);
+  }
+});
+
+app.post("/api/ai/text/generate-content", authenticateToken, async (req: AuthRequest, res: Response) => {
+  const requestStartedAt = Date.now();
+  const requestId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const apiKey = resolveVaeloTextApiKey(process.env);
+  if (!apiKey) {
+    return res.status(503).json({
+      code: "AI_TEXT_NOT_CONFIGURED",
+      message: "测试分站尚未配置 Vaelo 文本模型专用 Key；现有生图 Key 不能用于 AI 助理和图片解析。",
+      requestId,
+    });
+  }
+
+  let baseUrl: string;
+  let built: ReturnType<typeof buildVaeloTextRequest>;
+  try {
+    baseUrl = normalizeVaeloBaseUrl(process.env.VAELO_BASE_URL);
+    built = buildVaeloTextRequest({
+      requestedModel: String(req.body?.model || ""),
+      contents: req.body?.contents,
+      config: req.body?.config && typeof req.body.config === "object" ? req.body.config : {},
+    }, process.env);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "AI_TEXT_REQUEST_INVALID";
+    const message = code === "AI_TEXT_MODEL_NOT_CONFIGURED"
+      ? "测试分站尚未配置 Vaelo 文本模型 ID。"
+      : "AI 文本请求格式不正确。";
+    return res.status(code === "AI_TEXT_MODEL_NOT_CONFIGURED" ? 503 : 400).json({ code, message, requestId });
+  }
+
+  try {
+    const upstreamResponse = await fetch(`${baseUrl}${built.endpoint}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(built.body),
+      signal: AbortSignal.timeout(150_000),
+    });
+    const payload: any = await upstreamResponse.json().catch(() => ({}));
+    console.log("[TextDiagnostic]", JSON.stringify({
+      requestId,
+      event: "vaelo_text_response",
+      requestedModel: String(req.body?.model || ""),
+      upstreamModel: built.upstreamModel,
+      status: upstreamResponse.status,
+      elapsedMs: Date.now() - requestStartedAt,
+      providerRequestId: upstreamResponse.headers.get("x-request-id"),
+    }));
+    if (!upstreamResponse.ok) {
+      const upstreamMessage = payload?.error?.message || payload?.message || upstreamResponse.statusText;
+      return res.status(upstreamResponse.status).json({
+        code: payload?.error?.code || "VAELO_TEXT_UPSTREAM_ERROR",
+        message: `Vaelo 文本模型调用失败：${upstreamMessage}`,
+        requestId,
+      });
+    }
+    const text = extractVaeloText(payload);
+    if (!text) return res.status(502).json({ code: "VAELO_TEXT_EMPTY", message: "Vaelo 文本模型没有返回内容。", requestId });
+    return res.json({ text, requestId, elapsedMs: Date.now() - requestStartedAt });
+  } catch (error) {
+    const err = error as Error;
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      return res.status(504).json({ code: "VAELO_TEXT_TIMEOUT", message: "Vaelo 文本模型超过 150 秒仍未返回。", requestId });
+    }
+    return res.status(502).json({ code: "VAELO_TEXT_NETWORK_ERROR", message: "无法连接 Vaelo 文本模型。", requestId });
   }
 });
 

@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type, Part } from "@google/genai";
 import { VisualConstitution, ProductAnalysis, FinalPrompt, StrategyType, Storyboard, ImageDeconstruction, SegmentedObject, DetailStoryboard } from "./types";
 import { generateImageViaVaelo, getConfiguredImageProvider, getGptImageSize, toVaeloImageModel } from "./src/lib/imageProviderRouting";
+import { createServerTextClient } from "./src/lib/serverTextClient";
 
 const parseB64 = (b64: string) => {
   const matches = b64.match(/^data:([^;]+);base64,(.+)$/);
@@ -9,7 +10,11 @@ const parseB64 = (b64: string) => {
 };
 
 const getAiClient = (apiKey?: string) => {
-  // 优先使用传入的 apiKey，其次检查 localStorage 中的免费 Key，最后检查环境变量
+  void apiKey;
+  return createServerTextClient();
+};
+
+const getDirectImageAiClient = (apiKey?: string) => {
   const localKey = typeof window !== 'undefined' ? localStorage.getItem('user_gemini_api_key') : null;
   const key = apiKey || localKey;
   if (!key) throw new Error("未配置 API Key。请点击右上角'配置 API Key'按钮进行设置。");
@@ -324,7 +329,7 @@ export const generateEcomImage = async (params: {
     }
   }
 
-  const ai = getAiClient(finalApiKey);
+  const ai = getDirectImageAiClient(finalApiKey);
   const parts: Part[] = [{ text: params.prompt }];
   
   if (params.refImageB64) {

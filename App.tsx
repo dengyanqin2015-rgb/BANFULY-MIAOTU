@@ -983,11 +983,6 @@ ${p.prompt}
     const sb = detailStoryboards.find(s => s.id === id);
     if (!sb) return;
 
-    if (!userApiKey) {
-      alert("请先配置 API Key（点击右上角设置图标）");
-      return;
-    }
-
     if (!auth.user) {
       alert("请先登录");
       return;
@@ -1127,17 +1122,6 @@ ${p.prompt}
   const generateSingleImage = async (cardId: string, overrideRefImage?: string) => {
     const currentCard = finalPrompts.find(p => p.id === cardId);
     if (!currentCard || !constitution || !analysis) return;
-
-    if (genModel === 'nanobanana pro' || model === 'gemini-3.1-pro-preview') {
-      if (typeof window !== 'undefined' && window.aistudio) {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (!hasKey) {
-          alert("使用 Pro 3.0 模型需要选择您自己的付费 API Key。");
-          await window.aistudio.openSelectKey();
-          return;
-        }
-      }
-    }
 
     setCardGenStatus(prev => ({ ...prev, [cardId]: 'loading' }));
 
@@ -1391,11 +1375,6 @@ ${p.prompt}
 
   const runSingleDeconstruction = async (base64: string) => {
     console.log("Starting single deconstruction with base64 length:", base64.length);
-    if (!userApiKey) {
-      console.warn("No API Key found");
-      alert("请先配置 API Key");
-      return;
-    }
     setDeconstructionResult(null);
     setIsDeconstructing(true);
     try {
@@ -1414,10 +1393,6 @@ ${p.prompt}
   };
 
   const runSingleGeneration = async () => {
-    if (!userApiKey) {
-      alert("请先配置 API Key");
-      return;
-    }
     if (!deconstructionResult || !singleProductImage) {
       alert("请先上传参考图并解析，以及上传产品图");
       return;
@@ -1465,10 +1440,6 @@ ${p.prompt}
   };
 
   const runSegmentation = async (imageB64: string) => {
-    if (!userApiKey) {
-      alert("请先配置 API Key");
-      return;
-    }
     setIsSegmenting(true);
     try {
       const objects = await segmentImage(imageB64, model, userApiKey);
@@ -1489,10 +1460,6 @@ ${p.prompt}
   };
 
   const runReplacementGeneration = async () => {
-    if (!userApiKey) {
-      alert("请先配置 API Key");
-      return;
-    }
     if (!replacementBaseImage || segmentedObjects.length === 0) {
       alert("请先上传基准图并解构");
       return;

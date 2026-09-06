@@ -2,6 +2,7 @@ import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { buildStructuredAssistantMessage, ensureRequiredCopyInPromptBlocks, IMAGE_ANALYSIS_SYSTEM_INSTRUCTION, isVisualPromptTask, VISUAL_PROMPT_STRUCTURE_INSTRUCTION } from './visualPromptStructure';
 import { normalizeImageModel, selectImageApiKey, type ImageModel } from './geminiModels';
 import { generateImageViaVaelo, getConfiguredImageProvider, getGptImageSize } from './imageProviderRouting';
+import { createServerTextClient } from './serverTextClient';
 
 export type { ImageModel } from './geminiModels';
 export { DEFAULT_IMAGE_MODEL, isLegacyImageModel, normalizeImageModel, selectImageApiKey } from './geminiModels';
@@ -58,11 +59,10 @@ export async function analyzeImageForPrompt(
   template: ImageAnalysisTemplate,
   apiKey?: string
 ): Promise<string> {
+  void apiKey;
   const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!match) throw new Error("当前图片尚未转换为可解析格式，请重新上传后再试");
-  const key = apiKey || localStorage.getItem('user_gemini_api_key');
-  if (!key) throw new Error("请先配置 Gemini API Key");
-  const ai = new GoogleGenAI({ apiKey: key });
+  const ai = createServerTextClient();
   const response = await ai.models.generateContent({
     model: "gemini-3.6-flash",
     contents: {
@@ -99,8 +99,7 @@ export interface CopyLayoutAnalysis {
 }
 
 export async function analyzeCopyLayoutReference(file: File, apiKey?: string): Promise<CopyLayoutAnalysis> {
-  const key = apiKey || localStorage.getItem('user_gemini_api_key');
-  if (!key) throw new Error('请先配置 Gemini API Key');
+  void apiKey;
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
@@ -109,7 +108,7 @@ export async function analyzeCopyLayoutReference(file: File, apiKey?: string): P
   });
   const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!match) throw new Error('文案排版参考图格式无效');
-  const ai = new GoogleGenAI({ apiKey: key });
+  const ai = createServerTextClient();
   const response = await ai.models.generateContent({
     model: 'gemini-3.6-flash',
     contents: {
@@ -186,9 +185,8 @@ export async function openApiKeyDialog() {
 }
 
 export async function chatWithAssistant(params: ChatParams): Promise<string> {
-  // 聊天和识图始终优先使用默认的免费 Key (环境变量中的 GEMINI_API_KEY)
-  const apiKey = params.apiKey || localStorage.getItem('user_gemini_api_key');
-  const ai = new GoogleGenAI({ apiKey: apiKey as string });
+  // 聊天和识图统一走登录保护的服务端网关，浏览器不保存或直传平台 Key。
+  const ai = createServerTextClient();
   
   const modelName = params.mode === 'deep' ? 'gemini-3.1-pro-preview' : 'gemini-3.6-flash';
   

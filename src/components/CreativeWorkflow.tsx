@@ -34,11 +34,6 @@ export const CreativeWorkflow: React.FC<CreativeWorkflowProps> = ({
 
   const startWorkflow = async () => {
     if (!concept.trim()) return;
-    if (!userApiKey) {
-      alert("请先配置 API Key");
-      return;
-    }
-
     setIsProcessing(true);
     const newSteps: WorkflowStep[] = [
       { id: '1', type: 'concept', content: concept, status: 'done', result: concept },
