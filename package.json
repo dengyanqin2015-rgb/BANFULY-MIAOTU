@@ -27,9 +27,11 @@
     "test:material-cache": "tsx tests/productionMaterialImageCache.test.ts",
     "test:vaelo": "tsx tests/vaeloImageProvider.test.ts",
     "test:vaelo-text": "tsx tests/vaeloTextProvider.test.ts",
+    "test:structured-json": "tsx tests/structuredJson.test.ts",
+    "test:mask-edit": "tsx tests/imageEditInput.test.ts",
     "test:async-pool": "tsx tests/asyncPool.test.ts",
     "storage:cors": "tsx scripts/configureBucketCors.ts",
-    "check": "npm run test:upload && npm run test:layout && npm run test:floating-dropdown && npm run test:generation && npm run test:gemini-models && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run test:assets && npm run test:base-generation && npm run test:asset-api && npm run test:storage && npm run test:material-cache && npm run test:vaelo && npm run test:vaelo-text && npm run test:async-pool && npm run typecheck && npm run lint && npm run build",
+    "check": "npm run test:upload && npm run test:layout && npm run test:floating-dropdown && npm run test:generation && npm run test:gemini-models && npm run test:persistence && npm run test:assistant && npm run test:stats && npm run test:assets && npm run test:base-generation && npm run test:asset-api && npm run test:storage && npm run test:material-cache && npm run test:vaelo && npm run test:vaelo-text && npm run test:structured-json && npm run test:mask-edit && npm run test:async-pool && npm run typecheck && npm run lint && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {

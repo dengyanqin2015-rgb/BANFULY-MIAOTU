@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, Minimize2, Paintbrush, Redo2, Sparkles, Square, Trash2, Type, Undo2 } from 'lucide-react';
 import { generateImage, normalizeImageModel, type AspectRatio, type ImageModel } from '../lib/gemini';
+import { fitImageWithinEdge } from '../lib/imageEditInput';
 
 type Box = { x: number; y: number; width: number; height: number };
 export type EditMode = 'text' | 'content';
@@ -184,10 +185,11 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
     const padded: Box = { x: 0, y: 0, width: source.naturalWidth, height: source.naturalHeight };
     const aspect = closestAspect(padded.width, padded.height, model);
 
-    const crop = document.createElement('canvas'); crop.width = Math.max(1, Math.round(padded.width)); crop.height = Math.max(1, Math.round(padded.height));
+    const modelInput = fitImageWithinEdge(padded.width, padded.height);
+    const crop = document.createElement('canvas'); crop.width = modelInput.width; crop.height = modelInput.height;
     const cropContext = crop.getContext('2d'); if (!cropContext) throw new Error('无法创建文字修改区域');
     cropContext.drawImage(source, padded.x, padded.y, padded.width, padded.height, 0, 0, crop.width, crop.height);
-    const mask = document.createElement('canvas'); mask.width = crop.width; mask.height = crop.height;
+    const mask = document.createElement('canvas'); mask.width = Math.max(1, Math.round(padded.width)); mask.height = Math.max(1, Math.round(padded.height));
     const maskContext = mask.getContext('2d'); if (!maskContext) throw new Error('无法创建文字修改遮罩');
     maskContext.fillStyle = '#ffffff'; maskContext.fillRect(0, 0, mask.width, mask.height);
     const scaleX = mask.width / padded.width; const scaleY = mask.height / padded.height;
@@ -209,22 +211,27 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       }
     });
 
+    const modelMask = document.createElement('canvas'); modelMask.width = crop.width; modelMask.height = crop.height;
+    const modelMaskContext = modelMask.getContext('2d'); if (!modelMaskContext) throw new Error('无法创建模型遮罩');
+    modelMaskContext.drawImage(mask, 0, 0, modelMask.width, modelMask.height);
+
     const guide = document.createElement('canvas'); guide.width = crop.width; guide.height = crop.height;
     const guideContext = guide.getContext('2d'); if (!guideContext) throw new Error('无法创建区域定位图');
     guideContext.drawImage(crop, 0, 0);
     selectedRegions.forEach((selected, index) => {
-      const x = (selected.x - padded.x) * scaleX; const y = (selected.y - padded.y) * scaleY;
-      const width = selected.width * scaleX; const height = selected.height * scaleY;
+      const guideScaleX = guide.width / padded.width; const guideScaleY = guide.height / padded.height;
+      const x = (selected.x - padded.x) * guideScaleX; const y = (selected.y - padded.y) * guideScaleY;
+      const width = selected.width * guideScaleX; const height = selected.height * guideScaleY;
       const color = selected.item.mode === 'text' ? '#00e5ff' : '#4ade80';
       guideContext.save(); guideContext.strokeStyle = color; guideContext.fillStyle = color;
       guideContext.lineWidth = Math.max(3, Math.round(Math.min(guide.width, guide.height) * 0.004));
       if (selected.item.tool === 'brush' && selected.item.points?.length) {
         guideContext.lineCap = 'round'; guideContext.lineJoin = 'round';
-        guideContext.lineWidth = Math.max(8, (selected.item.brushSize || 0.035) * source.naturalWidth * scaleX);
+        guideContext.lineWidth = Math.max(8, (selected.item.brushSize || 0.035) * source.naturalWidth * guideScaleX);
         guideContext.globalAlpha = 0.38; guideContext.beginPath();
         selected.item.points.forEach((point, pointIndex) => {
-          const pointX = (point.x * source.naturalWidth - padded.x) * scaleX;
-          const pointY = (point.y * source.naturalHeight - padded.y) * scaleY;
+          const pointX = (point.x * source.naturalWidth - padded.x) * guideScaleX;
+          const pointY = (point.y * source.naturalHeight - padded.y) * guideScaleY;
           if (pointIndex === 0) guideContext.moveTo(pointX, pointY); else guideContext.lineTo(pointX, pointY);
         });
         guideContext.stroke(); guideContext.globalAlpha = 1;
@@ -259,7 +266,9 @@ export const ImageTextEditor: React.FC<ImageTextEditorProps> = ({ imageUrl, onCl
       '严格按照上述区域编号和坐标执行对应要求，不得交换、合并或遗漏区域；文字任务不得增字、漏字、错字或重复文字。',
       '整体画面必须自然连续，修改区域不能出现拼接边、色块、矩形边界或局部贴图感。不要新增其他文字、标志或水印。',
     ].join('\n');
-    const cropUrl = crop.toDataURL('image/png'); const maskUrl = mask.toDataURL('image/png'); const guideUrl = guide.toDataURL('image/png');
+    const cropUrl = crop.toDataURL('image/jpeg', 0.94);
+    const maskUrl = modelMask.toDataURL('image/png');
+    const guideUrl = guide.toDataURL('image/jpeg', 0.92);
     const [editedUrl] = await generateImage({
       prompt, model, imageSize: '1K', aspectRatio: aspect.id, quality: model === 'gpt-image-2' ? 'medium' : 'low',
       images: model === 'gpt-image-2'

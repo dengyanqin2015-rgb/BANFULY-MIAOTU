@@ -3,6 +3,7 @@ import { buildStructuredAssistantMessage, ensureRequiredCopyInPromptBlocks, IMAG
 import { normalizeImageModel, selectImageApiKey, type ImageModel } from './geminiModels';
 import { generateImageViaVaelo, getConfiguredImageProvider, getGptImageSize } from './imageProviderRouting';
 import { createServerTextClient } from './serverTextClient';
+import { parseStructuredJsonObject } from './structuredJson';
 
 export type { ImageModel } from './geminiModels';
 export { DEFAULT_IMAGE_MODEL, isLegacyImageModel, normalizeImageModel, selectImageApiKey } from './geminiModels';
@@ -135,16 +136,19 @@ export async function analyzeCopyLayoutReference(file: File, apiKey?: string): P
 无法确认的字段填空字符串；字数必须为非负整数；只输出 JSON。` },
       ],
     },
-    config: { responseMimeType: 'application/json' },
+    config: {
+      responseMimeType: 'application/json',
+      abortSignal: AbortSignal.timeout(60_000),
+    },
   });
   const text = response.text?.trim();
   if (!text) throw new Error('文案排版解析没有返回结果');
-  const parsed = JSON.parse(text) as Partial<CopyLayoutAnalysis>;
+  const parsed = parseStructuredJsonObject<Partial<CopyLayoutAnalysis> & Record<string, unknown>>(text);
   const numberValue = (value: unknown) => Math.max(0, Math.min(100, Number(value) || 0));
   const textValue = (value: unknown) => String(value || '').trim();
   return {
     promptFragment: textValue(parsed.promptFragment),
-    templateKind: parsed.templateKind === 'detail' ? 'detail' : 'main_image',
+    templateKind: parsed.templateKind === 'detail' || String(parsed.templateKind || '').includes('详情') ? 'detail' : 'main_image',
     headlineFont: textValue(parsed.headlineFont),
     headlineSize: textValue(parsed.headlineSize),
     headlinePosition: textValue(parsed.headlinePosition),

@@ -141,6 +141,8 @@ export const AssetLibraryPanel: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
   const [copyLayoutFile, setCopyLayoutFile] = useState<File | null>(null);
   const [analyzingLayout, setAnalyzingLayout] = useState(false);
+  const [copyLayoutAnalyzed, setCopyLayoutAnalyzed] = useState(false);
+  const [copyLayoutAnalysisError, setCopyLayoutAnalysisError] = useState('');
 
   const loadAll = async () => {
     setLoading(true);
@@ -197,6 +199,8 @@ export const AssetLibraryPanel: React.FC = () => {
     setAssetForm(emptyAssetForm(type));
     setFiles([]);
     setCopyLayoutFile(null);
+    setCopyLayoutAnalyzed(false);
+    setCopyLayoutAnalysisError('');
     setAssetModalOpen(true);
   };
 
@@ -229,11 +233,15 @@ export const AssetLibraryPanel: React.FC = () => {
     });
     setFiles([]);
     setCopyLayoutFile(null);
+    setCopyLayoutAnalyzed(false);
+    setCopyLayoutAnalysisError('');
     setAssetModalOpen(true);
   };
 
   const analyzeCopyLayout = async (file: File) => {
     setAnalyzingLayout(true);
+    setCopyLayoutAnalyzed(false);
+    setCopyLayoutAnalysisError('');
     setError('');
     try {
       if (file.size > 15 * 1024 * 1024) throw new Error('文案排版参考图不能超过 15MB');
@@ -257,8 +265,12 @@ export const AssetLibraryPanel: React.FC = () => {
         subcopyMaxChars: String(result.subcopyMaxChars || ''),
         subcopyDirection: result.subcopyDirection,
       }));
+      setCopyLayoutAnalyzed(true);
     } catch (analysisError) {
-      setError(analysisError instanceof Error ? analysisError.message : '文案排版解析失败');
+      const message = analysisError instanceof DOMException && analysisError.name === 'TimeoutError'
+        ? '文案排版解析超过 60 秒，请检查网络后重试'
+        : analysisError instanceof Error ? analysisError.message : '文案排版解析失败';
+      setCopyLayoutAnalysisError(message);
     } finally {
       setAnalyzingLayout(false);
     }
@@ -574,6 +586,7 @@ export const AssetLibraryPanel: React.FC = () => {
 
       {assetModalOpen && (
         <Modal title={editingAsset ? `编辑${TYPE_META[assetForm.type].label}` : `新增${TYPE_META[assetForm.type].label}`} onClose={() => !saving && setAssetModalOpen(false)}>
+          {error && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">{error}</div>}
           <div className="rounded-2xl border border-black/10 bg-[#fafafa] p-4">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <Field label="名称"><input value={assetForm.name} onChange={e => setAssetForm({ ...assetForm, name: e.target.value })} placeholder="例如：AURA 清透海岸" className={CONTROL_CLASS} /></Field>
@@ -602,7 +615,15 @@ export const AssetLibraryPanel: React.FC = () => {
                   </label>
                 </Field>
               </div>
-              <p className="text-[11px] leading-5 text-fuchsia-700/80">{copyLayoutFile ? `已从“${copyLayoutFile.name}”提取规则。保存时只保存下方规则，不上传或保留这张图片。` : '参考图只用于本次解析；保存时不上传、不保留图片，也不会在生图时发送。'}</p>
+              {copyLayoutAnalysisError ? (
+                <p role="alert" className="text-[11px] font-bold leading-5 text-red-600">解析失败：{copyLayoutAnalysisError}。图片未保存，可以重新选择后再试。</p>
+              ) : (
+                <p className="text-[11px] leading-5 text-fuchsia-700/80">{analyzingLayout
+                  ? `正在分析“${copyLayoutFile?.name || '参考图'}”，通常约 5–15 秒…`
+                  : copyLayoutFile && copyLayoutAnalyzed
+                    ? `已从“${copyLayoutFile.name}”成功提取并回填规则。保存时只保存下方规则，不上传或保留这张图片。`
+                    : '参考图只用于本次解析；保存时不上传、不保留图片，也不会在生图时发送。'}</p>
+              )}
             </div>
           )}
 
@@ -637,7 +658,7 @@ export const AssetLibraryPanel: React.FC = () => {
           </Field>
           <div className="flex justify-end gap-3 pt-2">
             <button onClick={() => setAssetModalOpen(false)} disabled={saving} className="rounded-xl px-4 py-2.5 text-xs font-bold text-[#6e6e73]">取消</button>
-            <button onClick={saveAsset} disabled={saving} className="flex items-center gap-2 rounded-xl bg-black px-5 py-2.5 text-xs font-black text-white disabled:opacity-50"><Save size={14} />{saving ? saveProgress || '保存中…' : '保存资产'}</button>
+            <button onClick={saveAsset} disabled={saving || analyzingLayout} className="flex items-center gap-2 rounded-xl bg-black px-5 py-2.5 text-xs font-black text-white disabled:opacity-50"><Save size={14} />{saving ? saveProgress || '保存中…' : analyzingLayout ? '等待解析完成…' : '保存资产'}</button>
           </div>
         </Modal>
       )}
