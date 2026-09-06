@@ -98,6 +98,7 @@ const App: React.FC = () => {
     return localStorage.getItem('user_openai_api_key') || '';
   });
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [serverAiConnected, setServerAiConnected] = useState(false);
 
   // Auth 状态
   const [auth, setAuth] = useState<AuthState>({ user: null, token: null, loading: true });
@@ -420,6 +421,32 @@ const App: React.FC = () => {
   // 原图预览状态
   // const [hoveredPreviewImage, setHoveredPreviewImage] = useState<{ url: string, title: string } | null>(null);
 
+  const checkServerAiStatus = async (token: string | null) => {
+    try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const [textResponse, imageResponse] = await Promise.all([
+        fetch('/api/ai/text-provider', { headers }),
+        fetch('/api/ai/image-provider', { headers }),
+      ]);
+      if (!textResponse.ok || !imageResponse.ok) {
+        setServerAiConnected(false);
+        return;
+      }
+      const [textProvider, imageProvider] = await Promise.all([
+        textResponse.json(),
+        imageResponse.json(),
+      ]);
+      setServerAiConnected(
+        textProvider.provider === 'vaelo'
+        && textProvider.configured === true
+        && imageProvider.provider === 'vaelo'
+      );
+    } catch (err) {
+      console.warn('无法读取服务端 AI 线路状态', err);
+      setServerAiConnected(false);
+    }
+  };
+
   useEffect(() => {
     checkAuth();
   }, []);
@@ -435,7 +462,9 @@ const App: React.FC = () => {
       if (res.ok) {
         const user = await res.json();
         setAuth({ user, token: token || 'session', loading: false });
+        await checkServerAiStatus(token);
       } else {
+        setServerAiConnected(false);
         setAuth({ user: null, token: null, loading: false });
         if (res.status === 401 || res.status === 403) {
           localStorage.removeItem('auth_token');
@@ -443,6 +472,7 @@ const App: React.FC = () => {
       }
     } catch (err) {
       console.error(err);
+      setServerAiConnected(false);
       setAuth({ user: null, token: null, loading: false });
     }
   };
@@ -460,6 +490,7 @@ const App: React.FC = () => {
       if (res.ok) {
         localStorage.setItem('auth_token', data.token);
         setAuth({ user: data.user, token: data.token, loading: false });
+        await checkServerAiStatus(data.token);
       } else {
         setAuthError(data.message);
       }
@@ -495,6 +526,7 @@ const App: React.FC = () => {
     await fetch('/api/auth/logout', { method: 'POST' });
     await clearProductionMaterialImageCache();
     localStorage.removeItem('auth_token');
+    setServerAiConnected(false);
     setAuth({ user: null, token: null, loading: false });
     setStep(AppStep.FULL_PLAN);
   };
@@ -1638,13 +1670,23 @@ ${p.prompt}
           </div>
           <div className="flex items-center gap-2">
           </div>
-          <button 
-            onClick={() => setShowApiKeyModal(true)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#F5F5F7] text-[#0071e3] border border-[#0071e3]/20 hover:bg-[#0071e3]/5 transition-all shadow-sm"
-          >
-            <i className="fas fa-key"></i>
-            {(userApiKey || paidImageApiKey || openAiApiKey) ? '已配置 Key' : '配置 API Key'}
-          </button>
+          {serverAiConnected ? (
+            <div
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-sm"
+              title="文本分析与图片生成均由服务端 Vaelo 中转提供"
+            >
+              <i className="fas fa-check-circle"></i>
+              中转 AI 已连接
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowApiKeyModal(true)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#F5F5F7] text-[#0071e3] border border-[#0071e3]/20 hover:bg-[#0071e3]/5 transition-all shadow-sm"
+            >
+              <i className="fas fa-key"></i>
+              {(userApiKey || paidImageApiKey || openAiApiKey) ? '已配置 Key' : '配置 API Key'}
+            </button>
+          )}
           <select 
             value={model} 
             onChange={(e) => setModel(e.target.value)}
